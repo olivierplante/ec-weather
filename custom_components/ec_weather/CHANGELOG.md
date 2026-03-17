@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.3
+- Add brand icon, issue tracker, and validation workflows for HACS submission
+- Fix manifest key ordering for hassfest compliance
+- Add CONFIG_SCHEMA for hassfest compliance
+
 ## 1.5.2
 - Add HACS and hassfest validation workflows
 
