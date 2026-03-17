@@ -9,6 +9,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.lovelace.resources import ResourceStorageCollection
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+import homeassistant.helpers.config_validation as cv
 
 from .const import (
     CONF_AQHI_LOCATION_ID,
@@ -27,12 +28,13 @@ from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordin
 
 _LOGGER = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 PLATFORMS = ["sensor", "binary_sensor", "weather"]
 
 # ── Lovelace card registration ──────────────────────────────────────────────
 CARD_RESOURCE_URL = "/ec_weather/ec-weather-card.js"
 CARD_JS_FILE = pathlib.Path(__file__).parent / "www" / "ec-weather-card.js"
-CARD_VERSION = "1.5.2"
+CARD_VERSION = "1.5.3"
 CARD_VERSIONED_URL = f"{CARD_RESOURCE_URL}?v={CARD_VERSION}"
 
 
