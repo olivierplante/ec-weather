@@ -1,0 +1,56 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Environment Canada Weather",
+        "description": "Search for your city to set up weather data. The nearest city to your Home Assistant location is pre-filled.",
+        "data": {
+          "city_query": "City name",
+          "language": "Language"
+        }
+      },
+      "select_city": {
+        "title": "Select City",
+        "description": "Multiple cities matched your search. Select the correct one.",
+        "data": {
+          "city_id": "City"
+        }
+      },
+      "confirm": {
+        "title": "Confirm Settings",
+        "description": "Confirm the settings for {city_name} ({province}) — city code: {city_code}. Auto-discovered values are pre-filled — edit if needed.",
+        "data": {
+          "lat": "Latitude",
+          "lon": "Longitude",
+          "bbox": "Alert bounding box",
+          "geomet_bbox": "GeoMet WMS bounding box",
+          "aqhi_location_id": "AQHI station ID",
+          "climate_station_id": "Climate station ID"
+        }
+      }
+    },
+    "error": {
+      "no_city_name": "Please enter a city name.",
+      "no_city_found": "No city found — try a different spelling (accents matter for French names).",
+      "api_error": "Could not reach the Environment Canada API. Please try again."
+    },
+    "abort": {
+      "already_configured": "Environment Canada Weather is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "EC Weather Settings",
+        "description": "Edit settings for {city_name} ({city_code}).",
+        "data": {
+          "city_code": "City code (e.g. on-118)",
+          "language": "Language",
+          "bbox": "Alert bounding box",
+          "geomet_bbox": "GeoMet WMS bounding box",
+          "aqhi_location_id": "AQHI station ID"
+        }
+      }
+    }
+  }
+}

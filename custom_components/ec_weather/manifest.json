@@ -1,0 +1,12 @@
+{
+  "domain": "ec_weather",
+  "name": "Environment Canada Weather",
+  "codeowners": ["@olivierplante"],
+  "config_flow": true,
+  "documentation": "",
+  "dependencies": ["http", "frontend", "lovelace"],
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "1.5.1"
+}
