@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.5.2
+- Add HACS and hassfest validation workflows
+
 ## 1.5.1
 - Migrate weather panel from YAML templates to custom Lovelace card (ec-weather-card)
 - Add built-in daily forecast popup (replaces browser_mod dependency)

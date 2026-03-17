@@ -3,10 +3,10 @@
   "name": "Environment Canada Weather",
   "codeowners": ["@olivierplante"],
   "config_flow": true,
-  "documentation": "",
+  "documentation": "https://github.com/olivierplante/ec-weather",
   "dependencies": ["http", "frontend", "lovelace"],
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "requirements": [],
-  "version": "1.5.1"
+  "version": "1.5.2"
 }
