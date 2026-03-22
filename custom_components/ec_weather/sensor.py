@@ -16,7 +16,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfSpeed, UnitOfTemperature
+from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -398,6 +398,8 @@ class ECHourlyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
     hourly list with EC data preferred where available.
     """
 
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
     def __init__(
         self,
         weather_coordinator: ECWeatherCoordinator,
@@ -564,6 +566,8 @@ class ECDailyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntit
     them by matching (date, day/night) keys.
     """
 
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
     def __init__(
         self,
         weather_coordinator: ECWeatherCoordinator,
@@ -718,6 +722,7 @@ class ECAlertsSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
     Attribute 'alerts': list of alert dicts (headline, type, expires, text).
     """
 
+    _unrecorded_attributes = frozenset({MATCH_ALL})
     _attr_name = "EC Alerts"
 
     def __init__(self, coordinator: ECAlertCoordinator, city_code: str) -> None:
