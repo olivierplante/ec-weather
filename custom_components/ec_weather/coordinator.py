@@ -19,6 +19,8 @@ from .const import (
     DEFAULT_LANGUAGE,
     DOMAIN,
     EC_API_BASE,
+    FETCH_RETRIES,
+    FETCH_RETRY_DELAY,
     GEOMET_BASE_URL,
     GEOMET_CRS,
     GEOMET_REQUEST_TIMEOUT,
@@ -32,6 +34,55 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Shared HTTP fetch helper with retry for transient network/DNS failures
+# ---------------------------------------------------------------------------
+
+async def _fetch_json_with_retry(
+    session: aiohttp.ClientSession,
+    url: str,
+    timeout: int = REQUEST_TIMEOUT,
+    retries: int = FETCH_RETRIES,
+    retry_delay: int = FETCH_RETRY_DELAY,
+    label: str = "data",
+) -> dict:
+    """Fetch JSON from a URL with retry on transient connection/DNS errors.
+
+    Retries only on ClientConnectorError (DNS, connection refused) and
+    TimeoutError. HTTP errors (4xx/5xx) and JSON parse errors are raised
+    immediately since retrying won't help.
+    """
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            async with asyncio.timeout(timeout):
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    return await resp.json()
+        except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as err:
+            last_err = err
+            if attempt < retries:
+                _LOGGER.warning(
+                    "EC Weather: transient error fetching %s (attempt %d/%d, "
+                    "retrying in %ds): %s",
+                    label, attempt, retries, retry_delay, err,
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                _LOGGER.error(
+                    "EC Weather: failed to fetch %s after %d attempts: %s",
+                    label, retries, err,
+                )
+        except aiohttp.ClientError as err:
+            raise UpdateFailed(f"Error fetching {label}: {err}") from err
+        except ValueError as err:
+            raise UpdateFailed(f"Error parsing {label} JSON: {err}") from err
+
+    raise UpdateFailed(
+        f"Error fetching {label}: {last_err}"
+    ) from last_err
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +443,7 @@ def _parse_daily(items: list, lang: str, today=None) -> list[dict]:
             _LOGGER.warning("EC daily forecast: unexpected None day period, skipping")
             continue
         if night is None:
-            _LOGGER.warning(
+            _LOGGER.debug(
                 "EC daily forecast: no night period paired with '%s'",
                 _period_name(day),
             )
@@ -473,18 +524,9 @@ class ECWeatherCoordinator(DataUpdateCoordinator):
             f"/items/{self.city_code}?f=json&lang={lang}&skipGeometry=true"
         )
         session = async_get_clientsession(self.hass)
-
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-        except asyncio.TimeoutError as err:
-            raise UpdateFailed(f"Timeout fetching city weather: {err}") from err
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Error fetching city weather: {err}") from err
-        except ValueError as err:
-            raise UpdateFailed(f"Error parsing city weather JSON: {err}") from err
+        data = await _fetch_json_with_retry(
+            session, url, label="city weather",
+        )
 
         props = data.get("properties") or {}
         current_raw = props.get("currentConditions") or {}
@@ -572,18 +614,9 @@ class ECAlertCoordinator(DataUpdateCoordinator):
             f"?bbox={self.bbox}&f=json&skipGeometry=true"
         )
         session = async_get_clientsession(self.hass)
-
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-        except asyncio.TimeoutError as err:
-            raise UpdateFailed(f"Timeout fetching alerts: {err}") from err
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Error fetching alerts: {err}") from err
-        except ValueError as err:
-            raise UpdateFailed(f"Error parsing alerts JSON: {err}") from err
+        data = await _fetch_json_with_retry(
+            session, url, label="alerts",
+        )
 
         features = data.get("features") or []
         now = datetime.now(timezone.utc)
@@ -700,18 +733,9 @@ class ECAQHICoordinator(DataUpdateCoordinator):
             f"&properties=aqhi,forecast_datetime,publication_datetime"
         )
         session = async_get_clientsession(self.hass)
-
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-        except asyncio.TimeoutError as err:
-            raise UpdateFailed(f"Timeout fetching AQHI: {err}") from err
-        except aiohttp.ClientError as err:
-            raise UpdateFailed(f"Error fetching AQHI: {err}") from err
-        except ValueError as err:
-            raise UpdateFailed(f"Error parsing AQHI JSON: {err}") from err
+        data = await _fetch_json_with_retry(
+            session, url, label="AQHI",
+        )
 
         features = data.get("features") or []
         if not features:
@@ -1289,17 +1313,30 @@ class ECWEonGCoordinator(DataUpdateCoordinator):
             f"&INFO_FORMAT=application/json&TIME={time_str}"
         )
 
-        try:
-            async with asyncio.timeout(GEOMET_REQUEST_TIMEOUT):
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    # GeoMet returns Content-Type: text/html even for JSON
-                    data = await resp.json(content_type=None)
-        except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as err:
-            _LOGGER.debug(
-                "EC WEonG: failed to query %s at %s: %s", layer, time_str, err
-            )
-            return None
+        last_err = None
+        for attempt in range(1, FETCH_RETRIES + 1):
+            try:
+                async with asyncio.timeout(GEOMET_REQUEST_TIMEOUT):
+                    async with session.get(url) as resp:
+                        resp.raise_for_status()
+                        # GeoMet returns Content-Type: text/html even for JSON
+                        data = await resp.json(content_type=None)
+                break
+            except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as err:
+                last_err = err
+                if attempt < FETCH_RETRIES:
+                    await asyncio.sleep(FETCH_RETRY_DELAY)
+                    continue
+                _LOGGER.debug(
+                    "EC WEonG: failed to query %s at %s after %d attempts: %s",
+                    layer, time_str, FETCH_RETRIES, err,
+                )
+                return None
+            except (aiohttp.ClientError, ValueError) as err:
+                _LOGGER.debug(
+                    "EC WEonG: failed to query %s at %s: %s", layer, time_str, err
+                )
+                return None
 
         features = data.get("features") or []
         if not features:
