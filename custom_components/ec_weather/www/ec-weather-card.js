@@ -855,30 +855,55 @@ class ECWeatherCard extends HTMLElement {
 
       const textSummary = item.text_summary || item.text_summary_night || '';
 
-      // Timeline
+      // Timeline — uses grid alignment matching the main hourly forecast
       const allTimesteps = (item.timesteps_day || []).concat(item.timesteps_night || []);
       let timelineHtml = '';
       if (allTimesteps.length > 0) {
+        // Pre-scan: determine which optional rows have data
+        const tlAnyFeels = allTimesteps.some(ts => {
+          const fl = ts.feels_like;
+          const t = ts.temp_c != null ? Math.round(ts.temp_c) : null;
+          return fl != null && Math.round(fl) !== t;
+        });
+        const tlAnyPop = allTimesteps.some(ts => ts.pop != null && ts.pop > 0);
+        const tlAnyRain = allTimesteps.some(ts => (ts.rain_mm || 0) > 0);
+        const tlAnySnow = allTimesteps.some(ts => (ts.snow_cm || 0) > 0);
+
+        // Build grid-template-rows: time, icon, temp (always) + optional rows
+        let tlGridRows = '20px 36px 22px';
+        if (tlAnyFeels) tlGridRows += ' 18px';
+        if (tlAnyPop) tlGridRows += ' 16px';
+        if (tlAnyRain) tlGridRows += ' 16px';
+        if (tlAnySnow) tlGridRows += ' 16px';
+
         timelineHtml += '<div style="margin-top:16px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px">';
         timelineHtml += '<div style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Timeline</div>';
         timelineHtml += '<div style="display:flex;overflow-x:auto;gap:0;scrollbar-width:none;-webkit-overflow-scrolling:touch">';
         allTimesteps.forEach(ts => {
-          const hasIcon = ts.icon_code != null;
-          const tsIcon = hasIcon ? ecIcon(ts.icon_code) : null;
-          const tsTemp = ts.temp_c != null ? Math.round(ts.temp_c) + '\u00b0' : '';
-          const tsPop = ts.pop != null && ts.pop > 0 ? ts.pop + '%' : '';
+          const tsIcon = ts.icon_code != null ? ecIcon(ts.icon_code) : null;
+          const tsTemp = ts.temp_c != null ? Math.round(ts.temp_c) : null;
+          const tsTempStr = tsTemp != null ? tsTemp + '\u00b0' : '\u2014';
+          const tsFeels = ts.feels_like != null ? Math.round(ts.feels_like) : null;
+          const showFeels = tsFeels != null && tsFeels !== tsTemp;
+          const tsPop = Math.ceil((ts.pop || 0) / 5) * 5;
           const tsPopColor = ((ts.snow_cm || 0) > 0 && (ts.rain_mm || 0) === 0) ? SNOW_COLOR : RAIN_COLOR;
-          let tsRain = (ts.rain_mm || 0) > 0 ? localFmtAmt(ts.rain_mm) + 'mm' : '';
-          let tsSnow = (ts.snow_cm || 0) > 0 ? localFmtAmt(ts.snow_cm) + 'cm' : '';
+          const tsRain = ts.rain_mm || 0;
+          const tsSnow = ts.snow_cm || 0;
 
-          timelineHtml += '<div style="min-width:56px;flex:0 0 56px;text-align:center;padding:6px 0">';
+          timelineHtml += '<div style="min-width:54px;flex:0 0 54px;display:grid;justify-items:center;align-items:center;padding:8px 0;'
+            + 'grid-template-rows:' + tlGridRows + ';border-right:1px solid rgba(255,255,255,0.06)">';
           timelineHtml += '<div style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.5)">' + localFmtTime(ts.time) + '</div>';
-          if (tsIcon) timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:24px;color:rgba(255,255,255,0.7);margin:4px 0"></ha-icon>';
-          else timelineHtml += '<div style="height:32px"></div>';
-          if (tsTemp) timelineHtml += '<div style="font-size:15px;font-weight:700;color:#fff">' + tsTemp + '</div>';
-          if (tsPop) timelineHtml += '<div style="font-size:13px;font-weight:600;color:' + tsPopColor + '">' + tsPop + '</div>';
-          if (tsRain) timelineHtml += '<div style="font-size:12px;font-weight:500;color:' + RAIN_COLOR + '">' + tsRain + '</div>';
-          if (tsSnow) timelineHtml += '<div style="font-size:12px;font-weight:500;color:' + SNOW_COLOR + '">' + tsSnow + '</div>';
+          if (tsIcon) timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:28px;color:rgba(255,255,255,0.85)"></ha-icon>';
+          else timelineHtml += '<div style="height:28px"></div>';
+          timelineHtml += '<div style="font-size:16px;font-weight:700;color:#fff">' + tsTempStr + '</div>';
+          if (tlAnyFeels) timelineHtml += '<div style="font-size:12px;font-weight:400;color:rgba(255,255,255,0.45);'
+            + (showFeels ? '' : 'visibility:hidden') + '">FL ' + (showFeels ? tsFeels + '\u00b0' : '0') + '</div>';
+          if (tlAnyPop) timelineHtml += '<div style="font-size:12px;font-weight:600;color:' + tsPopColor + ';'
+            + (tsPop >= 5 ? '' : 'visibility:hidden') + '">' + (tsPop >= 5 ? tsPop + '%' : '0') + '</div>';
+          if (tlAnyRain) timelineHtml += '<div style="font-size:12px;font-weight:500;color:' + RAIN_COLOR + ';'
+            + (tsRain > 0 ? '' : 'visibility:hidden') + '">' + (tsRain > 0 ? localFmtAmt(tsRain) + 'mm' : '0') + '</div>';
+          if (tlAnySnow) timelineHtml += '<div style="font-size:12px;font-weight:500;color:' + SNOW_COLOR + ';'
+            + (tsSnow > 0 ? '' : 'visibility:hidden') + '">' + (tsSnow > 0 ? localFmtAmt(tsSnow) + 'cm' : '0') + '</div>';
           timelineHtml += '</div>';
         });
         timelineHtml += '</div></div>';
