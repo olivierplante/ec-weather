@@ -23,6 +23,10 @@ EC_API_BASE = "https://api.weather.gc.ca"
 # Request timeout (seconds)
 REQUEST_TIMEOUT = 15
 
+# Retry settings for transient network/DNS failures
+FETCH_RETRIES = 3
+FETCH_RETRY_DELAY = 5  # seconds between retries
+
 # Update intervals
 SCAN_INTERVAL_WEATHER = timedelta(minutes=30)
 SCAN_INTERVAL_ALERTS = timedelta(minutes=30)

@@ -178,9 +178,7 @@ class ECWeatherCard extends HTMLElement {
     });
 
     if (!allAvailable) {
-      if (!this._rendered) {
-        this._renderLoading();
-      }
+      this._renderUnavailable();
       return;
     }
 
@@ -203,11 +201,74 @@ class ECWeatherCard extends HTMLElement {
     }
   }
 
-  _renderLoading() {
+  _renderUnavailable() {
+    // Only the "current" section shows the error banner with retry.
+    // Other sections hide entirely to avoid repeating the message.
+    if (this._config.section !== 'current') {
+      this.shadowRoot.innerHTML = '';
+      this._rendered = true;
+      return;
+    }
+
     this._rendered = true;
     this.shadowRoot.innerHTML = `
-      <div></div>
+      <style>
+        :host { display: block; contain: inline-size; }
+        .unavailable {
+          background: rgba(10, 21, 32, 0.7);
+          border-radius: 12px;
+          padding: 24px 16px;
+          text-align: center;
+          color: rgba(255, 255, 255, 0.6);
+          font-family: var(--ha-card-font-family, 'Segoe UI', sans-serif);
+        }
+        .unavailable ha-icon {
+          --mdc-icon-size: 32px;
+          color: rgba(255, 255, 255, 0.3);
+          margin-bottom: 8px;
+          display: block;
+        }
+        .unavailable .msg {
+          font-size: 14px;
+          margin-bottom: 12px;
+        }
+        .retry-btn {
+          background: rgba(255, 255, 255, 0.1);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 8px;
+          color: rgba(255, 255, 255, 0.7);
+          padding: 8px 16px;
+          font-size: 13px;
+          cursor: pointer;
+          transition: background 0.2s;
+          font-family: inherit;
+        }
+        .retry-btn:hover {
+          background: rgba(255, 255, 255, 0.18);
+        }
+        .retry-btn ha-icon {
+          --mdc-icon-size: 16px;
+          vertical-align: middle;
+          margin-right: 4px;
+          display: inline;
+          color: inherit;
+        }
+      </style>
+      <div class="unavailable">
+        <ha-icon icon="mdi:weather-cloudy-alert"></ha-icon>
+        <div class="msg">Weather data unavailable</div>
+        <button class="retry-btn" id="retry">
+          <ha-icon icon="mdi:refresh"></ha-icon>Retry
+        </button>
+      </div>
     `;
+
+    this.shadowRoot.getElementById('retry').addEventListener('click', () => {
+      if (!this._hass) return;
+      this._hass.callService('homeassistant', 'update_entity', {
+        entity_id: 'sensor.ec_temperature',
+      });
+    });
   }
 
   _updateDisplay() {
