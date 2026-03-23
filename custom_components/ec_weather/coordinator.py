@@ -950,7 +950,7 @@ class ECWEonGCoordinator(DataUpdateCoordinator):
             return {"periods": {}, "hourly": {}}
 
         session = async_get_clientsession(self.hass)
-        semaphore = asyncio.Semaphore(10)
+        semaphore = asyncio.Semaphore(20)
 
         # Phase 1: Query POP and AirTemp for all timesteps
         always_query_suffixes = ["precip_prob", "air_temp"]
@@ -1017,15 +1017,14 @@ class ECWEonGCoordinator(DataUpdateCoordinator):
                 model = "hrdps" if layer.startswith(_HRDPS_PREFIX) else "gdps"
                 has_precip_amt.add((timestep, model))
 
-        # Phase 3: Query SkyState for HRDPS timesteps without precip amounts
+        # Phase 3: Query SkyState for timesteps without precip amounts
         # (used for icon derivation — dry hours or wet hours with no actual precip)
+        # Queries both HRDPS (days 0-2) and GDPS (days 3+) using per-model layer names.
         sky_queries = []
-        sky_layer = _weong_layer_name(_LAYER_SUFFIXES["sky_state"], "hrdps")
         for ts, pk, model in timestep_info:
-            if model != "hrdps":
-                continue
             if (ts, model) in has_precip_amt:
                 continue
+            sky_layer = _weong_layer_name(_LAYER_SUFFIXES["sky_state"], model)
             sky_queries.append((sky_layer, ts, pk))
         sky_results: list[tuple[str, datetime, tuple[str, str], float | None]] = []
         sky_cached = sky_fetched = 0
@@ -1212,12 +1211,14 @@ class ECWEonGCoordinator(DataUpdateCoordinator):
                     has_snow = True
                 if pop_v is None and snow_cm_v is None and rain_mm_v is None and temp_v is None:
                     continue
+                sky_v = ts_lookup.get(("sky_state", t))
                 timesteps.append({
                     "time": t.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     "pop": int(round(pop_v)) if pop_v is not None else None,
                     "snow_cm": round(snow_cm_v, 1) if snow_cm_v is not None else None,
                     "rain_mm": round(rain_mm_v, 1) if rain_mm_v is not None else None,
                     "temp_c": round(temp_v, 1) if temp_v is not None else None,
+                    "sky_state": round(sky_v, 1) if sky_v is not None else None,
                 })
 
             rain_amt_mm = round(rain_mm_sum, 1) if has_rain else None
@@ -1313,30 +1314,17 @@ class ECWEonGCoordinator(DataUpdateCoordinator):
             f"&INFO_FORMAT=application/json&TIME={time_str}"
         )
 
-        last_err = None
-        for attempt in range(1, FETCH_RETRIES + 1):
-            try:
-                async with asyncio.timeout(GEOMET_REQUEST_TIMEOUT):
-                    async with session.get(url) as resp:
-                        resp.raise_for_status()
-                        # GeoMet returns Content-Type: text/html even for JSON
-                        data = await resp.json(content_type=None)
-                break
-            except (aiohttp.ClientConnectorError, asyncio.TimeoutError) as err:
-                last_err = err
-                if attempt < FETCH_RETRIES:
-                    await asyncio.sleep(FETCH_RETRY_DELAY)
-                    continue
-                _LOGGER.debug(
-                    "EC WEonG: failed to query %s at %s after %d attempts: %s",
-                    layer, time_str, FETCH_RETRIES, err,
-                )
-                return None
-            except (aiohttp.ClientError, ValueError) as err:
-                _LOGGER.debug(
-                    "EC WEonG: failed to query %s at %s: %s", layer, time_str, err
-                )
-                return None
+        try:
+            async with asyncio.timeout(GEOMET_REQUEST_TIMEOUT):
+                async with session.get(url) as resp:
+                    resp.raise_for_status()
+                    # GeoMet returns Content-Type: text/html even for JSON
+                    data = await resp.json(content_type=None)
+        except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as err:
+            _LOGGER.debug(
+                "EC WEonG: failed to query %s at %s: %s", layer, time_str, err
+            )
+            return None
 
         features = data.get("features") or []
         if not features:

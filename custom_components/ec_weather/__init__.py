@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 
@@ -34,7 +35,7 @@ PLATFORMS = ["sensor", "binary_sensor", "weather"]
 # ── Lovelace card registration ──────────────────────────────────────────────
 CARD_RESOURCE_URL = "/ec_weather/ec-weather-card.js"
 CARD_JS_FILE = pathlib.Path(__file__).parent / "www" / "ec-weather-card.js"
-CARD_VERSION = "1.5.6"
+CARD_VERSION = "1.5.7"
 CARD_VERSIONED_URL = f"{CARD_RESOURCE_URL}?v={CARD_VERSION}"
 
 
@@ -96,18 +97,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     aqhi_coordinator = ECAQHICoordinator(hass, aqhi_location_id)
     weong_coordinator = ECWEonGCoordinator(hass, geomet_bbox)
 
+    # Fast coordinators: 1 request each, ~2s total — safe to block
     await weather_coordinator.async_config_entry_first_refresh()
     await alert_coordinator.async_config_entry_first_refresh()
-    # AQHI may return no features if bbox has no nearby stations — don't fail setup
     try:
         await aqhi_coordinator.async_config_entry_first_refresh()
     except Exception:
         _LOGGER.debug("EC Weather: AQHI data not available, will retry")
-    # WEonG (GeoMet WMS) may be temporarily unreachable — don't fail setup
-    try:
-        await weong_coordinator.async_config_entry_first_refresh()
-    except Exception as exc:
-        _LOGGER.debug("EC Weather: WEonG first refresh failed: %s", exc)
 
     hass.data[DOMAIN][entry.entry_id] = {
         COORDINATOR_WEATHER: weather_coordinator,
@@ -117,6 +113,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # WEonG makes ~100 GeoMet requests — refresh in background.
+    # Hourly/daily sections stay hidden until WEonG data is ready.
+    entry.async_create_background_task(
+        hass, weong_coordinator.async_refresh(), "ec_weather_weong_refresh",
+    )
+
     _LOGGER.debug("EC Weather: setup complete (language=%s)", language)
     return True
 

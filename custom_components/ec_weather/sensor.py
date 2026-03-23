@@ -316,6 +316,23 @@ def _derive_icon(weong: dict, hour: int) -> tuple[int | None, str | None]:
     return None, None
 
 
+def _apply_icon_fallback(entry: dict, ts_iso: str) -> None:
+    """Derive icon_code from WEonG data if not already set on the entry.
+
+    Parses the hour from the ISO timestamp and uses _derive_icon to set
+    icon_code and condition from sky_state/precip data.
+    """
+    if entry.get("icon_code") is not None:
+        return
+    try:
+        hour = int(ts_iso[11:13])
+    except (ValueError, IndexError):
+        hour = 12
+    icon_code, condition = _derive_icon(entry, hour)
+    entry["icon_code"] = icon_code
+    entry["condition"] = condition
+
+
 def _build_unified_hourly(
     ec_hourly: list[dict], weong_hourly: dict
 ) -> list[dict]:
@@ -347,24 +364,22 @@ def _build_unified_hourly(
             if weong:
                 enriched["rain_amt_mm"] = weong.get("rain_amt_mm")
                 enriched["snow_amt_cm"] = weong.get("snow_amt_cm")
+                # Derive icon from WEonG if EC didn't provide one
+                _apply_icon_fallback(enriched, ts)
             else:
                 enriched["rain_amt_mm"] = None
                 enriched["snow_amt_cm"] = None
             result.append(enriched)
         elif weong:
             # WEonG-only item (beyond EC 24h) — build with derived icon
-            # Parse hour from ISO timestamp for day/night icon selection
-            try:
-                hour = int(ts[11:13])
-            except (ValueError, IndexError):
-                hour = 12  # default to daytime
-            icon_code, condition = _derive_icon(weong, hour)
+            derived = dict(weong)
+            _apply_icon_fallback(derived, ts)
             result.append({
                 "datetime": ts,
-                "temp": weong.get("temp_c"),
+                "temp": derived.get("temp_c"),
                 "feels_like": None,
-                "condition": condition,
-                "icon_code": icon_code,
+                "condition": derived.get("condition"),
+                "icon_code": derived.get("icon_code"),
                 "precip_prob": weong.get("pop"),
                 "precip_amount": None,
                 "precip_unit": None,
@@ -410,6 +425,14 @@ class ECHourlyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
         self._attr_unique_id = f"ec_hourly_forecast_{city_code}"
         self._attr_name = "EC Hourly Forecast"
         self._weong_coordinator = weong_coordinator
+
+    @property
+    def available(self) -> bool:
+        """Available only when both weather and WEonG data are ready."""
+        return (
+            self.coordinator.last_update_success
+            and self._weong_coordinator.data is not None
+        )
 
     async def async_added_to_hass(self) -> None:
         """Register listener for the WEonG coordinator too."""
@@ -533,20 +556,15 @@ def _merge_weong_into_daily(
                     if hourly.get("temp") is not None:
                         entry["temp_c"] = round(hourly["temp"], 1)
                     entry["feels_like"] = hourly.get("feels_like")
-                    entry["icon_code"] = hourly.get("icon_code")
-                    entry["condition"] = hourly.get("condition")
+                    # Only use EC icon if available; EC omits icon for current hour
+                    if hourly.get("icon_code") is not None:
+                        entry["icon_code"] = hourly["icon_code"]
+                        entry["condition"] = hourly.get("condition")
                     entry["wind_speed"] = hourly.get("wind_speed")
                     entry["wind_direction"] = hourly.get("wind_direction")
                     entry["wind_gust"] = hourly.get("wind_gust")
-                elif entry.get("icon_code") is None:
-                    # Derive icon from available WEonG data (rain_mm, snow_cm, temp_c)
-                    try:
-                        hour = int(ts.get("time", "")[11:13])
-                    except (ValueError, IndexError):
-                        hour = 12
-                    icon_code, condition = _derive_icon(entry, hour)
-                    entry["icon_code"] = icon_code
-                    entry["condition"] = condition
+                # Derive icon from WEonG sky_state/precip if still missing
+                _apply_icon_fallback(entry, ts.get("time", ""))
                 result.append(entry)
             return result
 
@@ -578,6 +596,14 @@ class ECDailyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntit
         self._attr_unique_id = f"ec_daily_forecast_{city_code}"
         self._attr_name = "EC Daily Forecast"
         self._weong_coordinator = weong_coordinator
+
+    @property
+    def available(self) -> bool:
+        """Available only when both weather and WEonG data are ready."""
+        return (
+            self.coordinator.last_update_success
+            and self._weong_coordinator.data is not None
+        )
 
     async def async_added_to_hass(self) -> None:
         """Register listener for the WEonG coordinator too."""
