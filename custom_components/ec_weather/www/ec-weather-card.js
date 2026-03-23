@@ -202,9 +202,41 @@ class ECWeatherCard extends HTMLElement {
   }
 
   _renderUnavailable() {
-    // Only the "current" section shows the error banner with retry.
-    // Other sections hide entirely to avoid repeating the message.
-    if (this._config.section !== 'current') {
+    // Alerts: always hide when unavailable (same as no alerts)
+    if (this._config.section === 'alerts') {
+      this.shadowRoot.innerHTML = '';
+      this._rendered = true;
+      return;
+    }
+
+    // Hourly/daily: show loading placeholder while WEonG data is pending
+    if (this._config.section === 'hourly' || this._config.section === 'daily') {
+      // Check if weather coordinator is up (ec_temperature available)
+      // If yes, WEonG is still loading. If no, it's a real outage — hide.
+      const tempState = this._hass?.states?.['sensor.ec_temperature'];
+      const weatherUp = tempState && tempState.state !== 'unavailable';
+      if (weatherUp) {
+        this._rendered = true;
+        this.shadowRoot.innerHTML = `
+          <style>
+            :host { display: block; contain: inline-size; }
+            .loading {
+              padding: 24px 16px;
+              text-align: center;
+              color: rgba(255, 255, 255, 0.3);
+              font-size: 13px;
+              font-family: var(--ha-card-font-family, 'Segoe UI', sans-serif);
+            }
+            @keyframes pulse { 0%,100% { opacity: 0.3; } 50% { opacity: 0.6; } }
+            .loading span { animation: pulse 2s ease-in-out infinite; }
+          </style>
+          <div class="loading">
+            <span>Loading ${this._config.section} forecast\u2026</span>
+          </div>
+        `;
+        return;
+      }
+      // Weather coordinator also down — hide entirely
       this.shadowRoot.innerHTML = '';
       this._rendered = true;
       return;
