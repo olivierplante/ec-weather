@@ -20,8 +20,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from datetime import datetime, timezone
 
 from .const import CONF_CITY_CODE, COORDINATOR_WEATHER, COORDINATOR_WEONG, DOMAIN
-from .coordinator import ECWeatherCoordinator, ECWEonGCoordinator
-from .sensor import _merge_weong_into_daily
+from .coordinator import ECWeatherCoordinator
+from .transforms import _merge_weong_into_daily
+from .weong import ECWEonGCoordinator
 
 # ---------------------------------------------------------------------------
 # EC icon code → HA condition string mapping

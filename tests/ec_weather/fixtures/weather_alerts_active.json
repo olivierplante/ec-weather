@@ -1,0 +1,59 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "alert_type": "warning",
+        "alert_name_en": "Blizzard Warning",
+        "alert_name_fr": "Avertissement de blizzard",
+        "alert_text_en": "Heavy snow and strong winds expected. Visibility may be severely reduced.",
+        "alert_text_fr": "Forte neige et vents violents prévus.",
+        "status_en": "active",
+        "expiration_datetime": "2099-12-31T23:59:59Z"
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "alert_type": "advisory",
+        "alert_name_en": "Wind Chill Advisory",
+        "alert_name_fr": "Avis de refroidissement éolien",
+        "alert_text_en": "Wind chill values near minus 40.",
+        "alert_text_fr": "Refroidissement éolien près de moins 40.",
+        "status_en": "active",
+        "expiration_datetime": "2099-12-31T23:59:59Z"
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "alert_type": "warning",
+        "alert_name_en": "Blizzard Warning",
+        "alert_text_en": "Heavy snow and strong winds expected. Visibility may be severely reduced.",
+        "status_en": "active",
+        "expiration_datetime": "2099-12-31T23:59:59Z"
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "alert_type": "statement",
+        "alert_name_en": "Special Weather Statement",
+        "alert_text_en": "A period of freezing rain is possible.",
+        "status_en": "cancelled",
+        "expiration_datetime": "2099-12-31T23:59:59Z"
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "alert_type": "watch",
+        "alert_name_en": "Freezing Rain Watch",
+        "alert_text_en": "Freezing rain expected tomorrow.",
+        "status_en": "active",
+        "expiration_datetime": "2020-01-01T00:00:00Z"
+      }
+    }
+  ]
+}

@@ -142,6 +142,157 @@ function precipColor(rain, snow, precipType) {
   return 'var(--ec-weather-precip-rain, #4FC3F7)';
 }
 
+// ─── Reusable Overlay ────────────────────────────────────────────────────────
+//
+// Persistent popup overlay that lives outside the card render cycle.
+// Created once, attached to document.body, reused by any section.
+// Card re-renders never touch this element.
+//
+// Usage:
+//   const overlay = ECOverlay.get();             // shared instance
+//   overlay.open(ownerRef, htmlContent);          // show with content
+//   overlay.update(ownerRef, htmlContent);        // update if owner matches
+//   overlay.close();                              // hide
+//   overlay.onClose = () => { ... };              // callback when closed
+
+class ECOverlay {
+  static _instance = null;
+
+  static get() {
+    if (!ECOverlay._instance) {
+      ECOverlay._instance = new ECOverlay();
+    }
+    return ECOverlay._instance;
+  }
+
+  constructor() {
+    this._el = document.createElement('div');
+    this._el.innerHTML = `
+      <style>
+        .ec-overlay { display: none; position: fixed; inset: 0; z-index: 999; align-items: center; justify-content: center; }
+        .ec-overlay.open { display: flex; }
+        .ec-overlay-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.8); }
+        .ec-overlay-content {
+          position: relative; z-index: 1;
+          background: #0a1520; border-radius: 12px;
+          padding: 24px; max-width: 420px; width: 90vw;
+          max-height: 85vh; overflow-y: auto;
+          scrollbar-width: none; touch-action: pan-y;
+          transition: transform 150ms ease;
+        }
+        .ec-overlay-content::-webkit-scrollbar { display: none; }
+        .ec-overlay-close {
+          position: absolute; top: 12px; right: 12px;
+          background: none; border: none; color: rgba(255,255,255,0.5);
+          font-size: 20px; cursor: pointer; padding: 4px 8px; line-height: 1;
+        }
+        .ec-overlay-close:hover { color: #fff; }
+        @media (max-width: 768px) {
+          .ec-overlay-content {
+            max-width: 100%; width: 100%; max-height: 100%; height: 100%;
+            border-radius: 0; box-sizing: border-box;
+          }
+        }
+      </style>
+      <div class="ec-overlay">
+        <div class="ec-overlay-backdrop"></div>
+        <div class="ec-overlay-content">
+          <button class="ec-overlay-close">\u2715</button>
+          <div class="ec-overlay-body"></div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(this._el);
+
+    this._overlay = this._el.querySelector('.ec-overlay');
+    this._body = this._el.querySelector('.ec-overlay-body');
+    this._content = this._el.querySelector('.ec-overlay-content');
+    this.onClose = null;
+    this.isOpen = false;
+    this._owner = null;  // reference to the card instance that opened the overlay
+
+    // Close on backdrop click
+    this._el.querySelector('.ec-overlay-backdrop').addEventListener('click', () => this.close());
+    this._el.querySelector('.ec-overlay-close').addEventListener('click', () => this.close());
+
+    // Escape key
+    this._escHandler = (e) => { if (e.key === 'Escape' && this.isOpen) this.close(); };
+    document.addEventListener('keydown', this._escHandler);
+
+    // Swipe down to close (mobile)
+    this._touchStartY = 0;
+    this._touchCurrentY = 0;
+    this._isDragging = false;
+
+    this._content.addEventListener('touchstart', (e) => {
+      if (this._content.scrollTop > 0) return;
+      this._touchStartY = e.touches[0].clientY;
+      this._touchCurrentY = this._touchStartY;
+      this._isDragging = false;
+    }, { passive: true });
+
+    this._content.addEventListener('touchmove', (e) => {
+      if (!this._touchStartY) return;
+      this._touchCurrentY = e.touches[0].clientY;
+      const delta = this._touchCurrentY - this._touchStartY;
+      if (delta > 10) {
+        this._isDragging = true;
+        e.preventDefault();
+        this._content.style.transform = 'translateY(' + delta + 'px)';
+        this._content.style.transition = 'none';
+      }
+    }, { passive: false });
+
+    this._content.addEventListener('touchend', () => {
+      const delta = this._touchCurrentY - this._touchStartY;
+      if (this._isDragging && delta > 80) {
+        this._content.style.transition = 'transform 200ms ease';
+        this._content.style.transform = 'translateY(100vh)';
+        setTimeout(() => this.close(), 200);
+      } else {
+        this._content.style.transition = 'transform 150ms ease';
+        this._content.style.transform = '';
+      }
+      this._touchStartY = 0;
+      this._touchCurrentY = 0;
+      this._isDragging = false;
+    }, { passive: true });
+  }
+
+  open(owner, htmlContent) {
+    // If another caller had the overlay open, notify it that it's being replaced
+    if (this.isOpen && this.onClose) {
+      this.onClose();
+    }
+    this._owner = owner;
+    this.onClose = null;
+    this._body.innerHTML = htmlContent;
+    this._overlay.classList.add('open');
+    this._content.style.transform = '';
+    document.body.style.overflow = 'hidden';
+    this.isOpen = true;
+  }
+
+  update(owner, htmlContent) {
+    // Only the card that opened the overlay can update it
+    if (this.isOpen && this._owner === owner) {
+      this._body.innerHTML = htmlContent;
+    }
+  }
+
+  close() {
+    this._overlay.classList.remove('open');
+    document.body.style.overflow = '';
+    this.isOpen = false;
+    this._owner = null;
+    if (this.onClose) {
+      this.onClose();
+      this.onClose = null;
+    }
+  }
+}
+
+
 // ─── Card Class ──────────────────────────────────────────────────────────────
 
 class ECWeatherCard extends HTMLElement {
@@ -170,6 +321,26 @@ class ECWeatherCard extends HTMLElement {
 
     if (!hass) return;
 
+    // On-demand refresh: trigger update_entity if data might be stale.
+    // Only the 'current' section triggers refresh (avoids 4 sections all firing).
+    if (this._config.section === 'current' && !this._refreshTriggered) {
+      const tempState = hass.states['sensor.ec_temperature'];
+      if (tempState && tempState.state !== 'unavailable') {
+        const lastUpdated = new Date(tempState.last_updated);
+        const ageMinutes = (Date.now() - lastUpdated.getTime()) / 60000;
+        if (ageMinutes > 30) {
+          this._refreshTriggered = true;
+          hass.callService('homeassistant', 'update_entity', {
+            entity_id: [
+              'sensor.ec_temperature',
+              'sensor.ec_hourly_forecast',
+              'sensor.ec_daily_forecast',
+            ],
+          });
+        }
+      }
+    }
+
     // Check if required entities are available
     const entities = SECTION_ENTITIES[this._config.section] || [];
     const allAvailable = entities.every(e => {
@@ -180,6 +351,12 @@ class ECWeatherCard extends HTMLElement {
     if (!allAvailable) {
       this._renderUnavailable();
       return;
+    }
+
+    // Reset refresh trigger when entities actually change
+    if (oldHass && this._refreshTriggered) {
+      const changed = entities.some(e => oldHass.states[e] !== hass.states[e]);
+      if (changed) this._refreshTriggered = false;
     }
 
     // Only re-render if relevant entities changed
@@ -816,6 +993,9 @@ class ECWeatherCard extends HTMLElement {
       return hr > 12 ? (hr - 12) + 'PM' : hr + 'AM';
     };
 
+    // Store forecast for lazy popup fetch reference
+    this._lastForecast = forecast;
+
     // Pre-compute popup data for each day
     this._dailyPopups = forecast.map((item) => {
       const fullName = (item.period || '').split(' ')[0];
@@ -930,8 +1110,15 @@ class ECWeatherCard extends HTMLElement {
           timelineHtml += '<div style="min-width:54px;flex:0 0 54px;display:grid;justify-items:center;align-items:center;padding:8px 0;'
             + 'grid-template-rows:' + tlGridRows + ';border-right:1px solid rgba(255,255,255,0.06)">';
           timelineHtml += '<div style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.5)">' + localFmtTime(ts.time) + '</div>';
-          if (tsIcon) timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:28px;color:rgba(255,255,255,0.85)"></ha-icon>';
-          else timelineHtml += '<div style="height:28px"></div>';
+          if (tsIcon) {
+            timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:28px;color:rgba(255,255,255,0.85)"></ha-icon>';
+          } else if (ts.sky_state == null && (ts.rain_mm || 0) === 0 && (ts.snow_cm || 0) === 0) {
+            // No icon, no sky_state, no precip — SkyState not yet fetched (loading)
+            timelineHtml += '<div style="height:28px;display:flex;align-items:center;justify-content:center">'
+              + '<div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.15)"></div></div>';
+          } else {
+            timelineHtml += '<div style="height:28px"></div>';
+          }
           timelineHtml += '<div style="font-size:16px;font-weight:700;color:#fff">' + tsTempStr + '</div>';
           if (tlAnyFeels) timelineHtml += '<div style="font-size:12px;font-weight:400;color:rgba(255,255,255,0.45);'
             + (showFeels ? '' : 'visibility:hidden') + '">FL ' + (showFeels ? tsFeels + '\u00b0' : '0') + '</div>';
@@ -1034,6 +1221,17 @@ class ECWeatherCard extends HTMLElement {
       columnsHtml += '</div>';
     });
 
+    // If popup is open, update its content without re-rendering the card.
+    // If popup is open, update only the popup content and skip the card re-render.
+    if (this._openPopupIndex != null) {
+      const popup = this._dailyPopups?.[this._openPopupIndex];
+      if (popup) ECOverlay.get().update(this, popup.content);
+      return;
+    }
+
+    // Preserve scroll position across re-renders
+    const prevScroll = this.shadowRoot.querySelector('.daily-scroll')?.scrollLeft || 0;
+
     this.shadowRoot.innerHTML = `
       <style>
         :host {
@@ -1075,132 +1273,51 @@ class ECWeatherCard extends HTMLElement {
         .d-pop { font-size: 13px; font-weight: 600; margin-top: 8px; text-align: center; }
         .d-amt { font-size: 13px; font-weight: 500; margin-top: 2px; text-align: center; }
 
-        /* Overlay popup */
-        .overlay { display: none; position: fixed; inset: 0; z-index: 999; align-items: center; justify-content: center; }
-        .overlay.open { display: flex; }
-        .overlay-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.8); }
-        .overlay-content {
-          position: relative; z-index: 1;
-          background: #0a1520; border-radius: 12px;
-          padding: 24px; max-width: 420px; width: 90vw;
-          max-height: 85vh; overflow-y: auto;
-          scrollbar-width: none;
-          touch-action: pan-y;
-          transition: transform 150ms ease;
-        }
-        .overlay-content::-webkit-scrollbar { display: none; }
-        .overlay-close {
-          position: absolute; top: 12px; right: 12px;
-          background: none; border: none; color: rgba(255,255,255,0.5);
-          font-size: 20px; cursor: pointer; padding: 4px 8px; line-height: 1;
-        }
-        .overlay-close:hover { color: #fff; }
-        @media (max-width: 768px) {
-          .overlay-content {
-            max-width: 100%; width: 100%; max-height: 100%; height: 100%;
-            border-radius: 0; box-sizing: border-box;
-          }
-        }
       </style>
       <div class="section-header">DAILY</div>
       <div class="daily-scroll">${columnsHtml}</div>
-      <div class="overlay" id="daily-overlay">
-        <div class="overlay-backdrop" id="overlay-backdrop"></div>
-        <div class="overlay-content">
-          <button class="overlay-close" id="overlay-close">\u2715</button>
-          <div id="overlay-body"></div>
-        </div>
-      </div>
     `;
 
-    // Attach click handlers for daily columns
-    this.shadowRoot.querySelectorAll('.daily-col').forEach(el => {
-      el.addEventListener('click', (e) => {
+    // Event delegation for daily column clicks — survives innerHTML updates
+    this.shadowRoot.querySelector('.daily-scroll')?.addEventListener('click', (e) => {
+      const col = e.target.closest('.daily-col');
+      if (col) {
         e.stopPropagation();
-        this._openDailyPopup(parseInt(el.dataset.index));
-      });
+        this._openDailyPopup(parseInt(col.dataset.index));
+      }
     });
 
-    // Overlay close handlers
-    this.shadowRoot.getElementById('overlay-backdrop')?.addEventListener('click', () => this._closeDailyPopup());
-    this.shadowRoot.getElementById('overlay-close')?.addEventListener('click', () => this._closeDailyPopup());
+    // Restore scroll position
+    if (prevScroll) {
+      this.shadowRoot.querySelector('.daily-scroll').scrollLeft = prevScroll;
+    }
   }
 
   _openDailyPopup(index) {
     const popup = this._dailyPopups?.[index];
     if (!popup) return;
 
-    const overlay = this.shadowRoot.getElementById('daily-overlay');
-    const body = this.shadowRoot.getElementById('overlay-body');
-    if (!overlay || !body) return;
+    this._openPopupIndex = index;
 
-    body.innerHTML = popup.content;
-    overlay.classList.add('open');
-    document.body.style.overflow = 'hidden';
-
-    // Escape key listener
-    this._escHandler = (e) => { if (e.key === 'Escape') this._closeDailyPopup(); };
-    document.addEventListener('keydown', this._escHandler);
-
-    // Swipe down to close (mobile)
-    const content = this.shadowRoot.querySelector('.overlay-content');
-    this._touchStartY = 0;
-    this._touchCurrentY = 0;
-    this._isDragging = false;
-
-    this._onTouchStart = (e) => {
-      if (content.scrollTop > 0) return;
-      this._touchStartY = e.touches[0].clientY;
-      this._touchCurrentY = this._touchStartY;
-      this._isDragging = false;
-    };
-    this._onTouchMove = (e) => {
-      if (!this._touchStartY) return;
-      this._touchCurrentY = e.touches[0].clientY;
-      const delta = this._touchCurrentY - this._touchStartY;
-      if (delta > 10) {
-        this._isDragging = true;
-        e.preventDefault();
-        content.style.transform = 'translateY(' + delta + 'px)';
-        content.style.transition = 'none';
+    // Lazy-fetch SkyState for this day's timeline if needed
+    const item = this._lastForecast?.[index];
+    if (item && item.date && this._hass) {
+      const allTs = (item.timesteps_day || []).concat(item.timesteps_night || []);
+      const needsFetch = allTs.length > 0 && allTs.some(
+        ts => ts.icon_code == null && ts.sky_state == null
+      );
+      if (needsFetch && !this._pendingTimestepFetch?.[item.date]) {
+        this._pendingTimestepFetch = this._pendingTimestepFetch || {};
+        this._pendingTimestepFetch[item.date] = true;
+        this._hass.callService('ec_weather', 'fetch_day_timesteps', {
+          date: item.date,
+        });
       }
-    };
-    this._onTouchEnd = () => {
-      const delta = this._touchCurrentY - this._touchStartY;
-      if (this._isDragging && delta > 80) {
-        content.style.transition = 'transform 200ms ease';
-        content.style.transform = 'translateY(100vh)';
-        setTimeout(() => this._closeDailyPopup(), 200);
-      } else {
-        content.style.transition = 'transform 150ms ease';
-        content.style.transform = '';
-      }
-      this._touchStartY = 0;
-      this._touchCurrentY = 0;
-      this._isDragging = false;
-    };
-
-    content.addEventListener('touchstart', this._onTouchStart, { passive: true });
-    content.addEventListener('touchmove', this._onTouchMove, { passive: false });
-    content.addEventListener('touchend', this._onTouchEnd, { passive: true });
-  }
-
-  _closeDailyPopup() {
-    const overlay = this.shadowRoot.getElementById('daily-overlay');
-    if (overlay) overlay.classList.remove('open');
-    document.body.style.overflow = '';
-    if (this._escHandler) {
-      document.removeEventListener('keydown', this._escHandler);
-      this._escHandler = null;
     }
-    // Clean up touch listeners
-    const content = this.shadowRoot?.querySelector('.overlay-content');
-    if (content) {
-      content.style.transform = '';
-      if (this._onTouchStart) content.removeEventListener('touchstart', this._onTouchStart);
-      if (this._onTouchMove) content.removeEventListener('touchmove', this._onTouchMove);
-      if (this._onTouchEnd) content.removeEventListener('touchend', this._onTouchEnd);
-    }
+
+    const overlay = ECOverlay.get();
+    overlay.open(this, popup.content);
+    overlay.onClose = () => { this._openPopupIndex = null; };
   }
 
   // ─── Static ──────────────────────────────────────────────────────────────

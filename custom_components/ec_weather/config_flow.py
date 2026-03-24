@@ -18,6 +18,9 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
@@ -27,6 +30,7 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
     CONF_BBOX,
     CONF_CITY_CODE,
@@ -35,9 +39,17 @@ from .const import (
     CONF_LANGUAGE,
     CONF_LAT,
     CONF_LON,
+    CONF_POLLING_MODE,
+    CONF_WEATHER_INTERVAL,
+    CONF_WEONG_INTERVAL,
+    DEFAULT_AQHI_INTERVAL,
     DEFAULT_LANGUAGE,
+    DEFAULT_POLLING_MODE,
+    DEFAULT_WEATHER_INTERVAL,
+    DEFAULT_WEONG_INTERVAL,
     DOMAIN,
     EC_API_BASE,
+    POLLING_MODES,
     REQUEST_TIMEOUT,
     SUPPORTED_LANGUAGES,
 )
@@ -111,6 +123,56 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                         CONF_AQHI_LOCATION_ID,
                         default=data.get(CONF_AQHI_LOCATION_ID) or "",
                     ): TextSelector(TextSelectorConfig(type="text")),
+                    vol.Optional(
+                        CONF_POLLING_MODE,
+                        default=data.get(
+                            CONF_POLLING_MODE, DEFAULT_POLLING_MODE
+                        ),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=k, label=v)
+                                for k, v in POLLING_MODES.items()
+                            ],
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_WEATHER_INTERVAL,
+                        default=data.get(
+                            CONF_WEATHER_INTERVAL, DEFAULT_WEATHER_INTERVAL
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=10, max=120, step=5,
+                            unit_of_measurement="min",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_AQHI_INTERVAL,
+                        default=data.get(
+                            CONF_AQHI_INTERVAL, DEFAULT_AQHI_INTERVAL
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=60, max=720, step=30,
+                            unit_of_measurement="min",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_WEONG_INTERVAL,
+                        default=data.get(
+                            CONF_WEONG_INTERVAL, DEFAULT_WEONG_INTERVAL
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=60, max=720, step=30,
+                            unit_of_measurement="min",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
                 }
             ),
             description_placeholders={

@@ -48,7 +48,11 @@
           "language": "Language",
           "bbox": "Alert bounding box",
           "geomet_bbox": "GeoMet WMS bounding box",
-          "aqhi_location_id": "AQHI station ID"
+          "aqhi_location_id": "AQHI station ID",
+          "polling_mode": "Polling mode",
+          "weather_interval": "Weather refresh interval (minutes)",
+          "aqhi_interval": "AQHI refresh interval (minutes)",
+          "weong_interval": "Forecast detail refresh interval (minutes)"
         }
       }
     }
