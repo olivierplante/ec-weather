@@ -1,0 +1,13 @@
+# pytest configuration for the HACS GitHub repository.
+# In the GitHub repo, the structure is:
+#   custom_components/ec_weather/  (the integration code)
+#   tests/ec_weather/              (the tests)
+#
+# The pythonpath must point to custom_components/ so that
+# `from ec_weather.coordinator import ...` resolves correctly.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["custom_components"]

@@ -1,0 +1,13 @@
+fetch_day_timesteps:
+  name: Fetch day timesteps
+  description: >-
+    Fetch detailed timeline data (SkyState icons) for a specific day's
+    popup. Results are cached and will not re-fetch if already loaded.
+  fields:
+    date:
+      name: Date
+      description: ISO date string (YYYY-MM-DD)
+      required: true
+      example: "2026-03-22"
+      selector:
+        text:

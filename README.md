@@ -33,8 +33,22 @@ Go to **Settings → Integrations → EC Weather → Configure** to edit:
 - Alert bounding box
 - GeoMet WMS bounding box
 - AQHI station ID
+- Polling mode
+- Refresh intervals (weather, AQHI, forecast detail)
 
 The integration reloads automatically after saving changes.
+
+### Polling Modes
+
+Controls how the integration fetches data from Environment Canada. Choose the mode that fits how you use it:
+
+**Minimal** (default) — Only weather alerts poll continuously (every 30 minutes). All other data (conditions, forecasts, AQHI) refreshes on-demand when you open the dashboard. Best if you check the weather occasionally. ~48 API calls/day.
+
+**Efficient** — Alerts, current conditions, and AQHI poll continuously at their configured intervals. Forecasts refresh on-demand when the dashboard is viewed. Choose this if you use iOS lock screen widgets, temperature-based automations, or AQHI alerts — these need fresh data even when you're not looking at the dashboard. ~104 API calls/day.
+
+**Full** — Everything polls continuously at configured intervals, including the forecast detail data from GeoMet WMS. Choose this if you want all data always up-to-date, or if you log weather data for analysis. ~1,024 API calls/day.
+
+In all modes, weather alerts always poll every 30 minutes for safety.
 
 ### Config entry data
 
@@ -51,7 +65,7 @@ The integration reloads automatically after saving changes.
 
 ## Entity inventory
 
-### Current conditions (ECWeatherCoordinator — 15 min)
+### Current conditions (ECWeatherCoordinator — on-demand, default 30 min)
 
 | Entity | State |
 |---|---|
@@ -69,7 +83,7 @@ The integration reloads automatically after saving changes.
 | `sensor.ec_daily_forecast` | Last update timestamp; `forecast` attribute = 7 items |
 | `sensor.ec_weather_summary` | Formatted string for companion app widget |
 
-### Alerts (ECAlertCoordinator — 10 min)
+### Alerts (ECAlertCoordinator — always polling, 30 min)
 
 | Entity | State |
 |---|---|
@@ -77,23 +91,13 @@ The integration reloads automatically after saving changes.
 | `sensor.ec_alert_count` | Integer |
 | `sensor.ec_alerts` | Highest alert type; `alerts` attribute = list of dicts |
 
-### Yesterday climate (ECClimateCoordinator — 30 min, from 06:00 local)
-
-| Entity | State |
-|---|---|
-| `sensor.ec_yesterday_snow` | cm (null when unavailable) |
-| `sensor.ec_yesterday_rain` | mm |
-| `sensor.ec_yesterday_snow_on_ground` | cm |
-| `sensor.ec_yesterday_high` | °C |
-| `sensor.ec_yesterday_low` | °C |
-
-### Air quality (ECAQHICoordinator — 30 min)
+### Air quality (ECAQHICoordinator — on-demand, default 3h)
 
 | Entity | State |
 |---|---|
 | `sensor.ec_air_quality` | Float (e.g. 3.0); `risk_level` attribute |
 
-### iOS lock screen gauge (ECWeatherCoordinator — 15 min)
+### iOS lock screen gauge (ECWeatherCoordinator)
 
 | Entity | State | Attributes |
 |---|---|---|
@@ -121,13 +125,16 @@ For the feels-like gauge, replace `ec_temp_gauge` with `ec_feels_gauge`.
 
 ## Update schedules
 
-| Coordinator | Interval | Source |
-|---|---|---|
-| ECWeatherCoordinator | 15 min | `citypageweather-realtime` |
-| ECAlertCoordinator | 10 min | `weather-alerts` (bbox) |
-| ECClimateCoordinator | 30 min | `climate-daily` |
-| ECAQHICoordinator | 30 min | `aqhi-forecasts-realtime` |
-| ECWEonGCoordinator | 60 min | GeoMet WMS GetFeatureInfo |
+Intervals depend on the selected polling mode. Default intervals shown below (configurable in settings):
+
+| Data | Default interval | Mode required | Source |
+|---|---|---|---|
+| Weather alerts | 30 min (always) | All modes | `weather-alerts` API |
+| Current conditions | 30 min | Efficient or Full | `citypageweather-realtime` API |
+| AQHI air quality | 3 hours | Efficient or Full | `aqhi-forecasts-realtime` API |
+| Forecast detail (WEonG) | 6 hours | Full only | GeoMet WMS GetFeatureInfo |
+
+In Minimal mode, conditions/AQHI/forecasts refresh on-demand when the dashboard is viewed.
 
 ## Lovelace Card
 
