@@ -176,20 +176,28 @@ cards:
 
 ### Theming
 
-The card uses a dark theme by default. All colors can be overridden via CSS custom properties:
+The card is **theme-aware** and adapts to any Home Assistant theme (light or dark) automatically. It reads HA's built-in CSS variables (`--primary-text-color`, `--secondary-text-color`, etc.) so colors match your active theme out of the box.
 
-| Property | Default | Description |
-|----------|---------|-------------|
-| `--ec-weather-text-primary` | `#FFFFFF` | Primary text color |
-| `--ec-weather-text-secondary` | `rgba(255,255,255,0.6)` | Secondary/muted text |
-| `--ec-weather-text-muted` | `rgba(255,255,255,0.45)` | Muted text (feels-like) |
-| `--ec-weather-precip-rain` | `#4FC3F7` | Rain precipitation color |
-| `--ec-weather-precip-snow` | `rgba(255,255,255,0.85)` | Snow precipitation color |
-| `--ec-weather-alert-warning` | `#EF5350` | Warning alert color |
-| `--ec-weather-alert-watch` | `#FFA726` | Watch alert color |
-| `--ec-weather-alert-advisory` | `#FFEE58` | Advisory alert color |
-| `--ec-weather-alert-statement` | `rgba(255,255,255,0.6)` | Statement alert color |
-| `--ec-weather-divider` | `rgba(255,255,255,0.06)` | Divider line color |
+Colors resolve in this order:
+1. **Card-specific override** (`--ec-weather-*`) — if set, takes priority
+2. **HA theme variable** — adapts to your active theme automatically
+3. **Hardcoded fallback** — dark theme defaults as last resort
+
+| Property | HA theme fallback | Final fallback | Description |
+|----------|-------------------|----------------|-------------|
+| `--ec-weather-text-primary` | `--primary-text-color` | `#FFFFFF` | Primary text color |
+| `--ec-weather-text-secondary` | `--secondary-text-color` | `rgba(255,255,255,0.6)` | Secondary text |
+| `--ec-weather-text-muted` | `--secondary-text-color` | `rgba(255,255,255,0.45)` | Muted text (feels-like) |
+| `--ec-weather-precip-rain` | — | `#4FC3F7` | Rain precipitation color |
+| `--ec-weather-precip-snow` | `--primary-text-color` | `rgba(255,255,255,0.85)` | Snow precipitation color |
+| `--ec-weather-alert-warning` | — | `#EF5350` | Warning alert color |
+| `--ec-weather-alert-watch` | — | `#FFA726` | Watch alert color |
+| `--ec-weather-alert-advisory` | — | `#FFEE58` | Advisory alert color |
+| `--ec-weather-alert-statement` | `--secondary-text-color` | `rgba(255,255,255,0.6)` | Statement alert color |
+| `--ec-weather-alert-bg` | `--card-background-color` | `#0a1520` | Alert banner background |
+| `--ec-weather-divider` | `--divider-color` | `rgba(255,255,255,0.06)` | Divider line color |
+
+Backgrounds and overlays also adapt via `--primary-background-color`, `--ha-card-background`, and `--divider-color`.
 
 Example override via theme or card-mod:
 

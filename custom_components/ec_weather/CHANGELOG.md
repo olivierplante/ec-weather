@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.0
+
+**Light mode support** — The card now works with any Home Assistant theme out of the box. Text, icons, backgrounds, and overlays automatically adapt to your active theme (light or dark). No configuration needed.
+
+Previously, all colors were hardcoded for dark backgrounds, making the card unreadable on light themes. Now, the card reads HA's built-in theme variables (`--primary-text-color`, `--secondary-text-color`, etc.) and falls back to dark defaults only as a last resort.
+
+**New CSS variable** — `--ec-weather-alert-bg` lets you customize the alert banner background independently.
+
+**Theming improvements:**
+- Alert banner now has a visible background and border on all themes
+- Snow precipitation color adapts to theme instead of being hardcoded white
+- Overlay/popup backgrounds adapt to theme
+- All 11 CSS custom properties documented with their HA theme fallback chain
+
+No breaking changes. Existing dark theme setups and custom `--ec-weather-*` overrides continue to work unchanged.
+
 ## 1.6.4
 
 **Faster dashboard loading** — The weather panel now loads progressively. Current conditions and alerts appear in ~2 seconds. Hourly and daily forecasts fill in shortly after. Daily popup timeline icons load when you open the popup.
