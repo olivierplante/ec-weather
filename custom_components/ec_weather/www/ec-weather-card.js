@@ -136,9 +136,9 @@ function entityNum(hass, entityId) {
 }
 
 function precipColor(rain, snow, precipType) {
-  if (snow > 0) return 'rgba(255,255,255,0.85)';
+  if (snow > 0) return 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
   if (rain > 0) return 'var(--ec-weather-precip-rain, #4FC3F7)';
-  if (precipType === 'snow') return 'rgba(255,255,255,0.85)';
+  if (precipType === 'snow') return 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
   return 'var(--ec-weather-precip-rain, #4FC3F7)';
 }
 
@@ -171,10 +171,10 @@ class ECOverlay {
       <style>
         .ec-overlay { display: none; position: fixed; inset: 0; z-index: 999; align-items: center; justify-content: center; }
         .ec-overlay.open { display: flex; }
-        .ec-overlay-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.8); }
+        .ec-overlay-backdrop { position: absolute; inset: 0; background: var(--mdc-dialog-scrim-color, rgba(0,0,0,0.8)); }
         .ec-overlay-content {
           position: relative; z-index: 1;
-          background: #0a1520; border-radius: 12px;
+          background: var(--primary-background-color, #0a1520); border-radius: 12px;
           padding: 24px; max-width: 420px; width: 90vw;
           max-height: 85vh; overflow-y: auto;
           scrollbar-width: none; touch-action: pan-y;
@@ -183,10 +183,10 @@ class ECOverlay {
         .ec-overlay-content::-webkit-scrollbar { display: none; }
         .ec-overlay-close {
           position: absolute; top: 12px; right: 12px;
-          background: none; border: none; color: rgba(255,255,255,0.5);
+          background: none; border: none; color: var(--secondary-text-color, rgba(255,255,255,0.5));
           font-size: 20px; cursor: pointer; padding: 4px 8px; line-height: 1;
         }
-        .ec-overlay-close:hover { color: #fff; }
+        .ec-overlay-close:hover { color: var(--primary-text-color, #fff); }
         @media (max-width: 768px) {
           .ec-overlay-content {
             max-width: 100%; width: 100%; max-height: 100%; height: 100%;
@@ -401,14 +401,14 @@ class ECWeatherCard extends HTMLElement {
             .section-header {
               font-size: 12px;
               font-weight: 600;
-              color: var(--ec-weather-text-muted, rgba(255,255,255,0.4));
+              color: var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.4)));
               letter-spacing: 0.5px;
               margin-top: 24px;
             }
             .loading {
               padding: 16px;
               text-align: center;
-              color: rgba(255, 255, 255, 0.25);
+              color: var(--secondary-text-color, rgba(255, 255, 255, 0.25));
               font-size: 13px;
               font-family: var(--ha-card-font-family, 'Segoe UI', sans-serif);
             }
@@ -429,16 +429,16 @@ class ECWeatherCard extends HTMLElement {
       <style>
         :host { display: block; contain: inline-size; }
         .unavailable {
-          background: rgba(10, 21, 32, 0.7);
+          background: var(--ha-card-background, rgba(10, 21, 32, 0.7));
           border-radius: 12px;
           padding: 24px 16px;
           text-align: center;
-          color: rgba(255, 255, 255, 0.6);
+          color: var(--secondary-text-color, rgba(255, 255, 255, 0.6));
           font-family: var(--ha-card-font-family, 'Segoe UI', sans-serif);
         }
         .unavailable ha-icon {
           --mdc-icon-size: 32px;
-          color: rgba(255, 255, 255, 0.3);
+          color: var(--secondary-text-color, rgba(255, 255, 255, 0.3));
           margin-bottom: 8px;
           display: block;
         }
@@ -447,10 +447,10 @@ class ECWeatherCard extends HTMLElement {
           margin-bottom: 12px;
         }
         .retry-btn {
-          background: rgba(255, 255, 255, 0.1);
-          border: 1px solid rgba(255, 255, 255, 0.15);
+          background: var(--ha-card-background, rgba(255, 255, 255, 0.1));
+          border: 1px solid var(--divider-color, rgba(255, 255, 255, 0.15));
           border-radius: 8px;
-          color: rgba(255, 255, 255, 0.7);
+          color: var(--primary-text-color, rgba(255, 255, 255, 0.7));
           padding: 8px 16px;
           font-size: 13px;
           cursor: pointer;
@@ -458,7 +458,7 @@ class ECWeatherCard extends HTMLElement {
           font-family: inherit;
         }
         .retry-btn:hover {
-          background: rgba(255, 255, 255, 0.18);
+          opacity: 0.8;
         }
         .retry-btn ha-icon {
           --mdc-icon-size: 16px;
@@ -513,7 +513,7 @@ class ECWeatherCard extends HTMLElement {
       warning: 'var(--ec-weather-alert-warning, #EF5350)',
       watch: 'var(--ec-weather-alert-watch, #FFA726)',
       advisory: 'var(--ec-weather-alert-advisory, #FFEE58)',
-      statement: 'var(--ec-weather-alert-statement, rgba(255,255,255,0.6))',
+      statement: 'var(--ec-weather-alert-statement, var(--secondary-text-color, rgba(255,255,255,0.6)))',
     };
 
     const fmtExp = (iso) => {
@@ -554,7 +554,8 @@ class ECWeatherCard extends HTMLElement {
         :host { display: block; margin-bottom: 16px; }
         .alert-wrap {
           width: 100%;
-          background: #0a1520;
+          background: var(--ec-weather-alert-bg, var(--card-background-color, #0a1520));
+          border: 1px solid var(--ec-weather-divider, var(--divider-color, rgba(255,255,255,0.08)));
           border-radius: 8px;
           overflow: hidden;
           box-sizing: border-box;
@@ -571,19 +572,19 @@ class ECWeatherCard extends HTMLElement {
         }
         .alert-icon {
           --mdc-icon-size: 24px;
-          color: #FFF;
+          color: var(--primary-text-color, #FFF);
           flex-shrink: 0;
         }
         .alert-title {
           font-size: 14px;
           font-weight: 500;
-          color: #FFF;
+          color: var(--primary-text-color, #FFF);
         }
         .alert-detail {
           display: none;
           padding: 12px;
           font-size: 13px;
-          color: rgba(255,255,255,0.85);
+          color: var(--primary-text-color, rgba(255,255,255,0.85));
           white-space: pre-wrap;
           line-height: 1.4;
           text-align: left;
@@ -636,7 +637,7 @@ class ECWeatherCard extends HTMLElement {
         ? 'var(--ec-weather-alert-warning, #EF4444)'
         : aqhi >= 7
           ? 'var(--ec-weather-alert-watch, #F97316)'
-          : 'var(--ec-weather-text-secondary, rgba(255,255,255,0.6))';
+          : 'var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)))';
       aqhiHtml = `<div class="aqhi" style="color:${color}">Air Quality: ${Math.round(aqhi)} \u00b7 ${risk}</div>`;
     }
 
@@ -697,17 +698,17 @@ class ECWeatherCard extends HTMLElement {
         .t-val {
           font-size: 48px;
           font-weight: 700;
-          color: var(--ec-weather-text-primary, #FFFFFF);
+          color: var(--ec-weather-text-primary, var(--primary-text-color, #FFFFFF));
         }
         .t-fl {
           font-size: 14px;
           font-weight: 400;
-          color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6));
+          color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)));
         }
         .wind {
           font-size: 14px;
           font-weight: 400;
-          color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6));
+          color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)));
           margin-top: 4px;
           margin-bottom: 8px;
         }
@@ -723,20 +724,20 @@ class ECWeatherCard extends HTMLElement {
         }
         .condition ha-icon {
           --mdc-icon-size: 24px;
-          color: var(--ec-weather-text-primary, #FFFFFF);
+          color: var(--ec-weather-text-primary, var(--primary-text-color, #FFFFFF));
         }
         .condition-text {
           font-size: 14px;
-          color: var(--ec-weather-text-primary, #FFFFFF);
+          color: var(--ec-weather-text-primary, var(--primary-text-color, #FFFFFF));
         }
         .sun-times {
           font-size: 14px;
-          color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6));
+          color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)));
           margin-top: 12px;
         }
         .daylight {
           font-size: 12px;
-          color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6));
+          color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)));
           margin-top: 4px;
         }
       </style>
@@ -848,7 +849,7 @@ class ECWeatherCard extends HTMLElement {
         .section-header {
           font-size: 12px;
           font-weight: 600;
-          color: var(--ec-weather-text-muted, rgba(255,255,255,0.4));
+          color: var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.4)));
           letter-spacing: 0.5px;
           margin-top: 24px;
         }
@@ -871,29 +872,29 @@ class ECWeatherCard extends HTMLElement {
           justify-items: center;
           align-items: center;
           padding: 8px 0;
-          border-right: 1px solid var(--ec-weather-divider, rgba(255,255,255,0.06));
+          border-right: 1px solid var(--ec-weather-divider, var(--divider-color, rgba(255,255,255,0.06)));
         }
         .hourly-item:last-child { border-right: none; }
         .hourly-time {
           font-size: 12px;
           font-weight: 500;
-          color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6));
+          color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)));
         }
         .hourly-icon {
           --mdc-icon-size: 28px;
-          color: var(--ec-weather-text-primary, rgba(255,255,255,0.85));
+          color: var(--ec-weather-text-primary, var(--primary-text-color, rgba(255,255,255,0.85)));
         }
         .hourly-temp {
           font-size: 16px;
           font-weight: 700;
           line-height: 20px;
-          color: var(--ec-weather-text-primary, #FFFFFF);
+          color: var(--ec-weather-text-primary, var(--primary-text-color, #FFFFFF));
         }
         .hourly-feels {
           font-size: 12px;
           font-weight: 400;
           line-height: 16px;
-          color: var(--ec-weather-text-muted, rgba(255,255,255,0.45));
+          color: var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.45)));
         }
         .hourly-precip {
           font-size: 12px;
@@ -911,7 +912,7 @@ class ECWeatherCard extends HTMLElement {
           font-size: 12px;
           font-weight: 500;
           line-height: 16px;
-          color: var(--ec-weather-precip-snow, rgba(255,255,255,0.85));
+          color: var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)));
         }
         .hourly-day-sep {
           flex: 0 0 36px;
@@ -921,13 +922,13 @@ class ECWeatherCard extends HTMLElement {
           align-items: center;
           justify-content: center;
           padding: 8px 0;
-          border-right: 1px solid rgba(255,255,255,0.15);
-          border-left: 1px solid rgba(255,255,255,0.15);
+          border-right: 1px solid var(--divider-color, rgba(255,255,255,0.15));
+          border-left: 1px solid var(--divider-color, rgba(255,255,255,0.15));
         }
         .hourly-day-label {
           font-size: 11px;
           font-weight: 700;
-          color: rgba(255,255,255,0.5);
+          color: var(--secondary-text-color, rgba(255,255,255,0.5));
           letter-spacing: 0.5px;
           writing-mode: vertical-lr;
           text-orientation: mixed;
@@ -950,7 +951,7 @@ class ECWeatherCard extends HTMLElement {
     }
 
     const RAIN_COLOR = 'var(--ec-weather-precip-rain, #4FC3F7)';
-    const SNOW_COLOR = 'var(--ec-weather-precip-snow, rgba(255,255,255,0.85))';
+    const SNOW_COLOR = 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
     const dayAbbr = {
       Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed',
       Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun',
@@ -1017,24 +1018,24 @@ class ECWeatherCard extends HTMLElement {
       const dPrecipCol = colPrecipColor(item.rain_amt_mm_day, item.snow_amt_cm_day, item.precip_type);
       const nPrecipCol = colPrecipColor(item.rain_amt_mm_night, item.snow_amt_cm_night, item.precip_type);
 
-      const muted = 'color:rgba(255,255,255,0.35)';
+      const muted = 'color:var(--secondary-text-color, rgba(255,255,255,0.35))';
       const dash = '<span style="' + muted + '">\u2014</span>';
-      const mutedSm = 'font-size:13px;color:rgba(255,255,255,0.45)';
-      const icoSm = '--mdc-icon-size:14px;vertical-align:middle;margin-right:3px;color:rgba(255,255,255,0.4)';
+      const mutedSm = 'font-size:13px;color:var(--secondary-text-color, rgba(255,255,255,0.45))';
+      const icoSm = '--mdc-icon-size:14px;vertical-align:middle;margin-right:3px;color:var(--secondary-text-color, rgba(255,255,255,0.4))';
 
       const popupCol = (label, iconStr, temp, showFl, flVal, pop, rain, snow, pColor,
                         windStr, humidity, accumAmt, accumUnit, accumName, uvIdx, uvCat) => {
         let c = '<div style="text-align:center">';
-        c += '<div style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">' + label + '</div>';
+        c += '<div style="font-size:13px;font-weight:600;color:var(--secondary-text-color, rgba(255,255,255,0.35));text-transform:uppercase;letter-spacing:0.5px;margin-bottom:10px">' + label + '</div>';
         if (iconStr) {
-          c += '<ha-icon icon="' + iconStr + '" style="--mdc-icon-size:32px;color:rgba(255,255,255,0.85)"></ha-icon>';
+          c += '<ha-icon icon="' + iconStr + '" style="--mdc-icon-size:32px;color:var(--primary-text-color, rgba(255,255,255,0.85))"></ha-icon>';
         } else {
           c += '<div style="height:32px;display:flex;align-items:center;justify-content:center">' + dash + '</div>';
         }
-        c += '<div style="font-size:24px;font-weight:700;color:#fff;margin-top:8px;margin-bottom:2px">' + temp + '</div>';
+        c += '<div style="font-size:24px;font-weight:700;color:var(--primary-text-color, #fff);margin-top:8px;margin-bottom:2px">' + temp + '</div>';
         const flVis = showFl ? '' : 'visibility:hidden;';
         const flTxt = showFl ? 'FL ' + flVal + '\u00b0' : '\u00a0';
-        c += '<div style="font-size:13px;font-weight:400;color:rgba(255,255,255,0.45);min-height:18px;' + flVis + '">' + flTxt + '</div>';
+        c += '<div style="font-size:13px;font-weight:400;color:var(--secondary-text-color, rgba(255,255,255,0.45));min-height:18px;' + flVis + '">' + flTxt + '</div>';
         if (windStr) c += '<div style="' + mutedSm + ';margin-top:8px"><ha-icon icon="mdi:weather-windy" style="' + icoSm + '"></ha-icon>' + windStr + '</div>';
         if (humidity != null) c += '<div style="' + mutedSm + ';margin-top:4px"><ha-icon icon="mdi:water-percent" style="' + icoSm + '"></ha-icon>' + humidity + '%</div>';
         if (uvIdx != null) c += '<div style="' + mutedSm + ';margin-top:4px"><ha-icon icon="mdi:weather-sunny-alert" style="' + icoSm + '"></ha-icon>UV ' + uvIdx + (uvCat ? ' (' + uvCat + ')' : '') + '</div>';
@@ -1093,8 +1094,8 @@ class ECWeatherCard extends HTMLElement {
         if (tlAnyRain) tlGridRows += ' 16px';
         if (tlAnySnow) tlGridRows += ' 16px';
 
-        timelineHtml += '<div style="margin-top:16px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px">';
-        timelineHtml += '<div style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.35);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Timeline</div>';
+        timelineHtml += '<div style="margin-top:16px;border-top:1px solid var(--divider-color, rgba(255,255,255,0.08));padding-top:12px">';
+        timelineHtml += '<div style="font-size:13px;font-weight:600;color:var(--secondary-text-color, rgba(255,255,255,0.35));text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Timeline</div>';
         timelineHtml += '<div style="display:flex;overflow-x:auto;gap:0;scrollbar-width:none;-webkit-overflow-scrolling:touch">';
         allTimesteps.forEach(ts => {
           const tsIcon = ts.icon_code != null ? ecIcon(ts.icon_code) : null;
@@ -1108,19 +1109,19 @@ class ECWeatherCard extends HTMLElement {
           const tsSnow = ts.snow_cm || 0;
 
           timelineHtml += '<div style="min-width:54px;flex:0 0 54px;display:grid;justify-items:center;align-items:center;padding:8px 0;'
-            + 'grid-template-rows:' + tlGridRows + ';border-right:1px solid rgba(255,255,255,0.06)">';
-          timelineHtml += '<div style="font-size:12px;font-weight:500;color:rgba(255,255,255,0.5)">' + localFmtTime(ts.time) + '</div>';
+            + 'grid-template-rows:' + tlGridRows + ';border-right:1px solid var(--divider-color, rgba(255,255,255,0.06))">';
+          timelineHtml += '<div style="font-size:12px;font-weight:500;color:var(--secondary-text-color, rgba(255,255,255,0.5))">' + localFmtTime(ts.time) + '</div>';
           if (tsIcon) {
-            timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:28px;color:rgba(255,255,255,0.85)"></ha-icon>';
+            timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:28px;color:var(--primary-text-color, rgba(255,255,255,0.85))"></ha-icon>';
           } else if (ts.sky_state == null && (ts.rain_mm || 0) === 0 && (ts.snow_cm || 0) === 0) {
             // No icon, no sky_state, no precip — SkyState not yet fetched (loading)
             timelineHtml += '<div style="height:28px;display:flex;align-items:center;justify-content:center">'
-              + '<div style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.15)"></div></div>';
+              + '<div style="width:8px;height:8px;border-radius:50%;background:var(--divider-color, rgba(255,255,255,0.15))"></div></div>';
           } else {
             timelineHtml += '<div style="height:28px"></div>';
           }
-          timelineHtml += '<div style="font-size:16px;font-weight:700;color:#fff">' + tsTempStr + '</div>';
-          if (tlAnyFeels) timelineHtml += '<div style="font-size:12px;font-weight:400;color:rgba(255,255,255,0.45);'
+          timelineHtml += '<div style="font-size:16px;font-weight:700;color:var(--primary-text-color, #fff)">' + tsTempStr + '</div>';
+          if (tlAnyFeels) timelineHtml += '<div style="font-size:12px;font-weight:400;color:var(--secondary-text-color, rgba(255,255,255,0.45));'
             + (showFeels ? '' : 'visibility:hidden') + '">FL ' + (showFeels ? tsFeels + '\u00b0' : '0') + '</div>';
           if (tlAnyPop) timelineHtml += '<div style="font-size:12px;font-weight:600;color:' + tsPopColor + ';'
             + (tsPop >= 5 ? '' : 'visibility:hidden') + '">' + (tsPop >= 5 ? tsPop + '%' : '0') + '</div>';
@@ -1134,9 +1135,9 @@ class ECWeatherCard extends HTMLElement {
       }
 
       let popupHtml = '<div style="text-align:center;margin-bottom:4px">';
-      popupHtml += '<div style="font-size:18px;font-weight:700;color:#fff;margin-bottom:8px">' + fullName + '</div>';
-      if (textSummary) popupHtml += '<div style="font-size:13px;font-weight:400;color:rgba(255,255,255,0.45);line-height:1.4;max-width:380px;margin:0 auto 12px">' + textSummary + '</div>';
-      else if (condText) popupHtml += '<div style="font-size:13px;font-weight:400;color:rgba(255,255,255,0.5);margin-bottom:12px">' + condText + '</div>';
+      popupHtml += '<div style="font-size:18px;font-weight:700;color:var(--primary-text-color, #fff);margin-bottom:8px">' + fullName + '</div>';
+      if (textSummary) popupHtml += '<div style="font-size:13px;font-weight:400;color:var(--secondary-text-color, rgba(255,255,255,0.45));line-height:1.4;max-width:380px;margin:0 auto 12px">' + textSummary + '</div>';
+      else if (condText) popupHtml += '<div style="font-size:13px;font-weight:400;color:var(--secondary-text-color, rgba(255,255,255,0.5));margin-bottom:12px">' + condText + '</div>';
       popupHtml += '</div>';
       popupHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:380px;margin:0 auto">';
       popupHtml += dayCol + nightCol + '</div>' + timelineHtml;
@@ -1199,14 +1200,14 @@ class ECWeatherCard extends HTMLElement {
 
       columnsHtml += '<div class="d-temp-row">';
       if (isNightOnly) {
-        columnsHtml += '<span class="d-temp-lo" style="color:#fff">' + Math.round(low) + '\u00b0</span>';
+        columnsHtml += '<span class="d-temp-lo" >' + Math.round(low) + '\u00b0</span>';
       } else if (high !== null && low !== null) {
         columnsHtml += '<span class="d-temp-hi">' + Math.round(high) + '\u00b0</span>';
         columnsHtml += '<span class="d-temp-lo">' + Math.round(low) + '\u00b0</span>';
       } else if (high !== null) {
         columnsHtml += '<span class="d-temp-hi">' + Math.round(high) + '\u00b0</span>';
       } else if (low !== null) {
-        columnsHtml += '<span class="d-temp-lo" style="color:#fff">' + Math.round(low) + '\u00b0</span>';
+        columnsHtml += '<span class="d-temp-lo" >' + Math.round(low) + '\u00b0</span>';
       }
       columnsHtml += '</div>';
 
@@ -1241,7 +1242,7 @@ class ECWeatherCard extends HTMLElement {
         }
         .section-header {
           font-size: 12px; font-weight: 600;
-          color: var(--ec-weather-text-muted, rgba(255,255,255,0.4));
+          color: var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.4)));
           letter-spacing: 0.5px; margin-top: 24px;
         }
         .daily-scroll {
@@ -1256,20 +1257,20 @@ class ECWeatherCard extends HTMLElement {
           display: flex; flex-direction: column; align-items: center;
           padding: 12px 0; cursor: pointer;
           transition: background 120ms ease;
-          border-right: 1px solid var(--ec-weather-divider, rgba(255,255,255,0.06));
+          border-right: 1px solid var(--ec-weather-divider, var(--divider-color, rgba(255,255,255,0.06)));
         }
         .daily-col:last-child { border-right: none; }
-        .daily-col:active { background: rgba(255,255,255,0.06); }
-        @media (hover: hover) { .daily-col:hover { background: rgba(255,255,255,0.04); } }
-        .d-label { font-size: 13px; font-weight: 500; color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6)); margin-bottom: 10px; text-align: center; }
+        .daily-col:active { background: var(--ha-card-background, rgba(255,255,255,0.06)); }
+        @media (hover: hover) { .daily-col:hover { background: var(--ha-card-background, rgba(255,255,255,0.04)); } }
+        .d-label { font-size: 13px; font-weight: 500; color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6))); margin-bottom: 10px; text-align: center; }
         .d-icon-row { display: flex; align-items: center; justify-content: center; gap: 4px; margin-bottom: 10px; }
-        .d-icon-day { --mdc-icon-size: 28px; color: var(--ec-weather-text-primary, rgba(255,255,255,0.85)); }
-        .d-icon-night { --mdc-icon-size: 14px; color: rgba(255,255,255,0.55); }
-        .d-icon-sep { font-size: 10px; color: rgba(255,255,255,0.2); line-height: 1; }
+        .d-icon-day { --mdc-icon-size: 28px; color: var(--ec-weather-text-primary, var(--primary-text-color, rgba(255,255,255,0.85))); }
+        .d-icon-night { --mdc-icon-size: 14px; color: var(--secondary-text-color, rgba(255,255,255,0.55)); }
+        .d-icon-sep { font-size: 10px; color: var(--secondary-text-color, rgba(255,255,255,0.2)); line-height: 1; }
         .d-temp-row { display: flex; justify-content: center; gap: 10px; font-size: 18px; font-weight: 700; margin-bottom: 2px; white-space: nowrap; }
-        .d-temp-hi { color: var(--ec-weather-text-primary, #FFFFFF); }
-        .d-temp-lo { color: var(--ec-weather-text-secondary, rgba(255,255,255,0.6)); }
-        .d-fl { font-size: 12px; font-weight: 400; color: var(--ec-weather-text-muted, rgba(255,255,255,0.45)); min-height: 16px; text-align: center; }
+        .d-temp-hi { color: var(--ec-weather-text-primary, var(--primary-text-color, #FFFFFF)); }
+        .d-temp-lo { color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6))); }
+        .d-fl { font-size: 12px; font-weight: 400; color: var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.45))); min-height: 16px; text-align: center; }
         .d-pop { font-size: 13px; font-weight: 600; margin-top: 8px; text-align: center; }
         .d-amt { font-size: 13px; font-weight: 500; margin-top: 2px; text-align: center; }
 
