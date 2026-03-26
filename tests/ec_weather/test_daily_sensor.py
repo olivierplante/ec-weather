@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from freezegun import freeze_time
+
 from ec_weather.transforms import (
-    _apply_icon_fallback,
-    _merge_weong_into_daily,
+    apply_icon_fallback,
+    filter_past_hours,
+    merge_weong_into_daily,
 )
 
 
@@ -45,8 +48,8 @@ def _weong_period(
     """Build a minimal WEonG period item."""
     return {
         "pop": pop,
-        "rain_amt_mm": rain,
-        "snow_amt_cm": snow,
+        "rain_mm": rain,
+        "snow_cm": snow,
         "timesteps": timesteps or [],
     }
 
@@ -63,15 +66,15 @@ class TestMergeWeongIntoDailyNoWeong:
             _daily_item("Tuesday", "2026-03-24"),
         ]
 
-        result = _merge_weong_into_daily(daily, {})
+        result = merge_weong_into_daily(daily, {})
 
         assert len(result) == 2
         for item in result:
             assert item["precip_prob_day"] is None
             assert item["precip_prob_night"] is None
             assert item["precip_prob"] is None
-            assert item["rain_amt_mm_day"] is None
-            assert item["snow_amt_cm_day"] is None
+            assert item["rain_mm_day"] is None
+            assert item["snow_cm_day"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -91,16 +94,16 @@ class TestMergeWeongIntoDailyEnriched:
             ),
         }
 
-        result = _merge_weong_into_daily(daily, weong_periods)
+        result = merge_weong_into_daily(daily, weong_periods)
 
         assert len(result) == 1
         item = result[0]
         assert item["precip_prob_day"] == 65
-        assert item["rain_amt_mm_day"] == 3.2
-        assert item["snow_amt_cm_day"] is None
+        assert item["rain_mm_day"] == 3.2
+        assert item["snow_cm_day"] is None
         assert item["precip_prob_night"] == 40
-        assert item["rain_amt_mm_night"] == 1.0
-        assert item["snow_amt_cm_night"] == 0.5
+        assert item["rain_mm_night"] == 1.0
+        assert item["snow_cm_night"] == 0.5
 
     def test_combined_precip_prob_is_max(self):
         """Given day POP=30, night POP=60 → combined = 60 (max)."""
@@ -110,7 +113,7 @@ class TestMergeWeongIntoDailyEnriched:
             ("2026-03-23", "night"): _weong_period(pop=60),
         }
 
-        result = _merge_weong_into_daily(daily, weong_periods)
+        result = merge_weong_into_daily(daily, weong_periods)
 
         assert result[0]["precip_prob"] == 60
 
@@ -125,10 +128,11 @@ class TestMergeWeongTimesteps:
         daily = [_daily_item("Monday", "2026-03-23")]
         timestep = {
             "time": "2026-03-23T14:00:00Z",
-            "temp_c": -4,
+            "temp": -4,
             "rain_mm": 0,
             "snow_cm": 0,
             "sky_state": 5,
+            "precipitation_probability": None,
             "icon_code": None,
             "condition": None,
         }
@@ -140,7 +144,7 @@ class TestMergeWeongTimesteps:
         }
         ec_hourly = [
             {
-                "datetime": "2026-03-23T14:00:00Z",
+                "time": "2026-03-23T14:00:00Z",
                 "temp": -5.0,
                 "feels_like": -10.0,
                 "icon_code": 3,
@@ -151,7 +155,7 @@ class TestMergeWeongTimesteps:
             },
         ]
 
-        result = _merge_weong_into_daily(
+        result = merge_weong_into_daily(
             daily, weong_periods, hourly_forecast=ec_hourly,
         )
 
@@ -159,7 +163,7 @@ class TestMergeWeongTimesteps:
         assert len(ts_day) == 1
         enriched_ts = ts_day[0]
         # EC hourly temp preferred over WEonG temp
-        assert enriched_ts["temp_c"] == -5.0
+        assert enriched_ts["temp"] == -5.0
         assert enriched_ts["feels_like"] == -10.0
         assert enriched_ts["icon_code"] == 3
         assert enriched_ts["condition"] == "Mostly cloudy"
@@ -171,7 +175,7 @@ class TestMergeWeongTimesteps:
         daily = [_daily_item("Monday", "2026-03-23")]
         timestep = {
             "time": "2026-03-23T14:00:00Z",
-            "temp_c": -3,
+            "temp": -3,
             "rain_mm": 0,
             "snow_cm": 0,
             "sky_state": 2,
@@ -188,7 +192,7 @@ class TestMergeWeongTimesteps:
         }
 
         # No EC hourly data → icon must be derived
-        result = _merge_weong_into_daily(daily, weong_periods, hourly_forecast=[])
+        result = merge_weong_into_daily(daily, weong_periods, hourly_forecast=[])
 
         ts_day = result[0]["timesteps_day"]
         assert len(ts_day) == 1
@@ -211,7 +215,7 @@ class TestMergeWeongEdgeCases:
             ("2026-03-25", "night"): _weong_period(pop=70),
         }
 
-        result = _merge_weong_into_daily(daily, weong_periods)
+        result = merge_weong_into_daily(daily, weong_periods)
 
         assert len(result) == 1
         # No WEonG match for 2026-03-23 → all precip fields None
@@ -232,14 +236,135 @@ class TestMergeWeongEdgeCases:
             ("2026-03-22", "night"): _weong_period(pop=25, rain=0.5),
         }
 
-        result = _merge_weong_into_daily(daily, weong_periods)
+        result = merge_weong_into_daily(daily, weong_periods)
 
         assert len(result) == 1
         item = result[0]
         # Day fields should be None (night-only period)
         assert item["precip_prob_day"] is None
-        assert item["rain_amt_mm_day"] is None
+        assert item["rain_mm_day"] is None
         # Night fields populated
         assert item["precip_prob_night"] == 25
-        assert item["rain_amt_mm_night"] == 0.5
+        assert item["rain_mm_night"] == 0.5
         assert item["precip_prob"] == 25
+
+
+# ---------------------------------------------------------------------------
+# icons_complete
+# ---------------------------------------------------------------------------
+
+class TestIconsComplete:
+    def test_all_icons_resolved(self):
+        """Given all timesteps have icon_code → icons_complete is True."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        timestep = {
+            "time": "2026-03-23T14:00:00Z",
+            "temp": -3,
+            "rain_mm": 1.0,
+            "snow_cm": 0,
+            "sky_state": None,
+            "icon_code": 12,
+            "condition": "Rain",
+        }
+        weong_periods = {
+            ("2026-03-23", "day"): _weong_period(pop=50, timesteps=[timestep]),
+            ("2026-03-23", "night"): _weong_period(pop=20),
+        }
+
+        result = merge_weong_into_daily(daily, weong_periods)
+
+        assert result[0]["icons_complete"] is True
+
+    def test_some_icons_missing(self):
+        """Given a timestep with icon_code=None → icons_complete is False."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        ts_with_icon = {
+            "time": "2026-03-23T14:00:00Z",
+            "temp": -3,
+            "rain_mm": 1.0,
+            "snow_cm": 0,
+            "sky_state": None,
+            "icon_code": 12,
+            "condition": "Rain",
+        }
+        ts_without_icon = {
+            "time": "2026-03-23T15:00:00Z",
+            "temp": -2,
+            "rain_mm": 0,
+            "snow_cm": 0,
+            "sky_state": None,
+            "icon_code": None,
+            "condition": None,
+        }
+        weong_periods = {
+            ("2026-03-23", "day"): _weong_period(
+                pop=50, timesteps=[ts_with_icon, ts_without_icon],
+            ),
+            ("2026-03-23", "night"): _weong_period(pop=20),
+        }
+
+        result = merge_weong_into_daily(daily, weong_periods)
+
+        assert result[0]["icons_complete"] is False
+
+    def test_no_timesteps(self):
+        """Given no timesteps → icons_complete is True (nothing to resolve)."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        weong_periods = {
+            ("2026-03-23", "day"): _weong_period(pop=50),
+            ("2026-03-23", "night"): _weong_period(pop=20),
+        }
+
+        result = merge_weong_into_daily(daily, weong_periods)
+
+        assert result[0]["icons_complete"] is True
+
+
+# ---------------------------------------------------------------------------
+# _filter_past_hours on daily timesteps
+# ---------------------------------------------------------------------------
+
+class TestFilterPastHoursOnTimesteps:
+    @freeze_time("2026-03-23T15:30:00Z")
+    def test_past_timesteps_filtered(self):
+        """Given frozen time at 15:30 → timesteps before 15:00 removed."""
+        timesteps = [
+            {"time": "2026-03-23T13:00:00Z", "temp": -5},
+            {"time": "2026-03-23T14:00:00Z", "temp": -4},
+            {"time": "2026-03-23T15:00:00Z", "temp": -3},
+            {"time": "2026-03-23T16:00:00Z", "temp": -2},
+        ]
+
+        result = filter_past_hours(timesteps)
+
+        assert len(result) == 2
+        assert result[0]["time"] == "2026-03-23T15:00:00Z"
+        assert result[1]["time"] == "2026-03-23T16:00:00Z"
+
+    @freeze_time("2026-03-23T15:30:00Z")
+    def test_current_hour_kept(self):
+        """Given timestep at current hour (15:00) → kept in result."""
+        timesteps = [
+            {"time": "2026-03-23T15:00:00Z", "temp": -3},
+        ]
+
+        result = filter_past_hours(timesteps)
+
+        assert len(result) == 1
+        assert result[0]["time"] == "2026-03-23T15:00:00Z"
+
+    @freeze_time("2026-03-23T23:30:00Z")
+    def test_night_timesteps_filtered(self):
+        """Given frozen time at 23:30 → night timesteps before 23:00 removed."""
+        timesteps = [
+            {"time": "2026-03-23T21:00:00Z", "temp": -8},
+            {"time": "2026-03-23T22:00:00Z", "temp": -9},
+            {"time": "2026-03-23T23:00:00Z", "temp": -10},
+            {"time": "2026-03-24T00:00:00Z", "temp": -11},
+        ]
+
+        result = filter_past_hours(timesteps)
+
+        assert len(result) == 2
+        assert result[0]["time"] == "2026-03-23T23:00:00Z"
+        assert result[1]["time"] == "2026-03-24T00:00:00Z"

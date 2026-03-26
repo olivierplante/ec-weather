@@ -16,13 +16,16 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfSpeed, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_CITY_CODE, COORDINATOR_ALERTS, COORDINATOR_AQHI, COORDINATOR_WEATHER, COORDINATOR_WEONG, DOMAIN, GAUGE_TEMP_MAX, GAUGE_TEMP_MIN
-from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator
-from .transforms import _build_unified_hourly, _filter_past_hours, _merge_weong_into_daily
-from .weong import ECWEonGCoordinator
+from .const import CONF_CITY_CODE, CONF_CITY_NAME, CONF_LANGUAGE, DOMAIN, GAUGE_TEMP_MAX, GAUGE_TEMP_MIN
+from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator, ECWEonGCoordinator, WEonGListenerMixin
+from .models import ECWeatherData, build_device_info
+from .transforms import build_unified_hourly, filter_past_hours, merge_weong_into_daily
+
+from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +102,7 @@ CURRENT_SENSOR_DESCRIPTIONS: tuple[ECCurrentSensorDescription, ...] = (
         key="ec_icon_code",
         name="EC Icon Code",
         data_key="icon_code",
+        entity_category=EntityCategory.DIAGNOSTIC,
     ),
     ECCurrentSensorDescription(
         key="ec_sunrise",
@@ -166,6 +170,8 @@ class ECGaugeSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
     Attributes: value, low, high (pre-formatted temperature strings).
     """
 
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     entity_description: ECGaugeSensorDescription
 
     def __init__(
@@ -173,10 +179,12 @@ class ECGaugeSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
         coordinator: ECWeatherCoordinator,
         description: ECGaugeSensorDescription,
         city_code: str,
+        city_name: str,
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{description.key}_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
     def native_value(self) -> float | None:
@@ -195,9 +203,9 @@ class ECGaugeSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
             return {}
         current = self.coordinator.data.get("current") or {}
         daily = self.coordinator.data.get("daily") or []
-        desc = self.entity_description
-        current_temp = current.get(desc.current_key)
-        high, low = _resolve_today_range(daily, desc.high_key, desc.low_key)
+        description = self.entity_description
+        current_temp = current.get(description.current_key)
+        high, low = _resolve_today_range(daily, description.high_key, description.low_key)
         return {
             "value": _format_temp_label(current_temp),
             "low": _format_temp_label(low),
@@ -208,6 +216,7 @@ class ECGaugeSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
 class ECCurrentSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
     """Scalar sensor reading a single value from ECWeatherCoordinator."""
 
+    _attr_has_entity_name = True
     entity_description: ECCurrentSensorDescription
 
     def __init__(
@@ -215,10 +224,12 @@ class ECCurrentSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
         coordinator: ECWeatherCoordinator,
         description: ECCurrentSensorDescription,
         city_code: str,
+        city_name: str,
     ) -> None:
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{description.key}_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
     def native_value(self) -> Any:
@@ -230,41 +241,7 @@ class ECCurrentSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
         return current.get(self.entity_description.data_key)
 
 
-class ECForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
-    """Sensor exposing a forecast array as an attribute.
-
-    State: ISO timestamp of the last successful coordinator update.
-    Attribute 'forecast': list of hourly or daily forecast dicts.
-    """
-
-    def __init__(
-        self,
-        coordinator: ECWeatherCoordinator,
-        unique_id: str,
-        name: str,
-        data_key: str,
-        city_code: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{unique_id}_{city_code}"
-        self._attr_name = name
-        self._data_key = data_key
-
-    @property
-    def native_value(self) -> str | None:
-        """Return the last update timestamp as the sensor state."""
-        if not self.coordinator.data:
-            return None
-        return self.coordinator.data.get("updated")
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        if not self.coordinator.data:
-            return {"forecast": []}
-        return {"forecast": self.coordinator.data.get(self._data_key) or []}
-
-
-class ECHourlyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
+class ECHourlyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
     """Hourly forecast sensor merging EC hourly + WEonG data into a unified 48h list.
 
     Listens to both ECWeatherCoordinator (for EC hourly forecast, ~24h) and
@@ -272,6 +249,8 @@ class ECHourlyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
     hourly list with EC data preferred where available.
     """
 
+    _attr_has_entity_name = True
+    _attr_name = "Hourly Forecast"
     _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(
@@ -279,29 +258,19 @@ class ECHourlyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
         weather_coordinator: ECWeatherCoordinator,
         weong_coordinator: ECWEonGCoordinator,
         city_code: str,
+        city_name: str,
+        language: str = "en",
     ) -> None:
         super().__init__(weather_coordinator)
         self._attr_unique_id = f"ec_hourly_forecast_{city_code}"
-        self._attr_name = "EC Hourly Forecast"
         self._weong_coordinator = weong_coordinator
+        self._attr_device_info = build_device_info(city_code, city_name)
+        self._language = language
 
     @property
     def available(self) -> bool:
         """Available when weather coordinator has data."""
         return self.coordinator.last_update_success
-
-    async def async_added_to_hass(self) -> None:
-        """Register listener for the WEonG coordinator too."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._weong_coordinator.async_add_listener(
-                self._handle_coordinator_update
-            )
-        )
-
-    def _handle_coordinator_update(self) -> None:
-        """Trigger a state update when WEonG data changes."""
-        self.async_write_ha_state()
 
     @property
     def native_value(self) -> str | None:
@@ -324,17 +293,19 @@ class ECHourlyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
             result = []
             for item in ec_hourly:
                 enriched = dict(item)
-                enriched["rain_amt_mm"] = None
-                enriched["snow_amt_cm"] = None
+                enriched["rain_mm"] = None
+                enriched["snow_cm"] = None
                 result.append(enriched)
-            return {"forecast": _filter_past_hours(result)}
+            return {"forecast": filter_past_hours(result)}
 
-        return {"forecast": _filter_past_hours(
-            _build_unified_hourly(ec_hourly, weong_hourly)
-        )}
+        unified = filter_past_hours(
+            build_unified_hourly(ec_hourly, weong_hourly, lang=self._language)
+        )
+
+        return {"forecast": unified}
 
 
-class ECDailyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
+class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
     """Daily forecast sensor that merges WEonG POP data into the forecast.
 
     Listens to both ECWeatherCoordinator (for the daily periods) and
@@ -342,6 +313,8 @@ class ECDailyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntit
     them by matching (date, day/night) keys.
     """
 
+    _attr_has_entity_name = True
+    _attr_name = "Daily Forecast"
     _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(
@@ -349,29 +322,19 @@ class ECDailyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntit
         weather_coordinator: ECWeatherCoordinator,
         weong_coordinator: ECWEonGCoordinator,
         city_code: str,
+        city_name: str,
+        language: str = "en",
     ) -> None:
         super().__init__(weather_coordinator)
         self._attr_unique_id = f"ec_daily_forecast_{city_code}"
-        self._attr_name = "EC Daily Forecast"
         self._weong_coordinator = weong_coordinator
+        self._attr_device_info = build_device_info(city_code, city_name)
+        self._language = language
 
     @property
     def available(self) -> bool:
         """Available when weather coordinator has data."""
         return self.coordinator.last_update_success
-
-    async def async_added_to_hass(self) -> None:
-        """Register listener for the WEonG coordinator too."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self._weong_coordinator.async_add_listener(
-                self._handle_coordinator_update
-            )
-        )
-
-    def _handle_coordinator_update(self) -> None:
-        """Trigger a state update when WEonG data changes."""
-        self.async_write_ha_state()
 
     @property
     def native_value(self) -> str | None:
@@ -390,14 +353,31 @@ class ECDailyForecastSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntit
         if self._weong_coordinator.data:
             weong_periods = self._weong_coordinator.data.get("periods") or {}
 
-        if not weong_periods:
-            return {"forecast": daily}
-
         try:
-            return {"forecast": _merge_weong_into_daily(daily, weong_periods, hourly)}
+            merged = merge_weong_into_daily(daily, weong_periods, hourly, lang=self._language)
         except (KeyError, TypeError, ValueError):
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")
             return {"forecast": daily}
+
+        # Filter past hours from today's timesteps
+        now_local = dt_util.now()
+        today_str = now_local.date().isoformat()
+        for period in merged:
+            if period.get("date") == today_str:
+                period["timesteps_day"] = filter_past_hours(
+                    period.get("timesteps_day") or []
+                )
+                period["timesteps_night"] = filter_past_hours(
+                    period.get("timesteps_night") or []
+                )
+
+        # Drop leading night-only period ("Tonight") after 6 AM local.
+        # EC keeps it in the forecast until the next morning update, but
+        # it's stale once the night has passed.
+        if merged and merged[0].get("temp_high") is None and now_local.hour >= 6:
+            merged = merged[1:]
+
+        return {"forecast": merged}
 
 
 class ECAQHISensor(CoordinatorEntity[ECAQHICoordinator], SensorEntity):
@@ -407,12 +387,14 @@ class ECAQHISensor(CoordinatorEntity[ECAQHICoordinator], SensorEntity):
     Attributes: risk_level, observation_time.
     """
 
-    _attr_name = "EC Air Quality"
+    _attr_has_entity_name = True
+    _attr_name = "Air Quality"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator: ECAQHICoordinator, city_code: str) -> None:
+    def __init__(self, coordinator: ECAQHICoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_aqhi_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
     def native_value(self) -> int | None:
@@ -435,14 +417,23 @@ class ECWeatherSummarySensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
 
     State: formatted string e.g. "-8° · Feels -11° · Mostly Cloudy"
     The "Feels X°" segment is omitted when feels-like equals actual temp.
-    The "Next hour: Xcm" segment is omitted when no precip amount is available.
     """
 
-    _attr_name = "EC Weather Summary"
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_name = "Weather Summary"
 
-    def __init__(self, coordinator: ECWeatherCoordinator, city_code: str) -> None:
+    def __init__(
+        self,
+        coordinator: ECWeatherCoordinator,
+        city_code: str,
+        city_name: str,
+        language: str = "en",
+    ) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_weather_summary_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
+        self._language = language
 
     @property
     def native_value(self) -> str | None:
@@ -450,7 +441,6 @@ class ECWeatherSummarySensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
             return None
 
         current = self.coordinator.data.get("current") or {}
-        hourly = self.coordinator.data.get("hourly") or []
 
         temp = current.get("temp")
         feels_like = current.get("feels_like")
@@ -463,18 +453,11 @@ class ECWeatherSummarySensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
 
         # Include feels-like only when it meaningfully differs from actual temp
         if feels_like is not None and round(feels_like) != round(temp):
-            parts.append(f"Feels {int(round(feels_like))}°")
+            feels_label = "Ressenti" if self._language == "fr" else "Feels"
+            parts.append(f"{feels_label} {int(round(feels_like))}°")
 
         if condition:
             parts.append(str(condition).title())
-
-        # Next-hour precip amount — omit when null or zero (EC hourly API rarely provides this)
-        if hourly:
-            next_hour = hourly[0]
-            precip_amount = next_hour.get("precip_amount")
-            precip_unit = next_hour.get("precip_unit")
-            if precip_amount is not None and float(precip_amount) > 0 and precip_unit:
-                parts.append(f"Next hour: {precip_amount}{precip_unit}")
 
         return " · ".join(parts)
 
@@ -482,11 +465,14 @@ class ECWeatherSummarySensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
 class ECAlertCountSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
     """Sensor reporting the number of active weather alerts."""
 
-    _attr_name = "EC Alert Count"
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_name = "Alert Count"
 
-    def __init__(self, coordinator: ECAlertCoordinator, city_code: str) -> None:
+    def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_alert_count_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
     def native_value(self) -> int:
@@ -503,12 +489,14 @@ class ECAlertsSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
     Attribute 'alerts': list of alert dicts (headline, type, expires, text).
     """
 
+    _attr_has_entity_name = True
+    _attr_name = "Alerts"
     _unrecorded_attributes = frozenset({MATCH_ALL})
-    _attr_name = "EC Alerts"
 
-    def __init__(self, coordinator: ECAlertCoordinator, city_code: str) -> None:
+    def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_alerts_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
     def native_value(self) -> str | None:
@@ -529,30 +517,29 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up EC Weather sensor entities from a config entry."""
-    entry_data = hass.data[DOMAIN][entry.entry_id]
-    weather_coordinator: ECWeatherCoordinator = entry_data[COORDINATOR_WEATHER]
-    alert_coordinator: ECAlertCoordinator = entry_data[COORDINATOR_ALERTS]
-    aqhi_coordinator: ECAQHICoordinator = entry_data[COORDINATOR_AQHI]
-    weong_coordinator: ECWEonGCoordinator = entry_data[COORDINATOR_WEONG]
+    data: ECWeatherData = hass.data[DOMAIN][entry.entry_id]
     city_code = entry.data[CONF_CITY_CODE]
+    city_name = entry.data.get(CONF_CITY_NAME, city_code)
+    language = entry.data.get(CONF_LANGUAGE, "en")
 
     entities: list = [
-        ECCurrentSensor(weather_coordinator, description, city_code)
+        ECCurrentSensor(data.weather, description, city_code, city_name)
         for description in CURRENT_SENSOR_DESCRIPTIONS
     ]
     entities.append(
-        ECHourlyForecastSensor(weather_coordinator, weong_coordinator, city_code)
+        ECHourlyForecastSensor(data.weather, data.weong, city_code, city_name, language)
     )
     entities.append(
-        ECDailyForecastSensor(weather_coordinator, weong_coordinator, city_code)
+        ECDailyForecastSensor(data.weather, data.weong, city_code, city_name, language)
     )
-    entities.append(ECWeatherSummarySensor(weather_coordinator, city_code))
+    entities.append(ECWeatherSummarySensor(data.weather, city_code, city_name, language))
     entities.extend(
-        ECGaugeSensor(weather_coordinator, desc, city_code) for desc in GAUGE_SENSOR_DESCRIPTIONS
+        ECGaugeSensor(data.weather, description, city_code, city_name)
+        for description in GAUGE_SENSOR_DESCRIPTIONS
     )
 
-    entities.append(ECAlertCountSensor(alert_coordinator, city_code))
-    entities.append(ECAlertsSensor(alert_coordinator, city_code))
-    entities.append(ECAQHISensor(aqhi_coordinator, city_code))
+    entities.append(ECAlertCountSensor(data.alerts, city_code, city_name))
+    entities.append(ECAlertsSensor(data.alerts, city_code, city_name))
+    entities.append(ECAQHISensor(data.aqhi, city_code, city_name))
 
     async_add_entities(entities)

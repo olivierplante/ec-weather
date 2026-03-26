@@ -6,8 +6,7 @@ from datetime import timedelta
 import pytest
 from homeassistant.core import HomeAssistant
 
-from ec_weather.coordinator import ECWeatherCoordinator
-from ec_weather.weong import ECWEonGCoordinator
+from ec_weather.coordinator import ECWeatherCoordinator, ECWEonGCoordinator
 from ec_weather.const import DEFAULT_WEATHER_INTERVAL, DEFAULT_WEONG_INTERVAL
 
 from .conftest import load_fixture
@@ -178,32 +177,23 @@ class TestLazyTimestepFetch:
     async def test_lazy_fetch_updates_sky_state(self, hass: HomeAssistant):
         """Given service call with date → SkyState merged into existing data."""
         from datetime import datetime, timezone
-        from unittest.mock import patch
+        from ec_weather.timestep_store import TimestepData
 
         coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
 
-        # Simulate existing data with timesteps that have no sky_state
-        coord.data = {
-            "periods": {
-                ("2026-03-23", "day"): {
-                    "pop": 10,
-                    "rain_amt_mm": None,
-                    "snow_amt_cm": None,
-                    "timesteps": [
-                        {"time": "2026-03-23T12:00:00Z", "pop": 10,
-                         "rain_mm": None, "snow_cm": None,
-                         "temp_c": -5, "sky_state": None},
-                        {"time": "2026-03-23T15:00:00Z", "pop": 5,
-                         "rain_mm": None, "snow_cm": None,
-                         "temp_c": -3, "sky_state": None},
-                    ],
-                },
-            },
-            "hourly": {},
-        }
+        # Seed the canonical store with existing timesteps (no sky_state)
+        coord._store.merge(TimestepData(
+            time="2026-03-23T12:00:00Z", pop=10, temp=-5.0, model="hrdps",
+        ))
+        coord._store.merge(TimestepData(
+            time="2026-03-23T15:00:00Z", pop=5, temp=-3.0, model="hrdps",
+        ))
 
-        # Mock _build_periods to return the date we want
-        def mock_build_periods(today, now):
+        # Set coord.data so the lazy fetch doesn't bail early
+        coord.data = {"periods": {}, "hourly": {}}
+
+        # Mock build_periods to return the date we want
+        def mock_build_periods(today, now, local_tz):
             return [
                 ("2026-03-23", "day",
                  datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
@@ -217,12 +207,12 @@ class TestLazyTimestepFetch:
                 results.append((layer, timestep, period_key, 3.0))
             return results, 0, len(results)
 
-        coord._build_periods = mock_build_periods
-        coord._execute_queries = mock_execute
+        from unittest.mock import patch
+        with patch("ec_weather.coordinator.weong.build_periods", side_effect=mock_build_periods):
+            coord._execute_queries = mock_execute
+            await coord.async_fetch_day_timesteps("2026-03-23")
 
-        await coord.async_fetch_day_timesteps("2026-03-23")
-
-        # Verify sky_state was merged
+        # Verify sky_state was merged into the store and projected into output
         period = coord.data["periods"][("2026-03-23", "day")]
         for ts in period["timesteps"]:
             assert ts["sky_state"] == 3.0

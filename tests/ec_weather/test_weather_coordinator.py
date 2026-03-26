@@ -3,10 +3,10 @@
 import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import UpdateFailed
+from ec_weather.api_client import FetchError
 
 from ec_weather.coordinator import ECWeatherCoordinator
-from ec_weather.parsing import _compute_wind_chill, _feels_like, _parse_daily
+from ec_weather.parsing import compute_wind_chill, feels_like, parse_daily
 
 from .conftest import load_fixture
 
@@ -99,34 +99,34 @@ class TestCurrentConditions:
 class TestFeelsLike:
     def test_wind_chill_applied(self):
         """Given temp ≤ 20°C and wind ≥ 5 → wind chill formula applied."""
-        wc = _compute_wind_chill(-10.0, 20.0)
+        wc = compute_wind_chill(-10.0, 20.0)
         assert wc is not None
         assert wc < -10.0  # wind chill makes it feel colder
 
     def test_wind_chill_not_applied_warm(self):
         """Given temp > 20°C → wind chill not applicable."""
-        wc = _compute_wind_chill(25.0, 20.0)
+        wc = compute_wind_chill(25.0, 20.0)
         assert wc is None
 
     def test_wind_chill_not_applied_calm(self):
         """Given wind < 5 km/h → wind chill not applicable."""
-        wc = _compute_wind_chill(-10.0, 3.0)
+        wc = compute_wind_chill(-10.0, 3.0)
         assert wc is None
 
     def test_feels_like_uses_humidex_when_warm(self):
         """Given temp > 20°C with humidex → humidex used."""
-        fl = _feels_like(30.0, 5.0, 38.0)
+        fl = feels_like(30.0, 5.0, 38.0)
         assert fl == 38.0
 
     def test_feels_like_uses_wind_chill_when_cold(self):
         """Given temp ≤ 20°C and wind ≥ 5 → wind chill used."""
-        fl = _feels_like(-10.0, 20.0, None)
+        fl = feels_like(-10.0, 20.0, None)
         assert fl is not None
         assert fl < -10.0
 
     def test_feels_like_fallback_to_temp(self):
         """Given no wind chill and no humidex → returns actual temp."""
-        fl = _feels_like(15.0, 3.0, None)
+        fl = feels_like(15.0, 3.0, None)
         assert fl == 15.0
 
 
@@ -151,11 +151,11 @@ class TestHourlyForecast:
         assert len(hourly) > 0
 
         for item in hourly:
-            assert "datetime" in item
+            assert "time" in item
             assert "temp" in item
             assert "feels_like" in item
             assert "icon_code" in item
-            assert "precip_prob" in item
+            assert "precipitation_probability" in item
             assert "wind_speed" in item
 
 
@@ -196,7 +196,7 @@ class TestDailyForecast:
 
         # Check if first period is night-only (depends on time of fixture capture)
         # We test the _parse_daily function directly for reliability
-        daily = _parse_daily(forecasts, "en")
+        daily = parse_daily(forecasts, "en")
         first = daily[0]
 
         # If first is night-only, temp_high should be None
@@ -211,7 +211,7 @@ class TestDailyForecast:
         props = data["properties"]
         forecasts = props["forecastGroup"]["forecasts"]
 
-        daily = _parse_daily(forecasts, "en")
+        daily = parse_daily(forecasts, "en")
         last = daily[-1]
 
         # Last day might have temp_low=None — should not crash
@@ -239,7 +239,7 @@ class _DNSError(aiohttp.ClientConnectorError):
 class TestRetryLogic:
     async def test_retry_on_transient_failure(self, hass: HomeAssistant):
         """Given DNS error on first call, success on second → data returned."""
-        from ec_weather.parsing import _fetch_json_with_retry
+        from ec_weather.api_client import fetch_json_with_retry
 
         call_count = 0
 
@@ -269,15 +269,15 @@ class TestRetryLogic:
             def get(self, url, **kw):
                 return _FailThenSucceed()
 
-        result = await _fetch_json_with_retry(
+        result = await fetch_json_with_retry(
             MockSession(), "http://test", retries=3, retry_delay=0, label="test",
         )
         assert result == {"test": "data"}
         assert call_count == 2  # failed once, succeeded on retry
 
     async def test_retry_exhausted_raises(self, hass: HomeAssistant):
-        """Given persistent DNS error → raises UpdateFailed after retries."""
-        from ec_weather.parsing import _fetch_json_with_retry
+        """Given persistent DNS error → raises FetchError after retries."""
+        from ec_weather.api_client import fetch_json_with_retry
 
         class _AlwaysFail:
             async def __aenter__(self):
@@ -289,7 +289,7 @@ class TestRetryLogic:
             def get(self, url, **kw):
                 return _AlwaysFail()
 
-        with pytest.raises(UpdateFailed, match="DNS failure"):
-            await _fetch_json_with_retry(
+        with pytest.raises(FetchError, match="DNS failure"):
+            await fetch_json_with_retry(
                 MockSession(), "http://test", retries=3, retry_delay=0, label="test",
             )

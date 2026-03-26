@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.8.0
+
+**Instant loading** — The card now renders immediately from Environment Canada data (~2 seconds). Precipitation probabilities and amounts load in the background and fill in automatically. Previously, the card waited for all data before showing anything (~7 seconds).
+
+**French language support** — Full bilingual support (English/French). The card, entity names, and weather conditions follow your Home Assistant language setting. Day names, time format (12h/24h), and all labels adapt automatically.
+
+**Device registry** — All entities are now grouped under a single "EC Weather" device in Settings → Devices. Makes it easier to find and manage all weather entities.
+
+**Smarter API usage** — The integration now tracks Environment Canada's model run schedule and only re-fetches data when new forecasts are actually available. Popup timeline data loads only when you open a popup. Reduces unnecessary API calls significantly.
+
+**Under the hood** — Major internal refactor for long-term reliability. The data pipeline was rebuilt around a single source of truth for all forecast timesteps, replacing a dual-data-path system that could lose data during refreshes. This fixes intermittent issues where popup icons or temperatures would briefly disappear. The codebase was restructured into smaller, focused modules — easier to maintain and extend going forward.
+
+**Daily popup improvements:**
+- "Updated" timestamp shows when the data was last refreshed
+- Stale "Tonight" period is hidden after 6 AM
+- Empty alerts from EC are filtered out
+
+**Alert dropdown fix** — The alert expand/collapse now works on the first click.
+
+**Security** — All text from EC APIs is now HTML-escaped before rendering.
+
+**Tests** — 347 tests (up from 89), covering all data paths, config flow, and edge cases.
+
 ## 1.7.0
 
 **Light mode support** — The card now works with any Home Assistant theme out of the box. Text, icons, backgrounds, and overlays automatically adapt to your active theme (light or dark). No configuration needed.

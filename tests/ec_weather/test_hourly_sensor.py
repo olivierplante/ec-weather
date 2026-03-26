@@ -5,10 +5,10 @@ from __future__ import annotations
 from freezegun import freeze_time
 
 from ec_weather.transforms import (
-    _apply_icon_fallback,
-    _build_unified_hourly,
-    _derive_icon,
-    _filter_past_hours,
+    apply_icon_fallback,
+    build_unified_hourly,
+    derive_icon,
+    filter_past_hours,
 )
 
 
@@ -19,12 +19,12 @@ from ec_weather.transforms import (
 def _ec_hourly_item(dt: str, **overrides) -> dict:
     """Build a minimal EC hourly forecast item."""
     base = {
-        "datetime": dt,
+        "time": dt,
         "temp": -5,
         "feels_like": -10,
         "condition": "Cloudy",
         "icon_code": 3,
-        "precip_prob": 30,
+        "precipitation_probability": 30,
         "wind_speed": 20,
         "wind_gust": None,
         "wind_direction": "NW",
@@ -41,11 +41,11 @@ def _weong_hourly_item(
 ) -> dict:
     """Build a minimal WEonG hourly item."""
     base = {
-        "rain_amt_mm": rain,
-        "snow_amt_cm": snow,
+        "rain_mm": rain,
+        "snow_cm": snow,
         "sky_state": sky_state,
-        "temp_c": -5,
-        "pop": 30,
+        "temp": -5,
+        "precipitation_probability": 30,
         "freezing_precip_mm": None,
         "ice_pellet_cm": None,
     }
@@ -65,12 +65,12 @@ class TestBuildUnifiedHourlyECOnly:
             _ec_hourly_item("2026-03-23T15:00:00Z"),
         ]
 
-        result = _build_unified_hourly(ec_hourly, {})
+        result = build_unified_hourly(ec_hourly, {})
 
         assert len(result) == 2
         for item in result:
-            assert item["rain_amt_mm"] is None
-            assert item["snow_amt_cm"] is None
+            assert item["rain_mm"] is None
+            assert item["snow_cm"] is None
             # Original EC fields preserved
             assert item["temp"] == -5
             assert item["icon_code"] == 3
@@ -89,13 +89,13 @@ class TestBuildUnifiedHourlyMerged:
             "2026-03-23T15:00:00Z": _weong_hourly_item(rain=None, snow=2.0),
         }
 
-        result = _build_unified_hourly(ec_hourly, weong_hourly)
+        result = build_unified_hourly(ec_hourly, weong_hourly)
 
         assert len(result) == 2
-        assert result[0]["rain_amt_mm"] == 1.5
-        assert result[0]["snow_amt_cm"] == 0.3
-        assert result[1]["rain_amt_mm"] is None
-        assert result[1]["snow_amt_cm"] == 2.0
+        assert result[0]["rain_mm"] == 1.5
+        assert result[0]["snow_cm"] == 0.3
+        assert result[1]["rain_mm"] is None
+        assert result[1]["snow_cm"] == 2.0
         # EC fields still preserved
         assert result[0]["temp"] == -5
         assert result[0]["icon_code"] == 3
@@ -108,22 +108,22 @@ class TestBuildUnifiedHourlyMerged:
         weong_hourly = {
             "2026-03-23T14:00:00Z": _weong_hourly_item(rain=1.0),
             "2026-03-24T14:00:00Z": _weong_hourly_item(
-                rain=2.5, sky_state=5, temp_c=-3, pop=60,
+                rain=2.5, sky_state=5, temp=-3, precipitation_probability=60,
             ),
         }
 
-        result = _build_unified_hourly(ec_hourly, weong_hourly)
+        result = build_unified_hourly(ec_hourly, weong_hourly)
 
         assert len(result) == 2
         # First item is the EC item enriched
-        assert result[0]["datetime"] == "2026-03-23T14:00:00Z"
-        assert result[0]["rain_amt_mm"] == 1.0
+        assert result[0]["time"] == "2026-03-23T14:00:00Z"
+        assert result[0]["rain_mm"] == 1.0
         # Second item is WEonG-only (beyond EC)
         extended = result[1]
-        assert extended["datetime"] == "2026-03-24T14:00:00Z"
+        assert extended["time"] == "2026-03-24T14:00:00Z"
         assert extended["temp"] == -3
-        assert extended["rain_amt_mm"] == 2.5
-        assert extended["precip_prob"] == 60
+        assert extended["rain_mm"] == 2.5
+        assert extended["precipitation_probability"] == 60
         # Wind fields are None for WEonG-only items
         assert extended["wind_speed"] is None
         assert extended["feels_like"] is None
@@ -139,7 +139,7 @@ class TestBuildUnifiedHourlyMerged:
             "2026-03-23T14:00:00Z": _weong_hourly_item(sky_state=3),
         }
 
-        result = _build_unified_hourly(ec_hourly, weong_hourly)
+        result = build_unified_hourly(ec_hourly, weong_hourly)
 
         assert len(result) == 1
         # sky_state=3 at hour 14 (daytime) → icon_code=1, "Mainly sunny"
@@ -156,19 +156,19 @@ class TestFilterPastHours:
     def test_past_hours_filtered(self):
         """Given frozen time at 15:30 → items before 15:00 removed."""
         forecast = [
-            {"datetime": "2026-03-23T13:00:00Z", "temp": -5},
-            {"datetime": "2026-03-23T14:00:00Z", "temp": -4},
-            {"datetime": "2026-03-23T15:00:00Z", "temp": -3},
-            {"datetime": "2026-03-23T16:00:00Z", "temp": -2},
-            {"datetime": "2026-03-23T17:00:00Z", "temp": -1},
+            {"time": "2026-03-23T13:00:00Z", "temp": -5},
+            {"time": "2026-03-23T14:00:00Z", "temp": -4},
+            {"time": "2026-03-23T15:00:00Z", "temp": -3},
+            {"time": "2026-03-23T16:00:00Z", "temp": -2},
+            {"time": "2026-03-23T17:00:00Z", "temp": -1},
         ]
 
-        result = _filter_past_hours(forecast)
+        result = filter_past_hours(forecast)
 
         assert len(result) == 3
-        assert result[0]["datetime"] == "2026-03-23T15:00:00Z"
-        assert result[1]["datetime"] == "2026-03-23T16:00:00Z"
-        assert result[2]["datetime"] == "2026-03-23T17:00:00Z"
+        assert result[0]["time"] == "2026-03-23T15:00:00Z"
+        assert result[1]["time"] == "2026-03-23T16:00:00Z"
+        assert result[2]["time"] == "2026-03-23T17:00:00Z"
 
 
 # ---------------------------------------------------------------------------
@@ -182,14 +182,14 @@ class TestApplyIconFallback:
             "icon_code": None,
             "condition": None,
             "sky_state": 2,
-            "rain_amt_mm": 0,
-            "snow_amt_cm": 0,
+            "rain_mm": 0,
+            "snow_cm": 0,
             "freezing_precip_mm": 0,
             "ice_pellet_cm": 0,
-            "temp_c": -5,
+            "temp": -5,
         }
 
-        _apply_icon_fallback(entry, "2026-03-23T14:00:00Z")
+        apply_icon_fallback(entry, "2026-03-23T14:00:00Z")
 
         # sky_state=2 at hour 14 (daytime) → icon_code=0, "Sunny"
         assert entry["icon_code"] == 0
@@ -199,7 +199,7 @@ class TestApplyIconFallback:
         """Given entry with existing icon_code → not overwritten."""
         entry = {"icon_code": 3, "condition": "Mostly cloudy"}
 
-        _apply_icon_fallback(entry, "2026-03-23T14:00:00Z")
+        apply_icon_fallback(entry, "2026-03-23T14:00:00Z")
 
         assert entry["icon_code"] == 3
         assert entry["condition"] == "Mostly cloudy"
@@ -210,14 +210,14 @@ class TestApplyIconFallback:
             "icon_code": None,
             "condition": None,
             "sky_state": 1,
-            "rain_amt_mm": 0,
-            "snow_amt_cm": 0,
+            "rain_mm": 0,
+            "snow_cm": 0,
             "freezing_precip_mm": 0,
             "ice_pellet_cm": 0,
-            "temp_c": -5,
+            "temp": -5,
         }
 
-        _apply_icon_fallback(entry, "2026-03-23T22:00:00Z")
+        apply_icon_fallback(entry, "2026-03-23T22:00:00Z")
 
         # sky_state=1 at hour 22 (nighttime) → icon_code=30, "Clear"
         assert entry["icon_code"] == 30
@@ -228,14 +228,14 @@ class TestApplyIconFallback:
         entry = {
             "icon_code": None,
             "condition": None,
-            "rain_amt_mm": 2.0,
-            "snow_amt_cm": 0,
+            "rain_mm": 2.0,
+            "snow_cm": 0,
             "freezing_precip_mm": 0,
             "ice_pellet_cm": 0,
-            "temp_c": 5,
+            "temp": 5,
         }
 
-        _apply_icon_fallback(entry, "2026-03-23T14:00:00Z")
+        apply_icon_fallback(entry, "2026-03-23T14:00:00Z")
 
         assert entry["icon_code"] == 12
         assert entry["condition"] == "Rain"

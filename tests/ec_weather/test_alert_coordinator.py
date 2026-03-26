@@ -1,107 +1,132 @@
-"""Tests for ECAlertCoordinator — alert parsing, filtering, and deduplication."""
+"""Tests for alert parsing — pure function tests on parse_alert_response."""
 
 from __future__ import annotations
 
-import pytest
-from homeassistant.core import HomeAssistant
-
-from ec_weather.coordinator import ECAlertCoordinator
+from ec_weather.coordinator.alerts import parse_alert_response
 
 from .conftest import load_fixture
 
 
-def _make_coordinator(hass: HomeAssistant) -> ECAlertCoordinator:
-    return ECAlertCoordinator(
-        hass, bbox="44.420,-76.700,46.420,-74.700", language="en"
-    )
-
-
-ALERTS_URL = (
-    "https://api.weather.gc.ca/collections/weather-alerts/items"
-    "?bbox=44.420,-76.700,46.420,-74.700&f=json&skipGeometry=true"
-)
-
+# ---------------------------------------------------------------------------
+# No alerts
+# ---------------------------------------------------------------------------
 
 class TestNoAlerts:
-    async def test_empty_features(self, hass: HomeAssistant, aioclient_mock):
+    def test_empty_features(self):
         """Given empty features array → no alerts."""
-        aioclient_mock.get(ALERTS_URL, json=load_fixture("weather_alerts_empty.json"))
-
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
+        data = load_fixture("weather_alerts_empty.json")
+        result = parse_alert_response(data)
 
         assert result["alert_count"] == 0
         assert result["alerts"] == []
         assert result["highest_type"] is None
 
 
+# ---------------------------------------------------------------------------
+# Alert parsing
+# ---------------------------------------------------------------------------
+
 class TestAlertParsing:
-    async def test_active_warning(self, hass: HomeAssistant, aioclient_mock):
+    def test_active_warning(self):
         """Given warning alert → correct headline, type, text parsed."""
-        aioclient_mock.get(ALERTS_URL, json=load_fixture("weather_alerts_active.json"))
+        data = load_fixture("weather_alerts_active.json")
+        result = parse_alert_response(data)
 
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
-
-        # Should have active alerts (fixture has warning + advisory, minus cancelled and expired)
         assert result["alert_count"] >= 1
 
-        # Find the blizzard warning
         warnings = [a for a in result["alerts"] if a["type"] == "warning"]
         assert len(warnings) >= 1
         assert warnings[0]["headline"] == "Blizzard Warning"
         assert "Heavy snow" in warnings[0]["text"]
 
-    async def test_highest_type_is_warning(self, hass: HomeAssistant, aioclient_mock):
+    def test_highest_type_is_warning(self):
         """Given warning + advisory → highest_type = warning."""
-        aioclient_mock.get(ALERTS_URL, json=load_fixture("weather_alerts_active.json"))
-
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
+        data = load_fixture("weather_alerts_active.json")
+        result = parse_alert_response(data)
 
         assert result["highest_type"] == "warning"
 
 
+# ---------------------------------------------------------------------------
+# Filtering
+# ---------------------------------------------------------------------------
+
 class TestAlertFiltering:
-    async def test_expired_alert_excluded(self, hass: HomeAssistant, aioclient_mock):
+    def test_expired_alert_excluded(self):
         """Given alert with past expiry → not included."""
-        aioclient_mock.get(ALERTS_URL, json=load_fixture("weather_alerts_active.json"))
+        data = load_fixture("weather_alerts_active.json")
+        result = parse_alert_response(data)
 
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
-
-        # The fixture has a "Freezing Rain Watch" with expiry in 2020 — should be excluded
         headlines = [a["headline"] for a in result["alerts"]]
         assert "Freezing Rain Watch" not in headlines
 
-    async def test_cancelled_alert_excluded(self, hass: HomeAssistant, aioclient_mock):
+    def test_cancelled_alert_excluded(self):
         """Given cancelled status → not included."""
-        aioclient_mock.get(ALERTS_URL, json=load_fixture("weather_alerts_active.json"))
+        data = load_fixture("weather_alerts_active.json")
+        result = parse_alert_response(data)
 
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
-
-        # The fixture has a "Special Weather Statement" with status=cancelled
         headlines = [a["headline"] for a in result["alerts"]]
         assert "Special Weather Statement" not in headlines
 
-    async def test_duplicate_alerts_deduplicated(self, hass: HomeAssistant, aioclient_mock):
+    def test_empty_text_alert_excluded(self):
+        """Given alert with empty text → not included."""
+        data = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "alert_type": "warning",
+                        "alert_name_en": "Real Warning",
+                        "alert_text_en": "Actual warning text with content",
+                        "status_en": "active",
+                        "expiration_datetime": "2099-12-31T23:59:59Z",
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "alert_type": "statement",
+                        "alert_name_en": "Empty Statement",
+                        "alert_text_en": "",
+                        "status_en": "active",
+                        "expiration_datetime": "2099-12-31T23:59:59Z",
+                    },
+                },
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "alert_type": "statement",
+                        "alert_name_en": "Whitespace Statement",
+                        "alert_text_en": "   ",
+                        "status_en": "active",
+                        "expiration_datetime": "2099-12-31T23:59:59Z",
+                    },
+                },
+            ],
+        }
+        result = parse_alert_response(data)
+
+        assert result["alert_count"] == 1
+        assert result["alerts"][0]["headline"] == "Real Warning"
+
+    def test_duplicate_alerts_deduplicated(self):
         """Given duplicate alerts (same headline+text) → deduplicated."""
-        aioclient_mock.get(ALERTS_URL, json=load_fixture("weather_alerts_active.json"))
+        data = load_fixture("weather_alerts_active.json")
+        result = parse_alert_response(data)
 
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
-
-        # Fixture has 2 identical "Blizzard Warning" entries (simulating sub-zones)
         blizzards = [a for a in result["alerts"] if a["headline"] == "Blizzard Warning"]
-        assert len(blizzards) == 1  # deduplicated to 1
+        assert len(blizzards) == 1
 
+
+# ---------------------------------------------------------------------------
+# Priority
+# ---------------------------------------------------------------------------
 
 class TestAlertPriority:
-    async def test_priority_order(self, hass: HomeAssistant, aioclient_mock):
+    def test_priority_order(self):
         """Given multiple alert types → highest_type reflects priority."""
-        # Build a fixture with watch + advisory (no warning)
-        fixture = {
+        data = {
             "type": "FeatureCollection",
             "features": [
                 {
@@ -136,10 +161,36 @@ class TestAlertPriority:
                 },
             ],
         }
-        aioclient_mock.get(ALERTS_URL, json=fixture)
+        result = parse_alert_response(data)
 
-        coord = _make_coordinator(hass)
-        result = await coord._async_update_data()
-
-        # watch > advisory > statement
         assert result["highest_type"] == "watch"
+
+
+# ---------------------------------------------------------------------------
+# Language support
+# ---------------------------------------------------------------------------
+
+class TestAlertLanguage:
+    def test_french_headline(self):
+        """Given French language → uses French headline."""
+        data = {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "alert_type": "warning",
+                        "alert_name_en": "Blizzard Warning",
+                        "alert_name_fr": "Avertissement de blizzard",
+                        "alert_text_en": "Heavy snow expected",
+                        "alert_text_fr": "Forte neige prévue",
+                        "status_en": "active",
+                        "expiration_datetime": "2099-12-31T23:59:59Z",
+                    },
+                },
+            ],
+        }
+        result = parse_alert_response(data, language="fr")
+
+        assert result["alerts"][0]["headline"] == "Avertissement de blizzard"
+        assert result["alerts"][0]["text"] == "Forte neige prévue"

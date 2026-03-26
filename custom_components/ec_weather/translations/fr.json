@@ -1,0 +1,85 @@
+{
+  "entity": {
+    "sensor": {
+      "ec_temperature": { "name": "Température" },
+      "ec_feels_like": { "name": "Ressenti" },
+      "ec_humidity": { "name": "Humidité" },
+      "ec_wind_speed": { "name": "Vitesse du vent" },
+      "ec_wind_gust": { "name": "Rafales" },
+      "ec_wind_direction": { "name": "Direction du vent" },
+      "ec_condition": { "name": "Condition" },
+      "ec_icon_code": { "name": "Code d'icône" },
+      "ec_sunrise": { "name": "Lever du soleil" },
+      "ec_sunset": { "name": "Coucher du soleil" },
+      "ec_hourly_forecast": { "name": "Prévisions horaires" },
+      "ec_daily_forecast": { "name": "Prévisions quotidiennes" },
+      "ec_weather_summary": { "name": "Résumé météo" },
+      "ec_air_quality": { "name": "Qualité de l'air" },
+      "ec_alert_count": { "name": "Nombre d'alertes" },
+      "ec_alerts": { "name": "Alertes" },
+      "ec_temp_gauge": { "name": "Jauge de température" },
+      "ec_feels_gauge": { "name": "Jauge de ressenti" }
+    },
+    "weather": {
+      "ec_weather": { "name": "Météo" }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Météo Environnement Canada",
+        "description": "Recherchez votre ville pour configurer les données météo. La ville la plus proche de votre emplacement est pré-remplie.",
+        "data": {
+          "city_query": "Nom de la ville",
+          "language": "Langue"
+        }
+      },
+      "select_city": {
+        "title": "Sélectionner la ville",
+        "description": "Plusieurs villes correspondent à votre recherche. Sélectionnez la bonne.",
+        "data": {
+          "city_id": "Ville"
+        }
+      },
+      "confirm": {
+        "title": "Confirmer les paramètres",
+        "description": "Confirmez les paramètres pour {city_name} ({province}) — code ville : {city_code}. Les valeurs découvertes sont pré-remplies — modifiez si nécessaire.",
+        "data": {
+          "lat": "Latitude",
+          "lon": "Longitude",
+          "bbox": "Zone d'alerte",
+          "geomet_bbox": "Zone WMS GeoMet",
+          "aqhi_location_id": "ID de station CAS",
+          "climate_station_id": "ID de station climatique"
+        }
+      }
+    },
+    "error": {
+      "no_city_name": "Veuillez entrer un nom de ville.",
+      "no_city_found": "Aucune ville trouvée — essayez une orthographe différente (les accents comptent).",
+      "api_error": "Impossible de contacter l'API d'Environnement Canada. Veuillez réessayer."
+    },
+    "abort": {
+      "already_configured": "Météo Environnement Canada est déjà configuré."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Paramètres EC Météo",
+        "description": "Modifier les paramètres pour {city_name} ({city_code}).",
+        "data": {
+          "city_code": "Code ville (ex. on-118)",
+          "language": "Langue",
+          "bbox": "Zone d'alerte",
+          "geomet_bbox": "Zone WMS GeoMet",
+          "aqhi_location_id": "ID de station CAS",
+          "polling_mode": "Mode d'interrogation",
+          "weather_interval": "Intervalle météo (minutes)",
+          "aqhi_interval": "Intervalle CAS (minutes)",
+          "weong_interval": "Intervalle détails prévisions (minutes)"
+        }
+      }
+    }
+  }
+}

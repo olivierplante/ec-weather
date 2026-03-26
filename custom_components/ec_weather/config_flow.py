@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
+import math
 
 import aiohttp
 import voluptuous as vol
@@ -29,6 +29,7 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
 )
 
+from .api_client import discover_aqhi_station, parse_ec_city_features
 from .const import (
     CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
@@ -56,9 +57,6 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Pattern to extract lat,lon from EC weather URL: coords=45.82,-73.96
-_COORDS_RE = re.compile(r"coords=([-\d.]+),([-\d.]+)")
-
 
 def _compute_alert_bbox(lat: float, lon: float) -> str:
     """Compute a ~20km alert bounding box: lon-0.2,lat-0.2,lon+0.2,lat+0.2."""
@@ -79,17 +77,29 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
         """Show editable settings."""
+        mutable_keys = {
+            CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
+            CONF_AQHI_INTERVAL, CONF_WEONG_INTERVAL,
+        }
+
         if user_input is not None:
-            # Update config entry data with new values
-            new_data = {**self.config_entry.data, **user_input}
+            # Separate immutable data from mutable options
+            new_data = dict(self.config_entry.data)
+            new_options = dict(self.config_entry.options)
+            for key, value in user_input.items():
+                if key in mutable_keys:
+                    new_options[key] = value
+                else:
+                    new_data[key] = value
             self.hass.config_entries.async_update_entry(
-                self.config_entry, data=new_data
+                self.config_entry, data=new_data, options=new_options,
             )
             # Reload the integration to apply changes
             await self.hass.config_entries.async_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data={})
 
         data = self.config_entry.data
+        options = self.config_entry.options
 
         return self.async_show_form(
             step_id="init",
@@ -125,7 +135,7 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                     ): TextSelector(TextSelectorConfig(type="text")),
                     vol.Optional(
                         CONF_POLLING_MODE,
-                        default=data.get(
+                        default=options.get(
                             CONF_POLLING_MODE, DEFAULT_POLLING_MODE
                         ),
                     ): SelectSelector(
@@ -139,7 +149,7 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_WEATHER_INTERVAL,
-                        default=data.get(
+                        default=options.get(
                             CONF_WEATHER_INTERVAL, DEFAULT_WEATHER_INTERVAL
                         ),
                     ): NumberSelector(
@@ -151,7 +161,7 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_AQHI_INTERVAL,
-                        default=data.get(
+                        default=options.get(
                             CONF_AQHI_INTERVAL, DEFAULT_AQHI_INTERVAL
                         ),
                     ): NumberSelector(
@@ -163,7 +173,7 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_WEONG_INTERVAL,
-                        default=data.get(
+                        default=options.get(
                             CONF_WEONG_INTERVAL, DEFAULT_WEONG_INTERVAL
                         ),
                     ): NumberSelector(
@@ -185,7 +195,7 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
 class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for EC Weather."""
 
-    VERSION = 1
+    VERSION = 2
 
     @staticmethod
     def async_get_options_flow(
@@ -197,6 +207,7 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._cities: list[dict] = []
+        self._cities_language: str = DEFAULT_LANGUAGE
         self._selected_city: dict = {}
         self._discovered_aqhi: str | None = None
         self._auto_detected: bool = False
@@ -280,7 +291,7 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not lat or not lon:
             return None
 
-        # Query EC cities within a ~1° bbox around home location
+        # Query EC cities within a ~1 deg bbox around home location
         bbox = f"{lon - 1.0:.1f},{lat - 1.0:.1f},{lon + 1.0:.1f},{lat + 1.0:.1f}"
         url = (
             f"{EC_API_BASE}/collections/citypageweather-realtime/items"
@@ -301,44 +312,24 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not features:
             return None
 
-        # Parse cities and find the nearest one
-        cities = []
-        for feature in features:
-            city_id = feature.get("id", "")
-            props = feature.get("properties") or {}
-            name = props.get("name")
-            if isinstance(name, dict):
-                name = name.get("en") or ""
-            if not name:
-                name = city_id
+        # Parse cities using shared helper and find the nearest one
+        cities = parse_ec_city_features(features, language="en")
 
-            province = city_id.split("-")[0].upper() if "-" in city_id else ""
+        # Filter to cities with coordinates and compute distance
+        with_coords = []
+        for city in cities:
+            if city["lat"] is not None and city["lon"] is not None:
+                dlat = city["lat"] - lat
+                dlon = (city["lon"] - lon) * math.cos(math.radians(lat))
+                dist = dlat ** 2 + dlon ** 2
+                with_coords.append({**city, "dist": dist})
 
-            city_lat = None
-            city_lon = None
-            url_str = (props.get("url") or {}).get("en", "")
-            match = _COORDS_RE.search(url_str)
-            if match:
-                city_lat = float(match.group(1))
-                city_lon = float(match.group(2))
-
-            if city_lat is not None and city_lon is not None:
-                dist = (city_lat - lat) ** 2 + (city_lon - lon) ** 2
-                cities.append({
-                    "id": city_id,
-                    "name": name,
-                    "province": province,
-                    "lat": city_lat,
-                    "lon": city_lon,
-                    "dist": dist,
-                })
-
-        if not cities:
+        if not with_coords:
             return None
 
         # Return the nearest city
-        cities.sort(key=lambda c: c["dist"])
-        nearest = cities[0]
+        with_coords.sort(key=lambda c: c["dist"])
+        nearest = with_coords[0]
         _LOGGER.debug(
             "Auto-detected nearest EC city: %s (%s) at %.4f, %.4f",
             nearest["name"], nearest["id"], nearest["lat"], nearest["lon"],
@@ -366,38 +357,7 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data = await resp.json()
 
         features = data.get("features") or []
-        matches = []
-
-        for feature in features:
-            city_id = feature.get("id", "")
-            props = feature.get("properties") or {}
-
-            name = props.get("name")
-            if isinstance(name, dict):
-                name = name.get(language) or name.get("en") or ""
-            if not name:
-                name = city_id
-
-            # Province from the city code prefix (e.g. "qc-13" → "QC")
-            province = city_id.split("-")[0].upper() if "-" in city_id else ""
-
-            # Extract coordinates from the URL field (coords=lat,lon)
-            lat = None
-            lon = None
-            url_str = (props.get("url") or {}).get("en", "")
-            match = _COORDS_RE.search(url_str)
-            if match:
-                lat = float(match.group(1))
-                lon = float(match.group(2))
-
-            matches.append({
-                "id": city_id,
-                "name": name,
-                "province": province,
-                "lat": lat,
-                "lon": lon,
-            })
-
+        matches = parse_ec_city_features(features, language=language)
         matches.sort(key=lambda c: c["name"])
         return matches
 
@@ -457,53 +417,15 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_confirm()
 
     async def _discover_aqhi_station(self, lat: float, lon: float) -> str | None:
-        """Find the nearest AQHI forecast station within ±1.5° of the city."""
-        bbox = f"{lon - 1.5:.1f},{lat - 1.5:.1f},{lon + 1.5:.1f},{lat + 1.5:.1f}"
-        url = (
-            f"{EC_API_BASE}/collections/aqhi-forecasts-realtime/items"
-            f"?f=json&bbox={bbox}&limit=200&skipGeometry=true"
-            f"&properties=location_id,location_name_en"
-        )
+        """Find the nearest AQHI forecast station within +/-1.5 deg of the city."""
         session = async_get_clientsession(self.hass)
-
-        try:
-            async with asyncio.timeout(REQUEST_TIMEOUT):
-                async with session.get(url) as resp:
-                    resp.raise_for_status()
-                    data = await resp.json()
-        except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as err:
-            _LOGGER.debug("AQHI discovery failed: %s", err)
-            return None
-
-        features = data.get("features") or []
-        if not features:
-            return None
-
-        # Deduplicate by location_id (many features per station)
-        stations: dict[str, dict] = {}
-        for f in features:
-            props = f.get("properties") or {}
-            loc_id = props.get("location_id")
-            if loc_id and loc_id not in stations:
-                # AQHI features don't have coordinates in properties —
-                # we just pick the nearest by location_id.
-                # EC AQHI stations are sparse enough that bbox filtering
-                # plus first-seen is sufficient.
-                stations[loc_id] = {
-                    "location_id": loc_id,
-                    "name": props.get("location_name_en", loc_id),
-                }
-
-        if not stations:
-            return None
-
-        # If we only have one station, return it
-        if len(stations) == 1:
-            return next(iter(stations.values()))["location_id"]
-
-        # With multiple stations, just return the first one (bbox already limits to nearby)
-        # In practice, most regions have 1-2 AQHI stations
-        return next(iter(stations.values()))["location_id"]
+        return await discover_aqhi_station(
+            session=session,
+            lat=lat,
+            lon=lon,
+            api_base=EC_API_BASE,
+            timeout=REQUEST_TIMEOUT,
+        )
 
     # ------------------------------------------------------------------
     # Step 3: Editable confirmation

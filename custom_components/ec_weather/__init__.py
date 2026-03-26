@@ -26,9 +26,6 @@ from .const import (
     CONF_POLLING_MODE,
     CONF_WEATHER_INTERVAL,
     CONF_WEONG_INTERVAL,
-    COORDINATOR_ALERTS,
-    COORDINATOR_AQHI,
-    COORDINATOR_WEATHER,
     COORDINATOR_WEONG,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_LANGUAGE,
@@ -41,17 +38,38 @@ from .const import (
     SERVICE_FETCH_DAY_TIMESTEPS,
 )
 from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator
-from .weong import ECWEonGCoordinator
+from .coordinator import ECWEonGCoordinator
+from .models import ECWeatherData
 
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def validate_bbox(bbox: str | None) -> bool:
+    """Return True if bbox is formatted as 4 comma-separated floats."""
+    if not bbox or not isinstance(bbox, str):
+        return False
+    parts = bbox.split(",")
+    if len(parts) != 4:
+        return False
+    try:
+        for p in parts:
+            float(p.strip())
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 PLATFORMS = ["sensor", "binary_sensor", "weather"]
 
 # ── Lovelace card registration ──────────────────────────────────────────────
 CARD_RESOURCE_URL = "/ec_weather/ec-weather-card.js"
 CARD_JS_FILE = pathlib.Path(__file__).parent / "www" / "ec-weather-card.js"
-CARD_VERSION = "1.7.0"
+# CARD_VERSION is a content hash for browser cache busting (?v=abc123).
+# Computed from the JS file contents — changes automatically when the file changes.
+import hashlib
+CARD_VERSION = hashlib.md5(CARD_JS_FILE.read_bytes()).hexdigest()[:8]
 CARD_VERSIONED_URL = f"{CARD_RESOURCE_URL}?v={CARD_VERSION}"
 
 
@@ -72,9 +90,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         )
         return True
 
-    if not resources.loaded:
-        await resources.async_load()
-        resources.loaded = True
+    try:
+        if not resources.loaded:
+            await resources.async_load()
+            resources.loaded = True
+    except AttributeError:
+        # HA internals may change; log and continue
+        _LOGGER.debug("ec_weather: could not check resource load state")
+        try:
+            await resources.async_load()
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("ec_weather: failed to load Lovelace resources", exc_info=True)
 
     # Check if already registered; update URL if version changed
     for item in resources.async_items():
@@ -98,6 +124,23 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate config entries from older versions."""
+    if entry.version == 1:
+        _LOGGER.debug("Migrating EC Weather config entry from version 1 to 2")
+        new_data = dict(entry.data)
+        new_options = dict(entry.options)
+        for key in (CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
+                     CONF_AQHI_INTERVAL, CONF_WEONG_INTERVAL):
+            if key in new_data:
+                new_options[key] = new_data.pop(key)
+        hass.config_entries.async_update_entry(
+            entry, data=new_data, options=new_options, version=2,
+        )
+        _LOGGER.info("EC Weather config entry migrated to version 2")
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up EC Weather from a config entry."""
     hass.data.setdefault(DOMAIN, {})
@@ -108,11 +151,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     geomet_bbox = entry.data[CONF_GEOMET_BBOX]
     aqhi_location_id = entry.data.get(CONF_AQHI_LOCATION_ID)
 
-    # Read configurable settings from config entry
-    polling_mode = entry.data.get(CONF_POLLING_MODE, DEFAULT_POLLING_MODE)
-    weather_interval = entry.data.get(CONF_WEATHER_INTERVAL, DEFAULT_WEATHER_INTERVAL)
-    weong_interval = entry.data.get(CONF_WEONG_INTERVAL, DEFAULT_WEONG_INTERVAL)
-    aqhi_interval = entry.data.get(CONF_AQHI_INTERVAL, DEFAULT_AQHI_INTERVAL)
+    # Validate bbox formats at setup time
+    if not validate_bbox(bbox):
+        _LOGGER.warning("EC Weather: bbox value '%s' is not 4 comma-separated floats", bbox)
+    if not validate_bbox(geomet_bbox):
+        _LOGGER.warning("EC Weather: geomet_bbox value '%s' is not 4 comma-separated floats", geomet_bbox)
+
+    # Read mutable settings from entry.options with fallback to defaults
+    polling_mode = entry.options.get(CONF_POLLING_MODE, DEFAULT_POLLING_MODE)
+    weather_interval = entry.options.get(CONF_WEATHER_INTERVAL, DEFAULT_WEATHER_INTERVAL)
+    weong_interval = entry.options.get(CONF_WEONG_INTERVAL, DEFAULT_WEONG_INTERVAL)
+    aqhi_interval = entry.options.get(CONF_AQHI_INTERVAL, DEFAULT_AQHI_INTERVAL)
 
     # Determine polling per coordinator based on mode
     weather_polls = polling_mode in (POLLING_MODE_EFFICIENT, POLLING_MODE_FULL)
@@ -133,20 +182,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         interval_minutes=weong_interval, polling=weong_polls,
     )
 
-    # Fast coordinators: 1 request each, ~2s total — safe to block
-    await weather_coordinator.async_config_entry_first_refresh()
-    await alert_coordinator.async_config_entry_first_refresh()
-    try:
-        await aqhi_coordinator.async_config_entry_first_refresh()
-    except (TimeoutError, aiohttp.ClientError):
-        _LOGGER.debug("EC Weather: AQHI data not available, will retry")
+    # Fetch all three coordinators in parallel (~2s instead of ~6s sequential)
+    weather_task = weather_coordinator.async_config_entry_first_refresh()
+    alert_task = alert_coordinator.async_config_entry_first_refresh()
 
-    hass.data[DOMAIN][entry.entry_id] = {
-        COORDINATOR_WEATHER: weather_coordinator,
-        COORDINATOR_ALERTS: alert_coordinator,
-        COORDINATOR_AQHI: aqhi_coordinator,
-        COORDINATOR_WEONG: weong_coordinator,
-    }
+    async def _safe_aqhi_refresh():
+        try:
+            await aqhi_coordinator.async_config_entry_first_refresh()
+        except (TimeoutError, aiohttp.ClientError):
+            _LOGGER.debug("EC Weather: AQHI data not available, will retry")
+
+    await asyncio.gather(weather_task, alert_task, _safe_aqhi_refresh())
+
+    # Startup canary: verify the weather API response has expected keys
+    if weather_coordinator.data:
+        props_ok = all(k in weather_coordinator.data for k in ("current", "hourly", "daily"))
+        if not props_ok:
+            _LOGGER.warning("EC Weather: API response may have changed — some data keys missing")
+
+    hass.data[DOMAIN][entry.entry_id] = ECWeatherData(
+        weather=weather_coordinator,
+        alerts=alert_coordinator,
+        aqhi=aqhi_coordinator,
+        weong=weong_coordinator,
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -159,10 +218,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the lazy timestep fetch service
     async def _handle_fetch_day_timesteps(call):
         date_str = call.data["date"]
+        # Known limitation: iterates all entries and acts on the first match.
+        # This is fine while config_flow.py enforces a single-instance guard.
+        # When multi-instance support is added, this will need to accept an
+        # entry_id parameter or dispatch to all instances.
         for entry_data in hass.data[DOMAIN].values():
-            if COORDINATOR_WEONG in entry_data:
-                coordinator = entry_data[COORDINATOR_WEONG]
-                await coordinator.async_fetch_day_timesteps(date_str)
+            if isinstance(entry_data, ECWeatherData):
+                await entry_data.weong.async_fetch_day_timesteps(date_str)
                 return
 
     if not hass.services.has_service(DOMAIN, SERVICE_FETCH_DAY_TIMESTEPS):
@@ -170,7 +232,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             DOMAIN,
             SERVICE_FETCH_DAY_TIMESTEPS,
             _handle_fetch_day_timesteps,
-            schema=vol.Schema({vol.Required("date"): str}),
+            schema=vol.Schema({vol.Required("date"): vol.Match(r"^\d{4}-\d{2}-\d{2}$")}),
         )
 
     _LOGGER.debug("EC Weather: setup complete (language=%s)", language)
