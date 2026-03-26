@@ -8,8 +8,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_CITY_CODE, COORDINATOR_ALERTS, DOMAIN
+from .const import CONF_CITY_CODE, CONF_CITY_NAME, DOMAIN
 from .coordinator import ECAlertCoordinator
+from .models import ECWeatherData, build_device_info
 
 
 class ECAlertActiveSensor(CoordinatorEntity[ECAlertCoordinator], BinarySensorEntity):
@@ -20,11 +21,13 @@ class ECAlertActiveSensor(CoordinatorEntity[ECAlertCoordinator], BinarySensorEnt
     existing dashboard cards and automations continue to work unchanged.
     """
 
-    _attr_name = "EC Alert Active"
+    _attr_has_entity_name = True
+    _attr_name = "Alert Active"
 
-    def __init__(self, coordinator: ECAlertCoordinator, city_code: str) -> None:
+    def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_alert_active_{city_code}"
+        self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
     def is_on(self) -> bool:
@@ -39,6 +42,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up EC Weather binary sensor entities from a config entry."""
-    coordinator: ECAlertCoordinator = hass.data[DOMAIN][entry.entry_id][COORDINATOR_ALERTS]
+    data: ECWeatherData = hass.data[DOMAIN][entry.entry_id]
     city_code = entry.data[CONF_CITY_CODE]
-    async_add_entities([ECAlertActiveSensor(coordinator, city_code)])
+    city_name = entry.data.get(CONF_CITY_NAME, city_code)
+    async_add_entities([ECAlertActiveSensor(data.alerts, city_code, city_name)])

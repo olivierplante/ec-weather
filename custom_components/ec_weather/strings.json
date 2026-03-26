@@ -1,4 +1,29 @@
 {
+  "entity": {
+    "sensor": {
+      "ec_temperature": { "name": "Temperature" },
+      "ec_feels_like": { "name": "Feels Like" },
+      "ec_humidity": { "name": "Humidity" },
+      "ec_wind_speed": { "name": "Wind Speed" },
+      "ec_wind_gust": { "name": "Wind Gust" },
+      "ec_wind_direction": { "name": "Wind Direction" },
+      "ec_condition": { "name": "Condition" },
+      "ec_icon_code": { "name": "Icon Code" },
+      "ec_sunrise": { "name": "Sunrise" },
+      "ec_sunset": { "name": "Sunset" },
+      "ec_hourly_forecast": { "name": "Hourly Forecast" },
+      "ec_daily_forecast": { "name": "Daily Forecast" },
+      "ec_weather_summary": { "name": "Weather Summary" },
+      "ec_air_quality": { "name": "Air Quality" },
+      "ec_alert_count": { "name": "Alert Count" },
+      "ec_alerts": { "name": "Alerts" },
+      "ec_temp_gauge": { "name": "Temperature Gauge" },
+      "ec_feels_gauge": { "name": "Feels Like Gauge" }
+    },
+    "weather": {
+      "ec_weather": { "name": "Weather" }
+    }
+  },
   "config": {
     "step": {
       "user": {

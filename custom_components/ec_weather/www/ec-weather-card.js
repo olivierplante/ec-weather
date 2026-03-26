@@ -7,6 +7,7 @@
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
+// Canonical source: icon_registry.py — keep in sync
 const EC_ICON_MAP = {
   0:  'mdi:weather-sunny',
   1:  'mdi:weather-partly-cloudy',
@@ -59,7 +60,76 @@ const EC_ICON_MAP = {
   48: 'mdi:weather-tornado',
 };
 
-const DAY_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+// ─── Localization ───────────────────────────────────────────────────────────
+
+const I18N = {
+  en: {
+    days: ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'],
+    feels: 'Feels like',
+    feelsShort: 'Feels',
+    gusts: 'gusts',
+    wind: 'Wind',
+    humidity: 'Humidity',
+    aqhi: 'Air Quality',
+    uv: 'UV',
+    daylightRemaining: 'daylight remaining',
+    day: 'DAY',
+    night: 'NIGHT',
+    timeline: 'Timeline',
+    hourly: 'HOURLY',
+    daily: 'DAILY',
+    loading: 'Loading\u2026',
+    weatherUnavailable: 'Weather data unavailable',
+    retry: 'Retry',
+    expires: 'Expires',
+    dayAbbr: {
+      Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed',
+      Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun',
+      Tomorrow: 'Tmrw',
+    },
+  },
+  fr: {
+    days: ['DIM', 'LUN', 'MAR', 'MER', 'JEU', 'VEN', 'SAM'],
+    feels: 'Ressenti',
+    feelsShort: 'Ressenti',
+    gusts: 'rafales',
+    wind: 'Vent',
+    humidity: 'Humidité',
+    aqhi: 'Qualité de l\u2019air',
+    uv: 'UV',
+    daylightRemaining: 'de lumière restante',
+    day: 'JOUR',
+    night: 'NUIT',
+    timeline: 'Chronologie',
+    hourly: 'HORAIRE',
+    daily: 'QUOTIDIEN',
+    loading: 'Chargement\u2026',
+    weatherUnavailable: 'Données météo indisponibles',
+    retry: 'Réessayer',
+    expires: 'Expire',
+    dayAbbr: {
+      Monday: 'Lun', Tuesday: 'Mar', Wednesday: 'Mer',
+      Thursday: 'Jeu', Friday: 'Ven', Saturday: 'Sam', Sunday: 'Dim',
+      Tomorrow: 'Demain',
+      Lundi: 'Lun', Mardi: 'Mar', Mercredi: 'Mer',
+      Jeudi: 'Jeu', Vendredi: 'Ven', Samedi: 'Sam', Dimanche: 'Dim',
+      Demain: 'Demain',
+    },
+  },
+};
+
+/** Escape HTML special characters to prevent XSS from API-sourced strings. */
+function escapeHtml(str) {
+  if (str == null) return '';
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function t(hass, key) {
+  const lang = (hass && hass.language) || 'en';
+  const strings = I18N[lang] || I18N.en;
+  return strings[key] != null ? strings[key] : (I18N.en[key] != null ? I18N.en[key] : key);
+}
 
 const VALID_SECTIONS = ['alerts', 'current', 'hourly', 'daily'];
 
@@ -101,23 +171,97 @@ function titleCase(str) {
 
 function fmtAmt(val) {
   if (val == null || val <= 0) return null;
-  return val < 1 ? '<1' : String(Math.round(val * 10) / 10);
+  return val < 1 ? '<1' : String(Math.round(val));
 }
 
-function fmtWind(speed, gust, dir) {
+function fmtWind(speed, gust, dir, hass) {
   if (!speed && !gust) return '';
-  let s = dir ? dir + ' ' : '';
+  let s = dir ? escapeHtml(dir) + ' ' : '';
   s += Math.round(speed) + ' km/h';
-  if (gust && gust > speed) s += ' (gusts ' + Math.round(gust) + ')';
+  if (gust && gust > speed) s += ' (' + t(hass, 'gusts') + ' ' + Math.round(gust) + ')';
   return s;
 }
 
-function fmtTime(isoStr) {
+function fmtTime(isoStr, hass) {
   const d = new Date(isoStr);
-  const h = d.getHours();
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const h12 = h % 12 || 12;
-  return h12 + ampm;
+  const lang = (hass && hass.language) || 'en';
+  if (lang === 'fr') {
+    return d.getHours() + 'h';
+  }
+  const hr = d.getHours();
+  if (hr === 0) return '12AM';
+  if (hr === 12) return '12PM';
+  return hr > 12 ? (hr - 12) + 'PM' : hr + 'AM';
+}
+
+/** Determine precip color based on rain/snow amounts and precip type. */
+function precipAmtColor(rain, snow, precipType) {
+  if ((snow || 0) > 0 && (rain || 0) > 0) return 'var(--ec-weather-precip-rain, #4FC3F7)';
+  if ((snow || 0) > 0) return 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
+  if ((rain || 0) > 0) return 'var(--ec-weather-precip-rain, #4FC3F7)';
+  if (precipType === 'snow') return 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
+  return 'var(--ec-weather-precip-rain, #4FC3F7)';
+}
+
+/** Pre-scan a list of timestep items to determine which optional rows have data. */
+function scanTimestepFlags(items) {
+  return {
+    anyFeels: items.some(i => {
+      const fl = i.feels_like;
+      const t = i.temp != null ? Math.round(i.temp) : null;
+      return fl != null && Math.round(fl) !== t;
+    }),
+    anyPop: items.some(i => (i.precipitation_probability || 0) > 0),
+    anyRain: items.some(i => (i.rain_mm || 0) > 0),
+    anySnow: items.some(i => (i.snow_cm || 0) > 0),
+  };
+}
+
+/** Build grid-template-rows string based on which optional rows are present. */
+function buildGridRows(flags) {
+  let rows = '20px 36px 22px'; // time, icon, temp (always)
+  if (flags.anyFeels) rows += ' 18px';
+  if (flags.anyPop) rows += ' 16px';
+  if (flags.anyRain) rows += ' 16px';
+  if (flags.anySnow) rows += ' 16px';
+  return rows;
+}
+
+/** Render a single timestep column (shared by hourly forecast and daily popup timeline). */
+function renderTimestepCol(ts, gridRows, flags, colors, hass) {
+  const icon = ts.icon_code != null ? ecIcon(ts.icon_code) : null;
+  const temp = ts.temp != null ? Math.round(ts.temp) : null;
+  const tempStr = temp != null ? temp + '\u00b0' : '\u2014';
+  const feelsRaw = ts.feels_like;
+  const feels = feelsRaw != null ? Math.round(feelsRaw) : null;
+  const showFeels = feels != null && feels !== temp;
+  const pop = Math.ceil((ts.precipitation_probability || 0) / 5) * 5;
+  const popColor = ((ts.snow_cm || 0) > 0 && (ts.rain_mm || 0) === 0) ? colors.snow : colors.rain;
+  const rain = ts.rain_mm || 0;
+  const snow = ts.snow_cm || 0;
+
+  let html = '<div style="min-width:54px;flex:0 0 54px;display:grid;justify-items:center;align-items:center;padding:8px 0;'
+    + 'grid-template-rows:' + gridRows + ';border-right:1px solid var(--ec-weather-divider, var(--divider-color, rgba(255,255,255,0.06)))">';
+  html += '<div style="font-size:12px;font-weight:500;color:var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.5)))">' + fmtTime(ts.time, hass) + '</div>';
+  if (icon) {
+    html += '<ha-icon icon="' + icon + '" style="--mdc-icon-size:28px;color:var(--ec-weather-text-primary, var(--primary-text-color, rgba(255,255,255,0.85)))"></ha-icon>';
+  } else if (colors.showLoadingDot) {
+    html += '<div style="height:28px;display:flex;align-items:center;justify-content:center">'
+      + '<div style="width:8px;height:8px;border-radius:50%;background:var(--divider-color, rgba(255,255,255,0.15))"></div></div>';
+  } else {
+    html += '<div style="height:28px"></div>';
+  }
+  html += '<div style="font-size:16px;font-weight:700;color:var(--ec-weather-text-primary, var(--primary-text-color, #fff))">' + tempStr + '</div>';
+  if (flags.anyFeels) html += '<div style="font-size:12px;font-weight:400;color:var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.45)));'
+    + (showFeels ? '' : 'visibility:hidden') + '">FL ' + (showFeels ? feels + '\u00b0' : '0') + '</div>';
+  if (flags.anyPop) html += '<div style="font-size:12px;font-weight:600;color:' + popColor + ';'
+    + (pop >= 5 ? '' : 'visibility:hidden') + '">' + (pop >= 5 ? pop + '%' : '0') + '</div>';
+  if (flags.anyRain) html += '<div style="font-size:12px;font-weight:500;color:' + colors.rain + ';'
+    + (rain > 0 ? '' : 'visibility:hidden') + '">' + (rain > 0 ? fmtAmt(rain) + 'mm' : '0') + '</div>';
+  if (flags.anySnow) html += '<div style="font-size:12px;font-weight:500;color:' + colors.snow + ';'
+    + (snow > 0 ? '' : 'visibility:hidden') + '">' + (snow > 0 ? fmtAmt(snow) + 'cm' : '0') + '</div>';
+  html += '</div>';
+  return html;
 }
 
 /** Read an entity state, returning null if unavailable/unknown/missing. */
@@ -133,13 +277,6 @@ function entityNum(hass, entityId) {
   if (v === null) return null;
   const n = parseFloat(v);
   return isNaN(n) ? null : n;
-}
-
-function precipColor(rain, snow, precipType) {
-  if (snow > 0) return 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
-  if (rain > 0) return 'var(--ec-weather-precip-rain, #4FC3F7)';
-  if (precipType === 'snow') return 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
-  return 'var(--ec-weather-precip-rain, #4FC3F7)';
 }
 
 // ─── Reusable Overlay ────────────────────────────────────────────────────────
@@ -302,6 +439,7 @@ class ECWeatherCard extends HTMLElement {
     this._hass = null;
     this._config = null;
     this._rendered = false;
+    this._expandedAlerts = new Set();
   }
 
   setConfig(config) {
@@ -394,7 +532,7 @@ class ECWeatherCard extends HTMLElement {
       const weatherUp = tempState && tempState.state !== 'unavailable';
       if (weatherUp) {
         this._rendered = true;
-        const title = this._config.section === 'hourly' ? 'HOURLY' : 'DAILY';
+        const title = this._config.section === 'hourly' ? t(this._hass, 'hourly') : t(this._hass, 'daily');
         this.shadowRoot.innerHTML = `
           <style>
             :host { display: block; contain: inline-size; }
@@ -414,7 +552,7 @@ class ECWeatherCard extends HTMLElement {
             }
           </style>
           <div class="section-header">${title}</div>
-          <div class="loading">Loading\u2026</div>
+          <div class="loading">${t(this._hass, 'loading')}</div>
         `;
         return;
       }
@@ -470,9 +608,9 @@ class ECWeatherCard extends HTMLElement {
       </style>
       <div class="unavailable">
         <ha-icon icon="mdi:weather-cloudy-alert"></ha-icon>
-        <div class="msg">Weather data unavailable</div>
+        <div class="msg">${t(this._hass, 'weatherUnavailable')}</div>
         <button class="retry-btn" id="retry">
-          <ha-icon icon="mdi:refresh"></ha-icon>Retry
+          <ha-icon icon="mdi:refresh"></ha-icon>${t(this._hass, 'retry')}
         </button>
       </div>
     `;
@@ -516,11 +654,12 @@ class ECWeatherCard extends HTMLElement {
       statement: 'var(--ec-weather-alert-statement, var(--secondary-text-color, rgba(255,255,255,0.6)))',
     };
 
+    const lang = (h && h.language) || 'en';
     const fmtExp = (iso) => {
       if (!iso) return '';
       const d = new Date(iso);
       if (isNaN(d)) return '';
-      return d.toLocaleDateString('en-CA', {
+      return d.toLocaleDateString(lang === 'fr' ? 'fr-CA' : 'en-CA', {
         weekday: 'short', month: 'short', day: 'numeric',
         hour: 'numeric', minute: '2-digit',
       });
@@ -529,12 +668,12 @@ class ECWeatherCard extends HTMLElement {
     let bannersHtml = '';
     alerts.forEach((alert, i) => {
       const color = colors[alert.type] || colors.advisory;
-      const headline = titleCase(alert.headline || alert.type);
+      const headline = escapeHtml(titleCase(alert.headline || alert.type));
       const exp = fmtExp(alert.expires);
       const expLine = exp
-        ? '<div style="margin-bottom:8px;font-weight:500;opacity:0.85">Expires: ' + exp + '</div>'
+        ? '<div style="margin-bottom:8px;font-weight:500;opacity:0.85">' + t(h, 'expires') + ': ' + exp + '</div>'
         : '';
-      const text = (alert.text || '').replace(/</g, '&lt;');
+      const text = escapeHtml(alert.text || '');
 
       if (i > 0) bannersHtml += '<div style="height:8px"></div>';
       bannersHtml += `
@@ -593,14 +732,22 @@ class ECWeatherCard extends HTMLElement {
       <div id="alerts">${bannersHtml}</div>
     `;
 
-    // Attach click handlers
+    // Restore expanded state and attach click handlers
     this.shadowRoot.querySelectorAll('.alert-header').forEach(el => {
+      const idx = el.dataset.index;
+      const detail = this.shadowRoot.getElementById('alert-detail-' + idx);
+      if (detail && this._expandedAlerts.has(idx)) {
+        detail.style.display = 'block';
+      }
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        const idx = el.dataset.index;
-        const detail = this.shadowRoot.getElementById('alert-detail-' + idx);
-        if (detail) {
-          detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+        if (!detail) return;
+        const isHidden = getComputedStyle(detail).display === 'none';
+        detail.style.display = isHidden ? 'block' : 'none';
+        if (isHidden) {
+          this._expandedAlerts.add(idx);
+        } else {
+          this._expandedAlerts.delete(idx);
         }
       });
     });
@@ -612,9 +759,9 @@ class ECWeatherCard extends HTMLElement {
     // Temperature + feels-like
     const temp = entityNum(h, 'sensor.ec_temperature');
     const fl = entityNum(h, 'sensor.ec_feels_like');
-    const t = temp !== null ? Math.round(temp) : null;
+    const tVal = temp !== null ? Math.round(temp) : null;
     const f = fl !== null ? Math.round(fl) : null;
-    const showFl = f !== null && t !== null && f !== t;
+    const showFl = f !== null && tVal !== null && f !== tVal;
 
     // Wind
     const windSpeed = entityNum(h, 'sensor.ec_wind_speed');
@@ -622,10 +769,10 @@ class ECWeatherCard extends HTMLElement {
     const windDir = entityVal(h, 'sensor.ec_wind_direction');
     let windText = '';
     if (windSpeed !== null) {
-      windText = 'Wind ' + Math.round(windSpeed) + ' km/h';
+      windText = t(h, 'wind') + ' ' + Math.round(windSpeed) + ' km/h';
       if (windDir) windText += ' ' + windDir;
       if (windGust !== null && windGust > windSpeed)
-        windText += ' (gusts ' + Math.round(windGust) + ' km/h)';
+        windText += ' (' + t(h, 'gusts') + ' ' + Math.round(windGust) + ' km/h)';
     }
 
     // AQHI (optional, hidden when < 4)
@@ -638,14 +785,14 @@ class ECWeatherCard extends HTMLElement {
         : aqhi >= 7
           ? 'var(--ec-weather-alert-watch, #F97316)'
           : 'var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)))';
-      aqhiHtml = `<div class="aqhi" style="color:${color}">Air Quality: ${Math.round(aqhi)} \u00b7 ${risk}</div>`;
+      aqhiHtml = `<div class="aqhi" style="color:${color}">${t(h, 'aqhi')}: ${Math.round(aqhi)} \u00b7 ${risk}</div>`;
     }
 
     // Condition + icon
     const condition = entityVal(h, 'sensor.ec_condition');
     const iconCode = entityNum(h, 'sensor.ec_icon_code');
     const icon = ecIcon(iconCode);
-    const condText = condition ? titleCase(condition) : '';
+    const condText = condition ? escapeHtml(titleCase(condition)) : '';
 
     // Sun times
     const sunrise = entityVal(h, 'sensor.ec_sunrise');
@@ -676,12 +823,13 @@ class ECWeatherCard extends HTMLElement {
           if (pastSunrise) {
             const hours = Math.floor(diff / (1000 * 60 * 60));
             const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+            const dlLabel = t(h, 'daylightRemaining');
             if (hours === 0 && mins < 1)
-              daylightHtml = '<div class="daylight">&lt; 1m daylight remaining</div>';
+              daylightHtml = '<div class="daylight">&lt; 1m ' + dlLabel + '</div>';
             else if (hours === 0)
-              daylightHtml = `<div class="daylight">${mins}m daylight remaining</div>`;
+              daylightHtml = `<div class="daylight">${mins}m ${dlLabel}</div>`;
             else
-              daylightHtml = `<div class="daylight">${hours}h ${mins}m daylight remaining</div>`;
+              daylightHtml = `<div class="daylight">${hours}h ${mins}m ${dlLabel}</div>`;
           }
         }
       }
@@ -742,8 +890,8 @@ class ECWeatherCard extends HTMLElement {
         }
       </style>
       <div class="temp-row">
-        <span class="t-val">${t !== null ? t + '\u00b0' : '--\u00b0'}</span>
-        ${showFl ? '<span class="t-fl">Feels like ' + f + '\u00b0</span>' : ''}
+        <span class="t-val">${tVal !== null ? tVal + '\u00b0' : '--\u00b0'}</span>
+        ${showFl ? '<span class="t-fl">' + t(h, 'feels') + ' ' + f + '\u00b0</span>' : ''}
       </div>
       ${windText ? '<div class="wind">' + windText + '</div>' : ''}
       ${aqhiHtml}
@@ -766,77 +914,30 @@ class ECWeatherCard extends HTMLElement {
       return;
     }
 
-    // Pre-scan: determine which optional rows have any data
-    const anyFeels = forecast.some(i => {
-      const fl = i.feels_like;
-      const t = i.temp !== null && i.temp !== undefined ? Math.round(i.temp) : null;
-      return fl !== null && fl !== undefined && Math.round(fl) !== t;
-    });
-    const anyPop = forecast.some(i => Math.ceil((i.precip_prob || 0) / 5) * 5 >= 5);
-    const anyRain = forecast.some(i => (i.rain_amt_mm || 0) > 0);
-    const anySnow = forecast.some(i => (i.snow_amt_cm || 0) > 0);
-
-    // Build grid-template-rows based on which optional rows are present
-    let gridRows = '20px 36px 22px'; // time, icon, temp (always)
-    if (anyFeels) gridRows += ' 18px';
-    if (anyPop) gridRows += ' 16px';
-    if (anyRain) gridRows += ' 16px';
-    if (anySnow) gridRows += ' 16px';
+    const RAIN_COLOR = 'var(--ec-weather-precip-rain, #4FC3F7)';
+    const SNOW_COLOR = 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
+    const flags = scanTimestepFlags(forecast);
+    const gridRows = buildGridRows(flags);
+    const colors = { rain: RAIN_COLOR, snow: SNOW_COLOR, showLoadingDot: false };
 
     let itemsHtml = '';
     let prevDateStr = null;
 
     forecast.forEach(item => {
-      if (item.temp === null && item.temp === undefined) return;
-      const date = new Date(item.datetime);
+      if (item.temp == null && item.icon_code == null && item.precipitation_probability == null) return;
+      const date = new Date(item.time);
       const dateStr = date.toLocaleDateString('en-CA');
 
       // Day separator
       if (prevDateStr !== null && dateStr !== prevDateStr) {
         itemsHtml += `
           <div class="hourly-day-sep">
-            <div class="hourly-day-label">${DAY_NAMES[date.getDay()]}</div>
+            <div class="hourly-day-label">${t(h, 'days')[date.getDay()]}</div>
           </div>`;
       }
       prevDateStr = dateStr;
 
-      const hour = date.getHours();
-      const ampm = hour >= 12 ? 'PM' : 'AM';
-      const hour12 = hour % 12 || 12;
-      const timeStr = hour12 + ' ' + ampm;
-
-      const icon = ecIcon(item.icon_code);
-      const temp = item.temp !== null && item.temp !== undefined
-        ? Math.round(item.temp) : '\u2014';
-      const precipProbRaw = item.precip_prob || 0;
-      const precipProb = Math.ceil(precipProbRaw / 5) * 5;
-
-      const feelsLikeRaw = item.feels_like;
-      const feelsLike = feelsLikeRaw !== null && feelsLikeRaw !== undefined
-        ? Math.round(feelsLikeRaw) : null;
-      const showFeels = feelsLike !== null && feelsLike !== temp;
-
-      const rainAmt = item.rain_amt_mm || 0;
-      const snowAmt = item.snow_amt_cm || 0;
-
-      itemsHtml += `
-        <div class="hourly-item" style="grid-template-rows:${gridRows}">
-          <div class="hourly-time">${timeStr}</div>
-          <ha-icon icon="${icon}" class="hourly-icon"></ha-icon>
-          <div class="hourly-temp">${temp}\u00b0</div>
-          ${anyFeels ? '<div class="hourly-feels" style="'
-            + (showFeels ? '' : 'visibility:hidden')
-            + '">' + (showFeels ? 'FL ' + feelsLike + '\u00b0' : '\u2014') + '</div>' : ''}
-          ${anyPop ? '<div class="hourly-precip" style="'
-            + (precipProb >= 5 ? '' : 'visibility:hidden')
-            + '">' + (precipProb >= 5 ? precipProb + '%' : '') + '</div>' : ''}
-          ${anyRain ? '<div class="hourly-rain-amt" style="'
-            + (rainAmt > 0 ? '' : 'visibility:hidden')
-            + '">' + (rainAmt > 0 ? rainAmt + 'mm' : '0') + '</div>' : ''}
-          ${anySnow ? '<div class="hourly-snow-amt" style="'
-            + (snowAmt > 0 ? '' : 'visibility:hidden')
-            + '">' + (snowAmt > 0 ? snowAmt + 'cm' : '0') + '</div>' : ''}
-        </div>`;
+      itemsHtml += renderTimestepCol(item, gridRows, flags, colors, h);
     });
 
     this.shadowRoot.innerHTML = `
@@ -865,55 +966,6 @@ class ECWeatherCard extends HTMLElement {
           gap: 0;
         }
         .hourly-scroll::-webkit-scrollbar { display: none; }
-        .hourly-item {
-          flex: 0 0 54px;
-          min-width: 54px;
-          display: grid;
-          justify-items: center;
-          align-items: center;
-          padding: 8px 0;
-          border-right: 1px solid var(--ec-weather-divider, var(--divider-color, rgba(255,255,255,0.06)));
-        }
-        .hourly-item:last-child { border-right: none; }
-        .hourly-time {
-          font-size: 12px;
-          font-weight: 500;
-          color: var(--ec-weather-text-secondary, var(--secondary-text-color, rgba(255,255,255,0.6)));
-        }
-        .hourly-icon {
-          --mdc-icon-size: 28px;
-          color: var(--ec-weather-text-primary, var(--primary-text-color, rgba(255,255,255,0.85)));
-        }
-        .hourly-temp {
-          font-size: 16px;
-          font-weight: 700;
-          line-height: 20px;
-          color: var(--ec-weather-text-primary, var(--primary-text-color, #FFFFFF));
-        }
-        .hourly-feels {
-          font-size: 12px;
-          font-weight: 400;
-          line-height: 16px;
-          color: var(--ec-weather-text-muted, var(--secondary-text-color, rgba(255,255,255,0.45)));
-        }
-        .hourly-precip {
-          font-size: 12px;
-          font-weight: 600;
-          line-height: 16px;
-          color: var(--ec-weather-precip-rain, #4FC3F7);
-        }
-        .hourly-rain-amt {
-          font-size: 12px;
-          font-weight: 500;
-          line-height: 16px;
-          color: var(--ec-weather-precip-rain, #4FC3F7);
-        }
-        .hourly-snow-amt {
-          font-size: 12px;
-          font-weight: 500;
-          line-height: 16px;
-          color: var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)));
-        }
         .hourly-day-sep {
           flex: 0 0 36px;
           min-width: 36px;
@@ -935,7 +987,7 @@ class ECWeatherCard extends HTMLElement {
           transform: rotate(180deg);
         }
       </style>
-      <div class="section-header">HOURLY</div>
+      <div class="section-header">${t(h, 'hourly')}</div>
       <div class="hourly-scroll">${itemsHtml}</div>
     `;
   }
@@ -952,61 +1004,32 @@ class ECWeatherCard extends HTMLElement {
 
     const RAIN_COLOR = 'var(--ec-weather-precip-rain, #4FC3F7)';
     const SNOW_COLOR = 'var(--ec-weather-precip-snow, var(--primary-text-color, rgba(255,255,255,0.85)))';
-    const dayAbbr = {
-      Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed',
-      Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun',
-      Tomorrow: 'Tmrw',
-    };
-
-    const colPrecipColor = (rainAmt, snowAmt, precipType) => {
-      if ((snowAmt || 0) > 0 && (rainAmt || 0) > 0) return RAIN_COLOR;
-      if ((snowAmt || 0) > 0) return SNOW_COLOR;
-      if ((rainAmt || 0) > 0) return RAIN_COLOR;
-      if (precipType === 'snow') return SNOW_COLOR;
-      return RAIN_COLOR;
-    };
-
-    const dailyPrecipColor = (rainDay, rainNight, snowDay, snowNight, precipType) => {
-      const rain = (rainDay || 0) + (rainNight || 0);
-      const snow = (snowDay || 0) + (snowNight || 0);
-      if (snow > 0 && rain > 0) return RAIN_COLOR;
-      if (snow > 0) return SNOW_COLOR;
-      if (rain > 0) return RAIN_COLOR;
-      if (precipType === 'snow') return SNOW_COLOR;
-      return RAIN_COLOR;
-    };
-
-    const localFmtAmt = (v) => v < 1 ? '<1' : Math.round(v);
+    const dayAbbr = t(h, 'dayAbbr');
 
     const localFmtWind = (speed, gust, dir) => {
       if (speed == null) return null;
       let w = dir ? dir + ' ' : '';
       w += Math.round(speed) + ' km/h';
-      if (gust != null) w += ' gusts ' + Math.round(gust);
+      if (gust != null) w += ' ' + t(h, 'gusts') + ' ' + Math.round(gust);
       return w;
     };
 
-    const localFmtTime = (iso) => {
-      const d = new Date(iso);
-      const hr = d.getHours();
-      if (hr === 0) return '12AM';
-      if (hr === 12) return '12PM';
-      return hr > 12 ? (hr - 12) + 'PM' : hr + 'AM';
-    };
+    // Last update timestamp for popup footer
+    const lastUpdated = sensor?.state;
 
     // Store forecast for lazy popup fetch reference
     this._lastForecast = forecast;
 
     // Pre-compute popup data for each day
     this._dailyPopups = forecast.map((item) => {
-      const fullName = (item.period || '').split(' ')[0];
+      const fullName = escapeHtml((item.period || '').split(' ')[0]);
       const isNightOnly = item.icon_code === null;
 
       const dayIconStr = item.icon_code != null ? ecIcon(item.icon_code) : null;
       const nightCode = item.icon_code_night != null ? item.icon_code_night : item.icon_code;
       const nightIconStr = nightCode != null ? ecIcon(nightCode) : 'mdi:weather-night';
 
-      const condText = item.condition || item.condition_night || '';
+      const condText = escapeHtml(item.condition || item.condition_night || '');
       const dTemp = item.temp_high != null ? Math.round(item.temp_high) + '\u00b0' : '\u2014';
       const nTemp = item.temp_low != null ? Math.round(item.temp_low) + '\u00b0' : '\u2014';
 
@@ -1015,8 +1038,8 @@ class ECWeatherCard extends HTMLElement {
       const showFlH = flH !== null && item.temp_high !== null && Math.abs(flH - Math.round(item.temp_high)) >= 3;
       const showFlL = flL !== null && item.temp_low !== null && Math.abs(flL - Math.round(item.temp_low)) >= 3;
 
-      const dPrecipCol = colPrecipColor(item.rain_amt_mm_day, item.snow_amt_cm_day, item.precip_type);
-      const nPrecipCol = colPrecipColor(item.rain_amt_mm_night, item.snow_amt_cm_night, item.precip_type);
+      const dPrecipCol = precipAmtColor(item.rain_mm_day, item.snow_cm_day, item.precip_type);
+      const nPrecipCol = precipAmtColor(item.rain_mm_night, item.snow_cm_night, item.precip_type);
 
       const muted = 'color:var(--secondary-text-color, rgba(255,255,255,0.35))';
       const dash = '<span style="' + muted + '">\u2014</span>';
@@ -1038,98 +1061,55 @@ class ECWeatherCard extends HTMLElement {
         c += '<div style="font-size:13px;font-weight:400;color:var(--secondary-text-color, rgba(255,255,255,0.45));min-height:18px;' + flVis + '">' + flTxt + '</div>';
         if (windStr) c += '<div style="' + mutedSm + ';margin-top:8px"><ha-icon icon="mdi:weather-windy" style="' + icoSm + '"></ha-icon>' + windStr + '</div>';
         if (humidity != null) c += '<div style="' + mutedSm + ';margin-top:4px"><ha-icon icon="mdi:water-percent" style="' + icoSm + '"></ha-icon>' + humidity + '%</div>';
-        if (uvIdx != null) c += '<div style="' + mutedSm + ';margin-top:4px"><ha-icon icon="mdi:weather-sunny-alert" style="' + icoSm + '"></ha-icon>UV ' + uvIdx + (uvCat ? ' (' + uvCat + ')' : '') + '</div>';
+        if (uvIdx != null) c += '<div style="' + mutedSm + ';margin-top:4px"><ha-icon icon="mdi:weather-sunny-alert" style="' + icoSm + '"></ha-icon>UV ' + uvIdx + (uvCat ? ' (' + escapeHtml(uvCat) + ')' : '') + '</div>';
         if (accumAmt != null && accumAmt > 0) {
           const accumColor = (accumName === 'snow') ? SNOW_COLOR : RAIN_COLOR;
-          c += '<div style="margin-top:10px"><div style="font-size:13px;font-weight:500;color:' + accumColor + '">' + accumAmt + (accumUnit || '') + ' ' + (accumName || '') + '</div></div>';
+          c += '<div style="margin-top:10px"><div style="font-size:13px;font-weight:500;color:' + accumColor + '">' + accumAmt + escapeHtml(accumUnit || '') + ' ' + escapeHtml(accumName || '') + '</div></div>';
         }
         if ((rain || 0) > 0 || (snow || 0) > 0) {
           c += '<div style="margin-top:' + (accumAmt > 0 ? '4' : '10') + 'px">';
-          if ((rain || 0) > 0) c += '<div style="font-size:11px;font-weight:400;color:' + RAIN_COLOR + ';opacity:0.6;margin-top:2px">\u03a3 ' + localFmtAmt(rain) + 'mm</div>';
-          if ((snow || 0) > 0) c += '<div style="font-size:11px;font-weight:400;color:' + SNOW_COLOR + ';opacity:0.6;margin-top:2px">\u03a3 ' + localFmtAmt(snow) + 'cm</div>';
+          if ((rain || 0) > 0) c += '<div style="font-size:11px;font-weight:400;color:' + RAIN_COLOR + ';opacity:0.6;margin-top:2px">\u03a3 ' + fmtAmt(rain) + 'mm</div>';
+          if ((snow || 0) > 0) c += '<div style="font-size:11px;font-weight:400;color:' + SNOW_COLOR + ';opacity:0.6;margin-top:2px">\u03a3 ' + fmtAmt(snow) + 'cm</div>';
           c += '</div>';
         }
         c += '</div>';
         return c;
       };
 
-      const dayCol = popupCol('DAY',
+      const dayCol = popupCol(t(h, 'day'),
         isNightOnly ? null : dayIconStr, isNightOnly ? dash : dTemp,
         isNightOnly ? false : showFlH, flH,
-        isNightOnly ? null : item.precip_prob_day, isNightOnly ? null : item.rain_amt_mm_day,
-        isNightOnly ? null : item.snow_amt_cm_day, dPrecipCol,
+        isNightOnly ? null : item.precip_prob_day, isNightOnly ? null : item.rain_mm_day,
+        isNightOnly ? null : item.snow_cm_day, dPrecipCol,
         isNightOnly ? null : localFmtWind(item.wind_speed, item.wind_gust, item.wind_direction),
         isNightOnly ? null : item.humidity,
         isNightOnly ? null : item.precip_accum_amount, isNightOnly ? null : item.precip_accum_unit,
         isNightOnly ? null : item.precip_accum_name,
         isNightOnly ? null : item.uv_index, isNightOnly ? null : item.uv_category);
 
-      const nightCol = popupCol('NIGHT', nightIconStr, nTemp, showFlL, flL,
-        item.precip_prob_night, item.rain_amt_mm_night, item.snow_amt_cm_night, nPrecipCol,
+      const nightCol = popupCol(t(h, 'night'), nightIconStr, nTemp, showFlL, flL,
+        item.precip_prob_night, item.rain_mm_night, item.snow_cm_night, nPrecipCol,
         localFmtWind(item.wind_speed_night, item.wind_gust_night, item.wind_direction_night),
         item.humidity_night,
         item.precip_accum_amount_night, item.precip_accum_unit_night, item.precip_accum_name_night,
         null, null);
 
-      const textSummary = item.text_summary || item.text_summary_night || '';
+      const textSummary = escapeHtml(item.text_summary || item.text_summary_night || '');
 
-      // Timeline — uses grid alignment matching the main hourly forecast
+      // Timeline — uses shared timestep rendering
       const allTimesteps = (item.timesteps_day || []).concat(item.timesteps_night || []);
       let timelineHtml = '';
       if (allTimesteps.length > 0) {
-        // Pre-scan: determine which optional rows have data
-        const tlAnyFeels = allTimesteps.some(ts => {
-          const fl = ts.feels_like;
-          const t = ts.temp_c != null ? Math.round(ts.temp_c) : null;
-          return fl != null && Math.round(fl) !== t;
-        });
-        const tlAnyPop = allTimesteps.some(ts => ts.pop != null && ts.pop > 0);
-        const tlAnyRain = allTimesteps.some(ts => (ts.rain_mm || 0) > 0);
-        const tlAnySnow = allTimesteps.some(ts => (ts.snow_cm || 0) > 0);
-
-        // Build grid-template-rows: time, icon, temp (always) + optional rows
-        let tlGridRows = '20px 36px 22px';
-        if (tlAnyFeels) tlGridRows += ' 18px';
-        if (tlAnyPop) tlGridRows += ' 16px';
-        if (tlAnyRain) tlGridRows += ' 16px';
-        if (tlAnySnow) tlGridRows += ' 16px';
+        const tlFlags = scanTimestepFlags(allTimesteps);
+        const tlGridRows = buildGridRows(tlFlags);
+        const showLoadingDot = item.icons_complete === false;
+        const tlColors = { rain: RAIN_COLOR, snow: SNOW_COLOR, showLoadingDot };
 
         timelineHtml += '<div style="margin-top:16px;border-top:1px solid var(--divider-color, rgba(255,255,255,0.08));padding-top:12px">';
-        timelineHtml += '<div style="font-size:13px;font-weight:600;color:var(--secondary-text-color, rgba(255,255,255,0.35));text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Timeline</div>';
+        timelineHtml += '<div style="font-size:13px;font-weight:600;color:var(--secondary-text-color, rgba(255,255,255,0.35));text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">' + t(h, 'timeline') + '</div>';
         timelineHtml += '<div style="display:flex;overflow-x:auto;gap:0;scrollbar-width:none;-webkit-overflow-scrolling:touch">';
         allTimesteps.forEach(ts => {
-          const tsIcon = ts.icon_code != null ? ecIcon(ts.icon_code) : null;
-          const tsTemp = ts.temp_c != null ? Math.round(ts.temp_c) : null;
-          const tsTempStr = tsTemp != null ? tsTemp + '\u00b0' : '\u2014';
-          const tsFeels = ts.feels_like != null ? Math.round(ts.feels_like) : null;
-          const showFeels = tsFeels != null && tsFeels !== tsTemp;
-          const tsPop = Math.ceil((ts.pop || 0) / 5) * 5;
-          const tsPopColor = ((ts.snow_cm || 0) > 0 && (ts.rain_mm || 0) === 0) ? SNOW_COLOR : RAIN_COLOR;
-          const tsRain = ts.rain_mm || 0;
-          const tsSnow = ts.snow_cm || 0;
-
-          timelineHtml += '<div style="min-width:54px;flex:0 0 54px;display:grid;justify-items:center;align-items:center;padding:8px 0;'
-            + 'grid-template-rows:' + tlGridRows + ';border-right:1px solid var(--divider-color, rgba(255,255,255,0.06))">';
-          timelineHtml += '<div style="font-size:12px;font-weight:500;color:var(--secondary-text-color, rgba(255,255,255,0.5))">' + localFmtTime(ts.time) + '</div>';
-          if (tsIcon) {
-            timelineHtml += '<ha-icon icon="' + tsIcon + '" style="--mdc-icon-size:28px;color:var(--primary-text-color, rgba(255,255,255,0.85))"></ha-icon>';
-          } else if (ts.sky_state == null && (ts.rain_mm || 0) === 0 && (ts.snow_cm || 0) === 0) {
-            // No icon, no sky_state, no precip — SkyState not yet fetched (loading)
-            timelineHtml += '<div style="height:28px;display:flex;align-items:center;justify-content:center">'
-              + '<div style="width:8px;height:8px;border-radius:50%;background:var(--divider-color, rgba(255,255,255,0.15))"></div></div>';
-          } else {
-            timelineHtml += '<div style="height:28px"></div>';
-          }
-          timelineHtml += '<div style="font-size:16px;font-weight:700;color:var(--primary-text-color, #fff)">' + tsTempStr + '</div>';
-          if (tlAnyFeels) timelineHtml += '<div style="font-size:12px;font-weight:400;color:var(--secondary-text-color, rgba(255,255,255,0.45));'
-            + (showFeels ? '' : 'visibility:hidden') + '">FL ' + (showFeels ? tsFeels + '\u00b0' : '0') + '</div>';
-          if (tlAnyPop) timelineHtml += '<div style="font-size:12px;font-weight:600;color:' + tsPopColor + ';'
-            + (tsPop >= 5 ? '' : 'visibility:hidden') + '">' + (tsPop >= 5 ? tsPop + '%' : '0') + '</div>';
-          if (tlAnyRain) timelineHtml += '<div style="font-size:12px;font-weight:500;color:' + RAIN_COLOR + ';'
-            + (tsRain > 0 ? '' : 'visibility:hidden') + '">' + (tsRain > 0 ? localFmtAmt(tsRain) + 'mm' : '0') + '</div>';
-          if (tlAnySnow) timelineHtml += '<div style="font-size:12px;font-weight:500;color:' + SNOW_COLOR + ';'
-            + (tsSnow > 0 ? '' : 'visibility:hidden') + '">' + (tsSnow > 0 ? localFmtAmt(tsSnow) + 'cm' : '0') + '</div>';
-          timelineHtml += '</div>';
+          timelineHtml += renderTimestepCol(ts, tlGridRows, tlFlags, tlColors, h);
         });
         timelineHtml += '</div></div>';
       }
@@ -1142,6 +1122,20 @@ class ECWeatherCard extends HTMLElement {
       popupHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:380px;margin:0 auto">';
       popupHtml += dayCol + nightCol + '</div>' + timelineHtml;
 
+      // Last update footer
+      if (lastUpdated) {
+        const updDate = new Date(lastUpdated);
+        if (!isNaN(updDate)) {
+          const lang = (h && h.language) || 'en';
+          const timeStr = updDate.toLocaleTimeString(lang === 'fr' ? 'fr-CA' : 'en-CA', {
+            hour: 'numeric', minute: '2-digit',
+          });
+          const label = lang === 'fr' ? 'Mis à jour' : 'Updated';
+          popupHtml += '<div style="text-align:left;font-size:11px;color:var(--secondary-text-color, rgba(255,255,255,0.25));margin-top:16px">'
+            + label + ' ' + timeStr + '</div>';
+        }
+      }
+
       return { title: fullName, content: popupHtml };
     });
 
@@ -1149,7 +1143,7 @@ class ECWeatherCard extends HTMLElement {
     let columnsHtml = '';
     forecast.forEach((item, i) => {
       const firstWord = (item.period || '').split(' ')[0];
-      const dayLabel = dayAbbr[firstWord] || firstWord;
+      const dayLabel = escapeHtml(dayAbbr[firstWord] || firstWord);
       const isNightOnly = item.icon_code === null;
 
       const dayIcon = item.icon_code != null ? ecIcon(item.icon_code) : null;
@@ -1168,6 +1162,8 @@ class ECWeatherCard extends HTMLElement {
       const roundedPop = Math.ceil(maxPop / 5) * 5;
       const showPrecip = roundedPop >= 5;
 
+      // Daily columns prefer EC precip_accum (meteorologist-interpreted, days 0-2).
+      // For days 3+ where EC has no accumulation, fall back to WEonG model amounts.
       const ecAccumDay = item.precip_accum_amount || 0;
       const ecAccumNight = item.precip_accum_amount_night || 0;
       const ecAccumUnit = item.precip_accum_unit || item.precip_accum_unit_night || '';
@@ -1178,11 +1174,10 @@ class ECWeatherCard extends HTMLElement {
         if (ecAccumUnit === 'cm') { rainTotal = 0; snowTotal = ecTotal; }
         else { rainTotal = ecTotal; snowTotal = 0; }
       } else {
-        rainTotal = (item.rain_amt_mm_day || 0) + (item.rain_amt_mm_night || 0);
-        snowTotal = (item.snow_amt_cm_day || 0) + (item.snow_amt_cm_night || 0);
+        rainTotal = (item.rain_mm_day || 0) + (item.rain_mm_night || 0);
+        snowTotal = (item.snow_cm_day || 0) + (item.snow_cm_night || 0);
       }
-      const pColor = dailyPrecipColor(item.rain_amt_mm_day, item.rain_amt_mm_night,
-        item.snow_amt_cm_day, item.snow_amt_cm_night, item.precip_type);
+      const pColor = precipAmtColor(rainTotal, snowTotal, item.precip_type);
 
       columnsHtml += '<div class="daily-col" data-index="' + i + '">';
       columnsHtml += '<div class="d-label">' + dayLabel + '</div>';
@@ -1216,8 +1211,8 @@ class ECWeatherCard extends HTMLElement {
 
       if (showPrecip) {
         columnsHtml += '<div class="d-pop" style="color:' + pColor + '">' + roundedPop + '%</div>';
-        if (rainTotal > 0) columnsHtml += '<div class="d-amt" style="color:' + RAIN_COLOR + '">' + localFmtAmt(rainTotal) + 'mm</div>';
-        if (snowTotal > 0) columnsHtml += '<div class="d-amt" style="color:' + SNOW_COLOR + '">' + localFmtAmt(snowTotal) + 'cm</div>';
+        if (rainTotal > 0) columnsHtml += '<div class="d-amt" style="color:' + RAIN_COLOR + '">' + fmtAmt(rainTotal) + 'mm</div>';
+        if (snowTotal > 0) columnsHtml += '<div class="d-amt" style="color:' + SNOW_COLOR + '">' + fmtAmt(snowTotal) + 'cm</div>';
       }
       columnsHtml += '</div>';
     });
@@ -1275,7 +1270,7 @@ class ECWeatherCard extends HTMLElement {
         .d-amt { font-size: 13px; font-weight: 500; margin-top: 2px; text-align: center; }
 
       </style>
-      <div class="section-header">DAILY</div>
+      <div class="section-header">${t(h, 'daily')}</div>
       <div class="daily-scroll">${columnsHtml}</div>
     `;
 
@@ -1300,20 +1295,13 @@ class ECWeatherCard extends HTMLElement {
 
     this._openPopupIndex = index;
 
-    // Lazy-fetch SkyState for this day's timeline if needed
+    // Fire-and-forget: fetch popup detail if icons not yet complete.
+    // The coordinator's cache deduplicates — repeated calls are no-ops.
     const item = this._lastForecast?.[index];
-    if (item && item.date && this._hass) {
-      const allTs = (item.timesteps_day || []).concat(item.timesteps_night || []);
-      const needsFetch = allTs.length > 0 && allTs.some(
-        ts => ts.icon_code == null && ts.sky_state == null
-      );
-      if (needsFetch && !this._pendingTimestepFetch?.[item.date]) {
-        this._pendingTimestepFetch = this._pendingTimestepFetch || {};
-        this._pendingTimestepFetch[item.date] = true;
-        this._hass.callService('ec_weather', 'fetch_day_timesteps', {
-          date: item.date,
-        });
-      }
+    if (item && item.date && this._hass && item.icons_complete === false) {
+      this._hass.callService('ec_weather', 'fetch_day_timesteps', {
+        date: item.date,
+      });
     }
 
     const overlay = ECOverlay.get();

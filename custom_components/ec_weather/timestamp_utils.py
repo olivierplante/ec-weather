@@ -18,7 +18,7 @@ def hour_from_iso(iso_str: str, default: int = 12) -> int:
     if not iso_str:
         return default
     try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.hour
+        parsed_dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return parsed_dt.hour
     except (ValueError, TypeError):
         return default
