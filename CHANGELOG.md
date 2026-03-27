@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.2
+
+Add MIT license. Release pipeline now uses PRs with CI checks before publishing.
+
 ## 1.8.1
 
 **CI fix** — Fixed test file path resolution for GitHub Actions. Tests now resolve the JS card file from the Python package location instead of hardcoded paths, working correctly in both local and CI environments.
