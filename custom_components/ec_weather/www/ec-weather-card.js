@@ -1014,9 +1014,6 @@ class ECWeatherCard extends HTMLElement {
       return w;
     };
 
-    // Last update timestamp for popup footer
-    const lastUpdated = sensor?.state;
-
     // Store forecast for lazy popup fetch reference
     this._lastForecast = forecast;
 
@@ -1122,15 +1119,16 @@ class ECWeatherCard extends HTMLElement {
       popupHtml += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:380px;margin:0 auto">';
       popupHtml += dayCol + nightCol + '</div>' + timelineHtml;
 
-      // Last update footer
-      if (lastUpdated) {
-        const updDate = new Date(lastUpdated);
+      // Last update footer — per-period timestamp (oldest of EC / WEonG)
+      const periodUpdated = item.updated;
+      if (periodUpdated) {
+        const updDate = new Date(periodUpdated);
         if (!isNaN(updDate)) {
           const lang = (h && h.language) || 'en';
           const timeStr = updDate.toLocaleTimeString(lang === 'fr' ? 'fr-CA' : 'en-CA', {
             hour: 'numeric', minute: '2-digit',
           });
-          const label = lang === 'fr' ? 'Mis à jour' : 'Updated';
+          const label = lang === 'fr' ? 'Mis à jour à' : 'Updated at';
           popupHtml += '<div style="text-align:left;font-size:11px;color:var(--secondary-text-color, rgba(255,255,255,0.25));margin-top:16px">'
             + label + ' ' + timeStr + '</div>';
         }

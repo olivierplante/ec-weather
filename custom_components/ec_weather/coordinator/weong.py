@@ -205,9 +205,8 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         session: aiohttp.ClientSession,
         semaphore: asyncio.Semaphore,
     ) -> list:
-        """Background fetch: POP + AirTemp for all models, amounts for wet timesteps.
-
-        SkyState is deferred to lazy popup fetch for all models.
+        """Background fetch: POP + AirTemp for all models, amounts for wet
+        timesteps, SkyState for dry timesteps.
 
         Returns a flat list of (layer, timestep, period_key, value) result tuples.
         """
@@ -262,7 +261,21 @@ class ECWEonGCoordinator(OnDemandCoordinator):
                 amt_queries, now_ts, session, semaphore,
             )
 
-        return always_results + amt_results
+        # SkyState for all timesteps — needed for icon derivation on the
+        # hourly card. Wet timesteps with POP > 0 but amounts = 0 still need
+        # SkyState as fallback since derive_icon can't determine a precip icon.
+        sky_queries = []
+        sky_suffix = _LAYER_SUFFIXES["sky_state"]
+        for ts, pk, model in timestep_info:
+            sky_queries.append((_weong_layer_name(sky_suffix, model), ts, pk))
+
+        sky_results = []
+        if sky_queries:
+            sky_results, _, _ = await self._execute_queries(
+                sky_queries, now_ts, session, semaphore,
+            )
+
+        return always_results + amt_results + sky_results
 
     def _results_to_store(
         self,
@@ -312,7 +325,11 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         period_projection = self._store.project_periods(periods)
         hourly_projection = self._store.project_hourly()
 
-        return {"periods": period_projection, "hourly": hourly_projection}
+        return {
+            "periods": period_projection,
+            "hourly": hourly_projection,
+            "updated": datetime.now(timezone.utc).isoformat(),
+        }
 
     def _is_model_run_current(self) -> bool:
         """Check if the cached model run matches what's expected to be available.
@@ -482,15 +499,11 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         session = async_get_clientsession(self.hass)
         semaphore = asyncio.Semaphore(WEONG_SEMAPHORE_LIMIT)
 
-        # Lazy fetch: SkyState only (POP + AirTemp + amounts already in store
-        # from background sweep). SkyState is only needed for dry timesteps —
-        # wet ones derive their icon from precipitation type.
+        # Lazy fetch: SkyState for all timesteps (POP + AirTemp + amounts
+        # already in store from background sweep). SkyState is needed even
+        # for wet timesteps when POP > 0 but amounts = 0.
         all_queries: list[tuple[str, datetime, tuple[str, str]]] = []
         for ts, pk, model in timestep_info:
-            ts_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-            entry = self._store.get(ts_str)
-            if entry and ((entry.rain_mm or 0) > 0 or (entry.snow_cm or 0) > 0):
-                continue  # has precip — icon derived from precip type, not SkyState
             all_queries.append((
                 _weong_layer_name(_LAYER_SUFFIXES["sky_state"], model), ts, pk,
             ))

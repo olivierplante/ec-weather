@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.8.3
+
+**Tonight forecast restored** — The "Tonight" period was being hidden in the evening when it should only be filtered during daytime (6 AM–6 PM). Now correctly shown after 6 PM when EC issues a fresh Tonight forecast.
+
+**Hourly icons for all hours** — Icons for hours 25–48 (beyond EC hourly coverage) were missing until a daily popup was opened. SkyState is now fetched in the background sweep so icons appear immediately. Also fixes missing icons for timesteps with precipitation probability but no accumulation (e.g., 40% POP, 0 mm).
+
+**Accurate "Updated at" timestamp** — Each daily popup now shows when its data was last fetched, using the oldest of the EC and GeoMet timestamps. Previously showed the EC fetch time even when the popup data came from GeoMet.
+
 ## 1.8.2
 
 Add MIT license. Release pipeline now uses PRs with CI checks before publishing.

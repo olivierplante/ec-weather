@@ -157,6 +157,96 @@ class TestPerDayParallel:
 
 
 # ---------------------------------------------------------------------------
+# Background fetch includes SkyState for all timesteps
+# ---------------------------------------------------------------------------
+
+class TestBackgroundFetchSkyState:
+    async def test_fetch_day_includes_sky_state_for_dry_timesteps(self, hass: HomeAssistant):
+        """Background _fetch_day must query SkyState for dry timesteps (POP=0)."""
+        from datetime import datetime, timezone
+        from ec_weather.coordinator.weong_helpers import _LAYER_SUFFIXES
+
+        coord = ECWEonGCoordinator(hass, "44.780,-75.070,46.780,-73.070")
+        today = datetime(2026, 3, 23).date()
+
+        day_periods = [
+            ("2026-03-23", "day",
+             datetime(2026, 3, 23, 14, 0, tzinfo=timezone.utc),
+             datetime(2026, 3, 23, 17, 0, tzinfo=timezone.utc)),
+        ]
+
+        queried_layers: list[str] = []
+
+        async def mock_execute(queries, now_ts, session, semaphore):
+            results = []
+            for layer, ts, pk in queries:
+                queried_layers.append(layer)
+                if "Precip-Prob" in layer:
+                    results.append((layer, ts, pk, 0.0))
+                elif "AirTemp" in layer:
+                    results.append((layer, ts, pk, -5.0))
+                else:
+                    results.append((layer, ts, pk, 3.0))
+            return results, 0, len(results)
+
+        coord._execute_queries = mock_execute
+
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+        session = async_get_clientsession(hass)
+        semaphore = __import__("asyncio").Semaphore(10)
+
+        await coord._fetch_day(day_periods, today, time.time(), session, semaphore)
+
+        sky_suffix = _LAYER_SUFFIXES["sky_state"]
+        sky_queries = [l for l in queried_layers if sky_suffix in l]
+        assert len(sky_queries) > 0, "Background fetch must include SkyState queries"
+
+    async def test_fetch_day_includes_sky_state_for_wet_timesteps(self, hass: HomeAssistant):
+        """Background _fetch_day must also query SkyState for wet timesteps.
+
+        POP > 0 with amounts = 0 is common (chance of precip but no actual
+        accumulation). SkyState is needed as fallback for icon derivation.
+        """
+        from datetime import datetime, timezone
+        from ec_weather.coordinator.weong_helpers import _LAYER_SUFFIXES
+
+        coord = ECWEonGCoordinator(hass, "44.780,-75.070,46.780,-73.070")
+        today = datetime(2026, 3, 23).date()
+
+        day_periods = [
+            ("2026-03-23", "day",
+             datetime(2026, 3, 23, 14, 0, tzinfo=timezone.utc),
+             datetime(2026, 3, 23, 17, 0, tzinfo=timezone.utc)),
+        ]
+
+        queried_layers: list[str] = []
+
+        async def mock_execute(queries, now_ts, session, semaphore):
+            results = []
+            for layer, ts, pk in queries:
+                queried_layers.append(layer)
+                if "Precip-Prob" in layer:
+                    results.append((layer, ts, pk, 40.0))  # wet but no amounts
+                elif "AirTemp" in layer:
+                    results.append((layer, ts, pk, -5.0))
+                else:
+                    results.append((layer, ts, pk, 3.0))
+            return results, 0, len(results)
+
+        coord._execute_queries = mock_execute
+
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession as _get
+        session = _get(hass)
+        semaphore = __import__("asyncio").Semaphore(10)
+
+        await coord._fetch_day(day_periods, today, time.time(), session, semaphore)
+
+        sky_suffix = _LAYER_SUFFIXES["sky_state"]
+        sky_queries = [l for l in queried_layers if sky_suffix in l]
+        assert len(sky_queries) > 0, "SkyState must be fetched even for wet timesteps"
+
+
+# ---------------------------------------------------------------------------
 # Lazy timestep fetch
 # ---------------------------------------------------------------------------
 
