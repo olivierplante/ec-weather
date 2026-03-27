@@ -23,11 +23,9 @@ from ec_weather.const import (
     CONF_LON,
     CONF_POLLING_MODE,
     CONF_WEATHER_INTERVAL,
-    CONF_WEONG_INTERVAL,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
-    DEFAULT_WEONG_INTERVAL,
     DOMAIN,
     POLLING_MODE_EFFICIENT,
     POLLING_MODE_FULL,
@@ -49,7 +47,7 @@ IMMUTABLE_DATA = {
     CONF_AQHI_LOCATION_ID: None,
 }
 
-MUTABLE_KEYS = {CONF_POLLING_MODE, CONF_WEATHER_INTERVAL, CONF_AQHI_INTERVAL, CONF_WEONG_INTERVAL}
+MUTABLE_KEYS = {CONF_POLLING_MODE, CONF_WEATHER_INTERVAL, CONF_AQHI_INTERVAL}
 
 
 def _make_v1_entry(
@@ -107,7 +105,6 @@ class TestMigrateEntry:
             CONF_POLLING_MODE: POLLING_MODE_FULL,
             CONF_WEATHER_INTERVAL: 60,
             CONF_AQHI_INTERVAL: 120,
-            CONF_WEONG_INTERVAL: 180,
         }
         entry, updated = _make_v1_entry(hass, extra_data=mutable_values)
 
@@ -214,7 +211,6 @@ class TestSetupEntryReadsOptions:
             CONF_POLLING_MODE: POLLING_MODE_EFFICIENT,
             CONF_WEATHER_INTERVAL: 45,
             CONF_AQHI_INTERVAL: 90,
-            CONF_WEONG_INTERVAL: 240,
         }
         entry.async_create_background_task = lambda h, c, n: c.close()
 
@@ -236,9 +232,9 @@ class TestSetupEntryReadsOptions:
         mock_wc.assert_called_once()
         assert mock_wc.call_args.kwargs.get("interval_minutes") == 45
 
-        # Verify ECWEonGCoordinator was called with interval from options
+        # Verify ECWEonGCoordinator was called (no interval_minutes — model-run-aware)
         mock_weong.assert_called_once()
-        assert mock_weong.call_args.kwargs.get("interval_minutes") == 240
+        assert "interval_minutes" not in (mock_weong.call_args.kwargs or {})
 
         # Verify ECAQHICoordinator was called with interval from options
         mock_aqhi.assert_called_once()
@@ -275,8 +271,9 @@ class TestSetupEntryReadsOptions:
         mock_wc.assert_called_once()
         assert mock_wc.call_args.kwargs.get("interval_minutes") == DEFAULT_WEATHER_INTERVAL
 
+        # WEonG has no interval_minutes — model-run-aware
         mock_weong.assert_called_once()
-        assert mock_weong.call_args.kwargs.get("interval_minutes") == DEFAULT_WEONG_INTERVAL
+        assert "interval_minutes" not in (mock_weong.call_args.kwargs or {})
 
         mock_aqhi.assert_called_once()
         assert mock_aqhi.call_args.kwargs.get("interval_minutes") == DEFAULT_AQHI_INTERVAL
@@ -328,7 +325,7 @@ class TestOptionsFlowSavesToOptions:
         """Verify the set of mutable keys matches our expectations."""
         assert MUTABLE_KEYS == {
             CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
-            CONF_AQHI_INTERVAL, CONF_WEONG_INTERVAL,
+            CONF_AQHI_INTERVAL,
         }
 
     def test_options_flow_form_reads_defaults_from_options(self) -> None:

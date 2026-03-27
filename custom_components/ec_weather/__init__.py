@@ -25,13 +25,11 @@ from .const import (
     CONF_LANGUAGE,
     CONF_POLLING_MODE,
     CONF_WEATHER_INTERVAL,
-    CONF_WEONG_INTERVAL,
     COORDINATOR_WEONG,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
-    DEFAULT_WEONG_INTERVAL,
     DOMAIN,
     POLLING_MODE_EFFICIENT,
     POLLING_MODE_FULL,
@@ -131,7 +129,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_data = dict(entry.data)
         new_options = dict(entry.options)
         for key in (CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
-                     CONF_AQHI_INTERVAL, CONF_WEONG_INTERVAL):
+                     CONF_AQHI_INTERVAL, "weong_interval"):
             if key in new_data:
                 new_options[key] = new_data.pop(key)
         hass.config_entries.async_update_entry(
@@ -160,13 +158,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Read mutable settings from entry.options with fallback to defaults
     polling_mode = entry.options.get(CONF_POLLING_MODE, DEFAULT_POLLING_MODE)
     weather_interval = entry.options.get(CONF_WEATHER_INTERVAL, DEFAULT_WEATHER_INTERVAL)
-    weong_interval = entry.options.get(CONF_WEONG_INTERVAL, DEFAULT_WEONG_INTERVAL)
     aqhi_interval = entry.options.get(CONF_AQHI_INTERVAL, DEFAULT_AQHI_INTERVAL)
 
     # Determine polling per coordinator based on mode
     weather_polls = polling_mode in (POLLING_MODE_EFFICIENT, POLLING_MODE_FULL)
     aqhi_polls = polling_mode in (POLLING_MODE_EFFICIENT, POLLING_MODE_FULL)
-    weong_polls = polling_mode == POLLING_MODE_FULL
 
     weather_coordinator = ECWeatherCoordinator(
         hass, city_code, language=language,
@@ -177,9 +173,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, aqhi_location_id,
         interval_minutes=aqhi_interval, polling=aqhi_polls,
     )
+    weong_polls = polling_mode == POLLING_MODE_FULL
     weong_coordinator = ECWEonGCoordinator(
-        hass, geomet_bbox,
-        interval_minutes=weong_interval, polling=weong_polls,
+        hass, geomet_bbox, polling=weong_polls,
     )
 
     # Fetch all three coordinators in parallel (~2s instead of ~6s sequential)

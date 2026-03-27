@@ -33,12 +33,10 @@ from ec_weather.const import (
     CONF_LON,
     CONF_POLLING_MODE,
     CONF_WEATHER_INTERVAL,
-    CONF_WEONG_INTERVAL,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
-    DEFAULT_WEONG_INTERVAL,
     DOMAIN,
     POLLING_MODE_EFFICIENT,
     SUPPORTED_LANGUAGES,
@@ -83,8 +81,8 @@ class TestComputeAlertBbox:
     def test_format_has_one_decimal(self):
         """Values are formatted with one decimal place."""
         result = _compute_alert_bbox(45.42, -75.70)
-        # lon-0.2 = -74.27, lat-0.2 = 45.58, lon+0.2 = -73.87, lat+0.2 = 45.98
-        assert result == "-74.3,45.6,-73.9,46.0"
+        # lon-0.2 = -75.90, lat-0.2 = 45.22, lon+0.2 = -75.50, lat+0.2 = 45.62
+        assert result == "-75.9,45.2,-75.5,45.6"
 
     def test_zero_coordinates(self):
         """Works for (0, 0) — equator/prime meridian."""
@@ -116,7 +114,7 @@ class TestComputeGeoMetBbox:
 
     def test_format_has_three_decimals(self):
         """Values are formatted with three decimal places."""
-        result = _compute_geomet_bbox(45.42, -75.70)
+        result = _compute_geomet_bbox(45.42, -75.70)  # Ottawa coordinates
         assert result == "44.420,-76.700,46.420,-74.700"
 
     def test_zero_coordinates(self):
@@ -142,10 +140,10 @@ class TestComputeGeoMetBbox:
 # Helpers for config flow tests
 # ---------------------------------------------------------------------------
 
-SAINT_JEROME_CITY = {
+OTTAWA_CITY = {
     "id": "on-118",
     "name": "Ottawa",
-    "province": "QC",
+    "province": "ON",
     "lat": 45.42,
     "lon": -75.70,
 }
@@ -213,7 +211,7 @@ class TestAsyncStepUser:
         """Single city match skips disambiguation and proceeds to confirm."""
         flow = _make_flow(hass)
         with patch.object(
-            flow, "_search_cities", return_value=[SAINT_JEROME_CITY.copy()]
+            flow, "_search_cities", return_value=[OTTAWA_CITY.copy()]
         ), patch.object(flow, "_run_discovery") as mock_discovery:
             mock_discovery.return_value = {"type": "form", "step_id": "confirm"}
             result = await flow.async_step_user(
@@ -229,10 +227,10 @@ class TestAsyncStepUser:
     ) -> None:
         """Multiple matches proceed to select_city disambiguation step."""
         flow = _make_flow(hass)
-        cities = [SAINT_JEROME_CITY.copy(), MONTREAL_CITY.copy()]
+        cities = [OTTAWA_CITY.copy(), MONTREAL_CITY.copy()]
         with patch.object(flow, "_search_cities", return_value=cities):
             result = await flow.async_step_user(
-                user_input={"city_query": "Saint", CONF_LANGUAGE: "en"}
+                user_input={"city_query": "Ott", CONF_LANGUAGE: "en"}
             )
 
         assert result["type"] == "form"
@@ -295,7 +293,7 @@ class TestAsyncStepUser:
     ) -> None:
         """Language selection is passed to _search_cities and stored on selected city."""
         flow = _make_flow(hass)
-        city = {**SAINT_JEROME_CITY, "name": "Ottawa"}
+        city = {**OTTAWA_CITY, "name": "Ottawa"}
         with patch.object(
             flow, "_search_cities", return_value=[city]
         ) as mock_search, patch.object(flow, "_run_discovery") as mock_disc:
@@ -318,7 +316,7 @@ class TestAsyncStepSelectCity:
     async def test_shows_form_with_no_input(self, hass: HomeAssistant) -> None:
         """With no user_input, shows the disambiguation form."""
         flow = _make_flow(hass)
-        flow._cities = [SAINT_JEROME_CITY.copy(), MONTREAL_CITY.copy()]
+        flow._cities = [OTTAWA_CITY.copy(), MONTREAL_CITY.copy()]
         flow._cities_language = "en"
 
         result = await flow.async_step_select_city(user_input=None)
@@ -331,7 +329,7 @@ class TestAsyncStepSelectCity:
     ) -> None:
         """Selecting a city ID from the list triggers discovery and confirm."""
         flow = _make_flow(hass)
-        flow._cities = [SAINT_JEROME_CITY.copy(), MONTREAL_CITY.copy()]
+        flow._cities = [OTTAWA_CITY.copy(), MONTREAL_CITY.copy()]
         flow._cities_language = "en"
 
         with patch.object(flow, "_run_discovery") as mock_discovery:
@@ -350,7 +348,7 @@ class TestAsyncStepSelectCity:
     ) -> None:
         """Selected city gets the language from the original search."""
         flow = _make_flow(hass)
-        flow._cities = [SAINT_JEROME_CITY.copy()]
+        flow._cities = [OTTAWA_CITY.copy()]
         flow._cities_language = "fr"
 
         with patch.object(flow, "_run_discovery") as mock_discovery:
@@ -372,7 +370,7 @@ class TestAsyncStepConfirm:
     async def test_shows_form_with_no_input(self, hass: HomeAssistant) -> None:
         """With no user_input, shows pre-filled confirmation form."""
         flow = _make_flow(hass)
-        flow._selected_city = {**SAINT_JEROME_CITY, "language": "en"}
+        flow._selected_city = {**OTTAWA_CITY, "language": "en"}
         flow._discovered_aqhi = "AQHI-123"
 
         result = await flow.async_step_confirm(user_input=None)
@@ -381,7 +379,7 @@ class TestAsyncStepConfirm:
         assert result["step_id"] == "confirm"
         # Description placeholders should contain city info
         assert result["description_placeholders"]["city_name"] == "Ottawa"
-        assert result["description_placeholders"]["province"] == "QC"
+        assert result["description_placeholders"]["province"] == "ON"
         assert result["description_placeholders"]["city_code"] == "on-118"
 
     async def test_creates_entry_with_user_input(
@@ -389,7 +387,7 @@ class TestAsyncStepConfirm:
     ) -> None:
         """Submitting confirm form creates a config entry with correct data."""
         flow = _make_flow(hass)
-        flow._selected_city = {**SAINT_JEROME_CITY, "language": "en"}
+        flow._selected_city = {**OTTAWA_CITY, "language": "en"}
         flow._discovered_aqhi = None
 
         # Mock async_create_entry so we can inspect the call
@@ -398,7 +396,7 @@ class TestAsyncStepConfirm:
         user_input = {
             CONF_LAT: 45.42,
             CONF_LON: -75.70,
-            CONF_BBOX: "-74.3,45.6,-73.9,46.0",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
             CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
             CONF_AQHI_LOCATION_ID: "AQHI-456",
         }
@@ -415,7 +413,7 @@ class TestAsyncStepConfirm:
         assert data[CONF_LANGUAGE] == "en"
         assert data[CONF_LAT] == 45.42
         assert data[CONF_LON] == -75.70
-        assert data[CONF_BBOX] == "-74.3,45.6,-73.9,46.0"
+        assert data[CONF_BBOX] == "-75.9,45.2,-75.5,45.6"
         assert data[CONF_GEOMET_BBOX] == "44.420,-76.700,46.420,-74.700"
         assert data[CONF_AQHI_LOCATION_ID] == "AQHI-456"
 
@@ -424,7 +422,7 @@ class TestAsyncStepConfirm:
     ) -> None:
         """Empty string AQHI location is stored as None."""
         flow = _make_flow(hass)
-        flow._selected_city = {**SAINT_JEROME_CITY, "language": "en"}
+        flow._selected_city = {**OTTAWA_CITY, "language": "en"}
         flow._discovered_aqhi = None
 
         flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
@@ -432,7 +430,7 @@ class TestAsyncStepConfirm:
         user_input = {
             CONF_LAT: 45.42,
             CONF_LON: -75.70,
-            CONF_BBOX: "-74.3,45.6,-73.9,46.0",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
             CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
             CONF_AQHI_LOCATION_ID: "",
         }
@@ -455,7 +453,7 @@ class TestAsyncStepConfirm:
             CONF_LAT: 46.0,
             CONF_LON: -73.0,
             CONF_BBOX: "-73.2,45.8,-72.8,46.2",
-            CONF_GEOMET_BBOX: "45.000,-75.700,47.000,-72.000",
+            CONF_GEOMET_BBOX: "45.000,-74.000,47.000,-72.000",
             CONF_AQHI_LOCATION_ID: "",
         }
         await flow.async_step_confirm(user_input=user_input)
@@ -503,7 +501,7 @@ class TestRunDiscovery:
     ) -> None:
         """With valid lat/lon, _discover_aqhi_station is called."""
         flow = _make_flow(hass)
-        flow._selected_city = {**SAINT_JEROME_CITY, "language": "en"}
+        flow._selected_city = {**OTTAWA_CITY, "language": "en"}
 
         with patch.object(
             flow, "_discover_aqhi_station", return_value="AQHI-FOUND"
@@ -565,7 +563,7 @@ class TestOptionsFlowInit:
                 CONF_CITY_CODE: "on-118",
                 CONF_CITY_NAME: "Ottawa",
                 CONF_LANGUAGE: "en",
-                CONF_BBOX: "-74.3,45.6,-73.9,46.0",
+                CONF_BBOX: "-75.9,45.2,-75.5,45.6",
                 CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
                 CONF_AQHI_LOCATION_ID: None,
             },
@@ -608,13 +606,12 @@ class TestOptionsFlowInit:
         user_input = {
             CONF_CITY_CODE: "on-118",
             CONF_LANGUAGE: "en",
-            CONF_BBOX: "-74.3,45.6,-73.9,46.0",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
             CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
             CONF_AQHI_LOCATION_ID: "",
             CONF_POLLING_MODE: POLLING_MODE_EFFICIENT,
             CONF_WEATHER_INTERVAL: 45,
             CONF_AQHI_INTERVAL: 120,
-            CONF_WEONG_INTERVAL: 240,
         }
         await flow.async_step_init(user_input=user_input)
 
@@ -627,7 +624,6 @@ class TestOptionsFlowInit:
         assert new_options[CONF_POLLING_MODE] == POLLING_MODE_EFFICIENT
         assert new_options[CONF_WEATHER_INTERVAL] == 45
         assert new_options[CONF_AQHI_INTERVAL] == 120
-        assert new_options[CONF_WEONG_INTERVAL] == 240
 
         # Immutable keys must be in data
         new_data = call_kwargs["data"]
@@ -654,7 +650,6 @@ class TestOptionsFlowInit:
             CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
             CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
             CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
-            CONF_WEONG_INTERVAL: DEFAULT_WEONG_INTERVAL,
         }
         await flow.async_step_init(user_input=user_input)
 
@@ -677,7 +672,6 @@ class TestOptionsFlowInit:
                 CONF_POLLING_MODE: POLLING_MODE_EFFICIENT,
                 CONF_WEATHER_INTERVAL: 60,
                 CONF_AQHI_INTERVAL: 360,
-                CONF_WEONG_INTERVAL: 480,
             },
         )
 
@@ -693,7 +687,6 @@ class TestOptionsFlowInit:
         assert defaults[CONF_POLLING_MODE] == POLLING_MODE_EFFICIENT
         assert defaults[CONF_WEATHER_INTERVAL] == 60
         assert defaults[CONF_AQHI_INTERVAL] == 360
-        assert defaults[CONF_WEONG_INTERVAL] == 480
 
     async def test_reloads_entry_after_save(
         self, hass: HomeAssistant,
@@ -709,13 +702,12 @@ class TestOptionsFlowInit:
             user_input = {
                 CONF_CITY_CODE: "on-118",
                 CONF_LANGUAGE: "en",
-                CONF_BBOX: "-74.3,45.6,-73.9,46.0",
+                CONF_BBOX: "-75.9,45.2,-75.5,45.6",
                 CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
                 CONF_AQHI_LOCATION_ID: "",
                 CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
                 CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
                 CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
-                CONF_WEONG_INTERVAL: DEFAULT_WEONG_INTERVAL,
             }
             await flow.async_step_init(user_input=user_input)
 

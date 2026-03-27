@@ -42,12 +42,10 @@ from .const import (
     CONF_LON,
     CONF_POLLING_MODE,
     CONF_WEATHER_INTERVAL,
-    CONF_WEONG_INTERVAL,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
-    DEFAULT_WEONG_INTERVAL,
     DOMAIN,
     EC_API_BASE,
     POLLING_MODES,
@@ -79,7 +77,7 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
         """Show editable settings."""
         mutable_keys = {
             CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
-            CONF_AQHI_INTERVAL, CONF_WEONG_INTERVAL,
+            CONF_AQHI_INTERVAL,
         }
 
         if user_input is not None:
@@ -163,18 +161,6 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                         CONF_AQHI_INTERVAL,
                         default=options.get(
                             CONF_AQHI_INTERVAL, DEFAULT_AQHI_INTERVAL
-                        ),
-                    ): NumberSelector(
-                        NumberSelectorConfig(
-                            min=60, max=720, step=30,
-                            unit_of_measurement="min",
-                            mode=NumberSelectorMode.BOX,
-                        )
-                    ),
-                    vol.Optional(
-                        CONF_WEONG_INTERVAL,
-                        default=options.get(
-                            CONF_WEONG_INTERVAL, DEFAULT_WEONG_INTERVAL
                         ),
                     ): NumberSelector(
                         NumberSelectorConfig(

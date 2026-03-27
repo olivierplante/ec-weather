@@ -69,15 +69,14 @@
         "title": "Paramètres EC Météo",
         "description": "Modifier les paramètres pour {city_name} ({city_code}).",
         "data": {
-          "city_code": "Code ville (ex. on-118)",
+          "city_code": "Code ville (ex. qc-68)",
           "language": "Langue",
           "bbox": "Zone d'alerte",
           "geomet_bbox": "Zone WMS GeoMet",
           "aqhi_location_id": "ID de station CAS",
           "polling_mode": "Mode d'interrogation",
           "weather_interval": "Intervalle météo (minutes)",
-          "aqhi_interval": "Intervalle CAS (minutes)",
-          "weong_interval": "Intervalle détails prévisions (minutes)"
+          "aqhi_interval": "Intervalle CAS (minutes)"
         }
       }
     }

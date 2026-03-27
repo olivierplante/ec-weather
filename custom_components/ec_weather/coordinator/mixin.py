@@ -33,13 +33,14 @@ class WEonGListenerMixin:
     def _handle_coordinator_update(self) -> None:
         """Called when the primary (weather) coordinator updates.
 
-        If the WEonG coordinator's data is stale or missing, trigger a
-        background refresh so the card gets fresh precipitation data.
+        If the WEonG coordinator needs a refresh (new model run available
+        or no data), trigger a background fetch. Skipped in polling mode
+        where update_interval handles scheduling.
         """
         super()._handle_coordinator_update()
         weong = self._weong_coordinator
-        if not weong.is_fresh() and weong.update_interval is None:
-            _LOGGER.debug("WEonG data stale — triggering background refresh")
+        if weong.needs_refresh() and weong.update_interval is None:
+            _LOGGER.debug("WEonG new model run available — triggering refresh")
             self.hass.async_create_task(weong.async_request_refresh())
 
     def _handle_weong_update(self) -> None:

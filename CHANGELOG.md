@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.4
+
+**Smarter refresh scheduling** — WEonG data now refreshes when a new HRDPS model run is available (~4x/day) instead of on a fixed 6-hour timer. Opening the dashboard after a new model run triggers an immediate fetch. The configurable WEonG interval setting has been removed — it's now automatic.
+
+**Full polling mode** — In full polling mode, WEonG schedules polls dynamically based on the HRDPS model run schedule. If data is delayed, retries every 15 minutes until available.
+
+**Accurate "Updated at" timestamp** — Now reflects when GeoMet data was actually fetched, not when it was last projected internally.
+
+**Translation system** — "Updated at" label now uses the i18n system instead of hardcoded strings.
+
 ## 1.8.3
 
 **Tonight forecast restored** — The "Tonight" period was being hidden in the evening when it should only be filtered during daytime (6 AM–6 PM). Now correctly shown after 6 PM when EC issues a fresh Tonight forecast.
