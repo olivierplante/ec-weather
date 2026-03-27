@@ -11,12 +11,7 @@ all wet timesteps, not lazily on popup open).
 
 from __future__ import annotations
 
-from pathlib import Path
-
-
-CARD_JS = Path(__file__).parent.parent.parent / (
-    "config/custom_components/ec_weather/www/ec-weather-card.js"
-)
+from .conftest import CARD_JS_PATH as CARD_JS
 
 
 class TestDailyColumnAmountSource:

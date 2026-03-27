@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import ec_weather
 from ec_weather.const import DOMAIN
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# Resolve the JS card file from the ec_weather package location.
+# Works in both local (config/custom_components/ec_weather/) and
+# CI (custom_components/ec_weather/) directory layouts.
+CARD_JS_PATH = Path(ec_weather.__file__).parent / "www" / "ec-weather-card.js"
 
 # --- Config entry data for tests (Ottawa area) ---
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1
+
+**CI fix** — Fixed test file path resolution for GitHub Actions. Tests now resolve the JS card file from the Python package location instead of hardcoded paths, working correctly in both local and CI environments.
+
+**Release pipeline** — Releases now go through a PR with CI checks before publishing. Previously, releases were pushed directly to GitHub without waiting for tests to pass.
+
 ## 1.8.0
 
 **Instant loading** — The card now renders immediately from Environment Canada data (~2 seconds). Precipitation probabilities and amounts load in the background and fill in automatically. Previously, the card waited for all data before showing anything (~7 seconds).
