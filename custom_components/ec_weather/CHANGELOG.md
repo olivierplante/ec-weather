@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.5
+
+**CI** — Updated GitHub Actions to Node.js 24 (`actions/checkout@v6`, `actions/setup-python@v6`).
+
 ## 1.8.4
 
 **Smarter refresh scheduling** — WEonG data now refreshes when a new HRDPS model run is available (~4x/day) instead of on a fixed 6-hour timer. Opening the dashboard after a new model run triggers an immediate fetch. The configurable WEonG interval setting has been removed — it's now automatic.
