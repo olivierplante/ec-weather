@@ -62,15 +62,9 @@ class TestJSSyncWithPython:
     """JS EC_ICON_MAP keys must match Python ICON_MDI keys."""
 
     def test_js_keys_match_python_keys(self):
-        js_path = (
-            Path(__file__).resolve().parents[2]
-            / "config"
-            / "custom_components"
-            / "ec_weather"
-            / "www"
-            / "ec-weather-card.js"
-        )
-        js_content = js_path.read_text()
+        from .conftest import CARD_JS_PATH
+
+        js_content = CARD_JS_PATH.read_text()
 
         # Extract the EC_ICON_MAP block
         match = re.search(r"const EC_ICON_MAP\s*=\s*\{([^}]+)\}", js_content)
