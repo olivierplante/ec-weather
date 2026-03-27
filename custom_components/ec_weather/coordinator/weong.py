@@ -14,7 +14,6 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from ..const import (
-    DEFAULT_WEONG_INTERVAL,
     DOMAIN,
     GEOMET_REQUEST_TIMEOUT,
     WEONG_CACHE_TTL_GDPS,
@@ -77,6 +76,33 @@ def _expected_hrdps_model_run(now_utc: datetime) -> str:
     return run_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _next_model_run_availability(now_utc: datetime) -> datetime:
+    """Return the UTC datetime when the next HRDPS model run becomes available.
+
+    Availability times are run_hour + processing delay:
+    00Z+2h=02Z, 06Z+2h=08Z, 12Z+2h=14Z, 18Z+2h=20Z.
+    """
+    availability_hours = [
+        run + _HRDPS_PROCESSING_DELAY_H for run in _HRDPS_RUN_HOURS
+    ]  # [2, 8, 14, 20]
+
+    current_hour = now_utc.hour
+    for avail_hour in availability_hours:
+        if avail_hour > current_hour:
+            return now_utc.replace(
+                hour=avail_hour, minute=0, second=0, microsecond=0,
+            )
+        if avail_hour == current_hour and now_utc.minute == 0 and now_utc.second == 0:
+            # Exactly at availability — next one
+            continue
+
+    # Past all today's runs → first run tomorrow (00Z + delay = 02Z)
+    tomorrow = now_utc + timedelta(days=1)
+    return tomorrow.replace(
+        hour=availability_hours[0], minute=0, second=0, microsecond=0,
+    )
+
+
 class ECWEonGCoordinator(OnDemandCoordinator):
     """Fetches POP and conditional precip amounts from EC GeoMet WMS.
 
@@ -85,18 +111,23 @@ class ECWEonGCoordinator(OnDemandCoordinator):
     periods{}/hourly{} views are derived projections of that store.
     """
 
+    # Safety ceiling interval — used as initial interval before first fetch.
+    # After each fetch, update_interval is set dynamically to the next model run.
+    _SAFETY_INTERVAL_MINUTES = 360  # 6 hours
+    # Short retry when expected model run data isn't available yet from GeoMet
+    _RETRY_INTERVAL = timedelta(minutes=15)
+
     def __init__(
         self,
         hass: HomeAssistant,
         geomet_bbox: str,
-        interval_minutes: int = DEFAULT_WEONG_INTERVAL,
         polling: bool = False,
     ) -> None:
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_weong",
-            interval=timedelta(minutes=interval_minutes),
+            interval=timedelta(minutes=self._SAFETY_INTERVAL_MINUTES),
             polling=polling,
         )
         self.geomet_bbox = geomet_bbox
@@ -115,6 +146,18 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         self._store = TimestepStore()
         # Latest HRDPS model run seen from GeoMet responses (for freshness)
         self._last_model_run: str | None = None
+        # Timestamp of the last actual GeoMet fetch (not projection)
+        self._last_fetch_ts: str | None = None
+
+    def needs_refresh(self) -> bool:
+        """Return True when new data should be fetched.
+
+        Model-run-aware: returns True when a new HRDPS model run is
+        available or when the coordinator has no data yet.
+        """
+        if not self.data:
+            return True
+        return not self._is_model_run_current()
 
     def _cache_ttl(self, layer: str) -> int:
         """Return cache TTL in seconds based on model type."""
@@ -328,7 +371,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         return {
             "periods": period_projection,
             "hourly": hourly_projection,
-            "updated": datetime.now(timezone.utc).isoformat(),
+            "updated": self._last_fetch_ts,
         }
 
     def _is_model_run_current(self) -> bool:
@@ -354,19 +397,15 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         No snapshot/carry-forward workarounds needed.
         """
 
-        # Skip if data is still current:
-        # 1. No transient errors from last fetch
-        # 2. Model run matches what's expected (no new data available)
-        # 3. weong_interval not exceeded (safety ceiling for outages)
-        if not self._had_transient_errors:
-            if self._is_model_run_current() and self.is_fresh():
-                _LOGGER.debug(
-                    "EC WEonG: skipping update — model run %s is current",
-                    self._last_model_run,
-                )
-                return self.data
-            # Model run is current but interval exceeded — re-fetch as safety net
-            # is_fresh() returns False when interval exceeded, so we continue
+        # Skip if data is still current and no transient errors from last fetch.
+        # The mixin calls needs_refresh() before triggering, but _do_update
+        # can also be called directly (e.g. polling mode), so guard here too.
+        if not self._had_transient_errors and not self.needs_refresh():
+            _LOGGER.debug(
+                "EC WEonG: skipping update — model run %s is current",
+                self._last_model_run,
+            )
+            return self.data
 
         # Reset transient error flag — will be set during fetch if errors occur
         self._had_transient_errors = False
@@ -417,6 +456,9 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             for date_str, day_periods in sorted(periods_by_date.items())
         ])
 
+        # Record the actual fetch time
+        self._last_fetch_ts = datetime.now(timezone.utc).isoformat()
+
         # Final projection from the store
         try:
             result = self._project_output(all_periods)
@@ -443,6 +485,29 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         )
 
         self.mark_refreshed()
+
+        # In polling mode, schedule next poll dynamically based on model runs.
+        if self._polling:
+            now_utc = datetime.now(timezone.utc)
+            expected = _expected_hrdps_model_run(now_utc)
+            if self._last_model_run != expected:
+                # Fetched data still has old model run — retry shortly
+                self.update_interval = self._RETRY_INTERVAL
+                _LOGGER.debug(
+                    "EC WEonG: model run %s not yet available, retry in %s",
+                    expected, self._RETRY_INTERVAL,
+                )
+            else:
+                # Got current data — schedule for next model run
+                next_avail = _next_model_run_availability(now_utc)
+                wait = next_avail - now_utc
+                # Add 5 min buffer for processing variability
+                self.update_interval = wait + timedelta(minutes=5)
+                _LOGGER.debug(
+                    "EC WEonG: next model run at %s, polling in %s",
+                    next_avail, self.update_interval,
+                )
+
         return result
 
     async def async_fetch_day_timesteps(self, date_str: str) -> None:

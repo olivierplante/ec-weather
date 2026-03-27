@@ -7,7 +7,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from ec_weather.coordinator import ECWeatherCoordinator, ECWEonGCoordinator
-from ec_weather.const import DEFAULT_WEATHER_INTERVAL, DEFAULT_WEONG_INTERVAL
+from ec_weather.const import DEFAULT_WEATHER_INTERVAL
 
 from .conftest import load_fixture
 
@@ -97,27 +97,24 @@ class TestConfigurableIntervals:
         coord = ECWeatherCoordinator(hass, "on-118")
         assert coord._configured_interval == timedelta(minutes=DEFAULT_WEATHER_INTERVAL)
 
-    def test_weong_coordinator_accepts_interval(self, hass: HomeAssistant):
-        """Given custom WEonG interval → coordinator uses it."""
-        coord = ECWEonGCoordinator(hass, "44,-75,46,-73", interval_minutes=120)
-        assert coord._configured_interval == timedelta(minutes=120)
-
-    def test_weong_coordinator_default_interval(self, hass: HomeAssistant):
-        """Given no interval → uses 6h default."""
-        coord = ECWEonGCoordinator(hass, "44,-75,46,-73")
-        assert coord._configured_interval == timedelta(minutes=DEFAULT_WEONG_INTERVAL)
+    def test_weong_coordinator_uses_safety_interval(self, hass: HomeAssistant):
+        """WEonG uses fixed safety ceiling interval (not configurable)."""
+        coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
+        assert coord._configured_interval == timedelta(
+            minutes=ECWEonGCoordinator._SAFETY_INTERVAL_MINUTES
+        )
 
     def test_on_demand_mode_no_auto_polling(self, hass: HomeAssistant):
         """On-demand coordinators have update_interval=None."""
         weather = ECWeatherCoordinator(hass, "on-118")
-        weong = ECWEonGCoordinator(hass, "44,-75,46,-73")
+        weong = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         assert weather.update_interval is None
         assert weong.update_interval is None
 
     def test_alerts_always_polling(self, hass: HomeAssistant):
         """Alerts coordinator keeps a fixed update_interval."""
         from ec_weather.coordinator import ECAlertCoordinator
-        alerts = ECAlertCoordinator(hass, "44,-75,46,-73")
+        alerts = ECAlertCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         assert alerts.update_interval is not None
 
 
@@ -130,7 +127,7 @@ class TestPerDayParallel:
         """_build_timestep_info produces HRDPS (1h) and GDPS (3h) timesteps."""
         from datetime import datetime, timezone
 
-        coord = ECWEonGCoordinator(hass, "44,-75,46,-73")
+        coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         today = datetime(2026, 3, 23).date()
 
         # Day 0 period (HRDPS)
@@ -253,14 +250,14 @@ class TestBackgroundFetchSkyState:
 class TestLazyTimestepFetch:
     def test_timestep_cache_initialized(self, hass: HomeAssistant):
         """WEonG coordinator has a timestep cache."""
-        coord = ECWEonGCoordinator(hass, "44,-75,46,-73")
+        coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         assert hasattr(coord, '_timestep_cache')
         assert coord._timestep_cache == {}
 
     def test_merge_lock_initialized(self, hass: HomeAssistant):
         """WEonG coordinator has a merge lock for concurrent day tasks."""
         import asyncio
-        coord = ECWEonGCoordinator(hass, "44,-75,46,-73")
+        coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         assert hasattr(coord, '_merge_lock')
         assert isinstance(coord._merge_lock, asyncio.Lock)
 
@@ -348,7 +345,7 @@ class TestLazyTimestepFetch:
 
     async def test_lazy_fetch_skips_when_no_data(self, hass: HomeAssistant):
         """Given no coordinator data → lazy fetch does nothing."""
-        coord = ECWEonGCoordinator(hass, "44,-75,46,-73")
+        coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         coord.data = None
 
         # Should not crash
@@ -366,29 +363,29 @@ class TestPollingModes:
         weather = ECWeatherCoordinator(hass, "on-118", polling=False)
         from ec_weather.coordinator import ECAQHICoordinator
         aqhi = ECAQHICoordinator(hass, None, polling=False)
-        weong = ECWEonGCoordinator(hass, "44,-75,46,-73", polling=False)
+        weong = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
 
         assert weather.update_interval is None
         assert aqhi.update_interval is None
         assert weong.update_interval is None
 
     def test_efficient_mode_weather_and_aqhi_poll(self, hass: HomeAssistant):
-        """Efficient mode: weather and AQHI poll, WEonG on-demand."""
+        """Efficient mode: weather and AQHI poll, WEonG always on-demand."""
         weather = ECWeatherCoordinator(hass, "on-118", polling=True)
         from ec_weather.coordinator import ECAQHICoordinator
         aqhi = ECAQHICoordinator(hass, None, polling=True)
-        weong = ECWEonGCoordinator(hass, "44,-75,46,-73", polling=False)
+        weong = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
 
         assert weather.update_interval is not None
         assert aqhi.update_interval is not None
         assert weong.update_interval is None
 
     def test_full_mode_everything_polls(self, hass: HomeAssistant):
-        """Full mode: all coordinators poll."""
+        """Full mode: all coordinators poll (WEonG uses dynamic model-run-aware interval)."""
         weather = ECWeatherCoordinator(hass, "on-118", polling=True)
         from ec_weather.coordinator import ECAQHICoordinator
         aqhi = ECAQHICoordinator(hass, None, polling=True)
-        weong = ECWEonGCoordinator(hass, "44,-75,46,-73", polling=True)
+        weong = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700", polling=True)
 
         assert weather.update_interval is not None
         assert aqhi.update_interval is not None
@@ -404,7 +401,7 @@ class TestPollingModes:
     def test_alerts_always_poll_regardless_of_mode(self, hass: HomeAssistant):
         """Alerts coordinator always has a fixed update_interval."""
         from ec_weather.coordinator import ECAlertCoordinator
-        alerts = ECAlertCoordinator(hass, "44,-75,46,-73")
+        alerts = ECAlertCoordinator(hass, "44.420,-76.700,46.420,-74.700")
         assert alerts.update_interval is not None
 
     def test_aqhi_interval_configurable(self, hass: HomeAssistant):

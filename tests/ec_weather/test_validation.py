@@ -70,7 +70,7 @@ class TestBboxValidation:
 
     def test_valid_bbox_integers(self):
         from ec_weather import validate_bbox
-        assert validate_bbox("44,-75,46,-73") is True
+        assert validate_bbox("44,-77,46,-75") is True
 
     def test_valid_bbox_negative(self):
         from ec_weather import validate_bbox
@@ -78,7 +78,7 @@ class TestBboxValidation:
 
     def test_invalid_bbox_three_values(self):
         from ec_weather import validate_bbox
-        assert validate_bbox("44.420,-76.700,46.420") is False
+        assert validate_bbox("44.780,-75.070,46.780") is False
 
     def test_invalid_bbox_five_values(self):
         from ec_weather import validate_bbox

@@ -1,8 +1,8 @@
 """Tests for WEonG coordinator refresh cascade.
 
 Ensures that when the primary weather coordinator refreshes (via update_entity),
-the WEonG coordinator also gets refreshed if its data is stale. This prevents
-stale WEonG data from persisting indefinitely in on-demand/minimal polling mode.
+the WEonG coordinator also gets refreshed when a new model run is available.
+The mixin uses needs_refresh() which is model-run-aware, not timer-based.
 """
 
 from __future__ import annotations
@@ -22,12 +22,12 @@ class TestWEonGListenerMixinRefreshCascade:
             "to trigger WEonG refresh when the primary coordinator updates"
         )
 
-    def test_handle_coordinator_update_checks_freshness(self) -> None:
-        """_handle_coordinator_update must check WEonG freshness before refreshing."""
+    def test_handle_coordinator_update_uses_needs_refresh(self) -> None:
+        """_handle_coordinator_update must use needs_refresh() (model-run-aware)."""
         source = inspect.getsource(WEonGListenerMixin._handle_coordinator_update)
-        assert "is_fresh" in source, (
-            "_handle_coordinator_update must check is_fresh() to avoid "
-            "redundant WEonG refreshes when data is still valid"
+        assert "needs_refresh" in source, (
+            "_handle_coordinator_update must use needs_refresh() which checks "
+            "model run freshness, not just a timer-based is_fresh()"
         )
 
     def test_handle_coordinator_update_calls_super(self) -> None:

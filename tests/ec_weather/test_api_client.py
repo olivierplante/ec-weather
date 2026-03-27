@@ -421,7 +421,7 @@ class TestParseEcCityFeatures:
         assert len(result) == 2
         assert result[0]["id"] == "on-118"
         assert result[0]["name"] == "Ottawa"
-        assert result[0]["province"] == "QC"
+        assert result[0]["province"] == "ON"
         assert result[0]["lat"] == 45.42
         assert result[0]["lon"] == -75.70
         assert result[1]["id"] == "on-143"

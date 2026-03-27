@@ -58,9 +58,7 @@ SCAN_INTERVAL_ALERTS = timedelta(minutes=30)  # alerts always poll in all modes
 # Configurable interval defaults (minutes)
 CONF_WEATHER_INTERVAL = "weather_interval"
 CONF_AQHI_INTERVAL = "aqhi_interval"
-CONF_WEONG_INTERVAL = "weong_interval"
 DEFAULT_WEATHER_INTERVAL = 30    # minutes — EC updates conditions ~6x/hour
-DEFAULT_WEONG_INTERVAL = 360     # minutes (6h) — matches HRDPS model run cycle
 DEFAULT_AQHI_INTERVAL = 180      # minutes (3h) — EC publishes AQHI hourly, forecasts 2x/day
 
 # Service names

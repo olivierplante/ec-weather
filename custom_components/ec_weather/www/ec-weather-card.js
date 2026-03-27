@@ -82,6 +82,7 @@ const I18N = {
     weatherUnavailable: 'Weather data unavailable',
     retry: 'Retry',
     expires: 'Expires',
+    updatedAt: 'Updated at',
     dayAbbr: {
       Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed',
       Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun',
@@ -107,6 +108,7 @@ const I18N = {
     weatherUnavailable: 'Données météo indisponibles',
     retry: 'Réessayer',
     expires: 'Expire',
+    updatedAt: 'Mis à jour à',
     dayAbbr: {
       Monday: 'Lun', Tuesday: 'Mar', Wednesday: 'Mer',
       Thursday: 'Jeu', Friday: 'Ven', Saturday: 'Sam', Sunday: 'Dim',
@@ -1128,7 +1130,7 @@ class ECWeatherCard extends HTMLElement {
           const timeStr = updDate.toLocaleTimeString(lang === 'fr' ? 'fr-CA' : 'en-CA', {
             hour: 'numeric', minute: '2-digit',
           });
-          const label = lang === 'fr' ? 'Mis à jour à' : 'Updated at';
+          const label = t(this._hass, 'updatedAt');
           popupHtml += '<div style="text-align:left;font-size:11px;color:var(--secondary-text-color, rgba(255,255,255,0.25));margin-top:16px">'
             + label + ' ' + timeStr + '</div>';
         }

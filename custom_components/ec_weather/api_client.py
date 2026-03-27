@@ -190,7 +190,7 @@ def parse_ec_city_features(
         if not name:
             name = city_id
 
-        # Province from city code prefix (e.g. "on-118" -> "QC")
+        # Province from city code prefix (e.g. "qc-68" -> "QC")
         province = city_id.split("-")[0].upper() if "-" in city_id else ""
 
         # Extract coordinates from URL property (coords=lat,lon)

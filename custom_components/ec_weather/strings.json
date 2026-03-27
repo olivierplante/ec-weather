@@ -69,15 +69,14 @@
         "title": "EC Weather Settings",
         "description": "Edit settings for {city_name} ({city_code}).",
         "data": {
-          "city_code": "City code (e.g. on-118)",
+          "city_code": "City code (e.g. qc-68)",
           "language": "Language",
           "bbox": "Alert bounding box",
           "geomet_bbox": "GeoMet WMS bounding box",
           "aqhi_location_id": "AQHI station ID",
           "polling_mode": "Polling mode",
           "weather_interval": "Weather refresh interval (minutes)",
-          "aqhi_interval": "AQHI refresh interval (minutes)",
-          "weong_interval": "Forecast detail refresh interval (minutes)"
+          "aqhi_interval": "AQHI refresh interval (minutes)"
         }
       }
     }
