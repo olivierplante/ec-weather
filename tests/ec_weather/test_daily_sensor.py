@@ -321,6 +321,70 @@ class TestIconsComplete:
 
 
 # ---------------------------------------------------------------------------
+# merge_weong_into_daily — updated timestamp (oldest of EC / WEonG)
+# ---------------------------------------------------------------------------
+
+class TestMergeWeongUpdatedTimestamp:
+    """Each period gets an 'updated' field = min(ec_updated, weong_updated)."""
+
+    def test_updated_uses_older_timestamp(self) -> None:
+        """When both timestamps given, updated = the older one."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        weong_periods = {
+            ("2026-03-23", "day"): _weong_period(pop=30),
+            ("2026-03-23", "night"): _weong_period(pop=20),
+        }
+        result = merge_weong_into_daily(
+            daily, weong_periods,
+            ec_updated="2026-03-23T14:00:00+00:00",
+            weong_updated="2026-03-23T12:00:00+00:00",
+        )
+        assert result[0]["updated"] == "2026-03-23T12:00:00+00:00"
+
+    def test_updated_uses_ec_when_older(self) -> None:
+        """When EC is older, updated = EC timestamp."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        weong_periods = {
+            ("2026-03-23", "day"): _weong_period(pop=30),
+            ("2026-03-23", "night"): _weong_period(pop=20),
+        }
+        result = merge_weong_into_daily(
+            daily, weong_periods,
+            ec_updated="2026-03-23T10:00:00+00:00",
+            weong_updated="2026-03-23T12:00:00+00:00",
+        )
+        assert result[0]["updated"] == "2026-03-23T10:00:00+00:00"
+
+    def test_updated_none_when_no_timestamps(self) -> None:
+        """When neither timestamp is provided, updated is None."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        result = merge_weong_into_daily(daily, {})
+        assert result[0]["updated"] is None
+
+    def test_updated_falls_back_to_ec_only(self) -> None:
+        """When only EC timestamp provided, updated = EC."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        result = merge_weong_into_daily(
+            daily, {},
+            ec_updated="2026-03-23T14:00:00+00:00",
+        )
+        assert result[0]["updated"] == "2026-03-23T14:00:00+00:00"
+
+    def test_updated_falls_back_to_weong_only(self) -> None:
+        """When only WEonG timestamp provided, updated = WEonG."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+        weong_periods = {
+            ("2026-03-23", "day"): _weong_period(pop=30),
+            ("2026-03-23", "night"): _weong_period(pop=20),
+        }
+        result = merge_weong_into_daily(
+            daily, weong_periods,
+            weong_updated="2026-03-23T12:00:00+00:00",
+        )
+        assert result[0]["updated"] == "2026-03-23T12:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
 # _filter_past_hours on daily timesteps
 # ---------------------------------------------------------------------------
 

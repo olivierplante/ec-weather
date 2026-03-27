@@ -238,6 +238,8 @@ def merge_weong_into_daily(
     weong_periods: dict,
     hourly_forecast: list[dict] | None = None,
     lang: str = "en",
+    ec_updated: str | None = None,
+    weong_updated: str | None = None,
 ) -> list[dict]:
     """Merge WEonG POP data and per-timestep breakdowns into daily forecast periods.
 
@@ -260,10 +262,15 @@ def merge_weong_into_daily(
             if timestamp_str:
                 hourly_lookup[timestamp_str] = hourly_item
 
+    # Oldest-of available timestamps for each period
+    timestamps = [t for t in (ec_updated, weong_updated) if t]
+    updated = min(timestamps) if timestamps else None
+
     merged = []
 
     for period in daily_periods:
         enriched = dict(period)
+        enriched["updated"] = updated
         has_day = period.get("temp_high") is not None
         has_night = period.get("temp_low") is not None
         is_night_only = not has_day and has_night

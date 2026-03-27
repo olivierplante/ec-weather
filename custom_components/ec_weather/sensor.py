@@ -349,12 +349,18 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
 
         daily = self.coordinator.data.get("daily") or []
         hourly = self.coordinator.data.get("hourly") or []
+        ec_updated = self.coordinator.data.get("updated")
         weong_periods = {}
+        weong_updated = None
         if self._weong_coordinator.data:
             weong_periods = self._weong_coordinator.data.get("periods") or {}
+            weong_updated = self._weong_coordinator.data.get("updated")
 
         try:
-            merged = merge_weong_into_daily(daily, weong_periods, hourly, lang=self._language)
+            merged = merge_weong_into_daily(
+                daily, weong_periods, hourly, lang=self._language,
+                ec_updated=ec_updated, weong_updated=weong_updated,
+            )
         except (KeyError, TypeError, ValueError):
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")
             return {"forecast": daily}
@@ -371,10 +377,11 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
                     period.get("timesteps_night") or []
                 )
 
-        # Drop leading night-only period ("Tonight") after 6 AM local.
+        # Drop leading night-only period ("Tonight") between 6 AM and 6 PM.
         # EC keeps it in the forecast until the next morning update, but
-        # it's stale once the night has passed.
-        if merged and merged[0].get("temp_high") is None and now_local.hour >= 6:
+        # it's stale once the night has passed. After 6 PM, EC issues a
+        # fresh "Tonight" for the upcoming night, so keep it.
+        if merged and merged[0].get("temp_high") is None and 6 <= now_local.hour < 18:
             merged = merged[1:]
 
         return {"forecast": merged}
