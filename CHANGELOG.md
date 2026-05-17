@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.6
+
+**Documentation restructure** — The README is now scoped to what the integration does and how to install it. Reference content (entities, configuration, the Lovelace card, polling and API usage) moved to dedicated pages under `docs/`. No functional changes.
+
 ## 1.8.5
 
 **CI** — Updated GitHub Actions to Node.js 24 (`actions/checkout@v6`, `actions/setup-python@v6`).
