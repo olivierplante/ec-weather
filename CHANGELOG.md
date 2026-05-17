@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.7
+
+**Documentation links fixed** — The README links to `docs/configuration.md` and the other reference pages were broken in 1.8.6 because the `docs/` folder wasn't copied to the published repo. The folder is now included.
+
+**Integration name consistent across HACS and HA** — HACS now shows the integration as "Environment Canada Weather" instead of "EC Weather", matching what Home Assistant displays after install.
+
 ## 1.8.6
 
 **Documentation restructure** — The README is now scoped to what the integration does and how to install it. Reference content (entities, configuration, the Lovelace card, polling and API usage) moved to dedicated pages under `docs/`. No functional changes.
