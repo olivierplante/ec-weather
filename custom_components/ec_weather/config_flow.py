@@ -29,7 +29,11 @@ from homeassistant.helpers.selector import (
     TextSelectorConfig,
 )
 
-from .api_client import discover_aqhi_station, parse_ec_city_features
+from .api_client import (
+    discover_aqhi_station,
+    discover_precip_stations,
+    parse_ec_city_features,
+)
 from .const import (
     CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
@@ -41,6 +45,11 @@ from .const import (
     CONF_LAT,
     CONF_LON,
     CONF_POLLING_MODE,
+    CONF_PRECIP_DISCOVERED,
+    CONF_PRECIP_STATION_DISTANCE_KM,
+    CONF_PRECIP_STATION_ID,
+    CONF_PRECIP_STATION_NAME,
+    CONF_PRECIP_STATION_TYPE,
     CONF_WEATHER_INTERVAL,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_LANGUAGE,
@@ -54,6 +63,72 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+PRECIP_OPT_OUT = "__none__"
+
+
+def _precip_choice_label(station: dict, language: str) -> str:
+    """Human label for a precip station: name, distance, and data type."""
+    name = station.get("name") or station.get("station_id")
+    distance = station.get("distance_km")
+    is_split = station.get("type") == "split"
+    if language == "fr":
+        type_label = "pluie et neige séparées" if is_split else "précipitations combinées"
+        dist_label = f"{distance} km" if distance is not None else "?"
+        return f"{name} — {dist_label} — {type_label}"
+    type_label = "rain & snow separately" if is_split else "combined precipitation"
+    dist_label = f"{distance} km" if distance is not None else "?"
+    return f"{name} — {dist_label} — {type_label}"
+
+
+def build_precip_choices(discovery: dict, language: str) -> tuple[list, dict]:
+    """Build selectable options + a value->station map from a discovery result.
+
+    Presents the nearest reporting station and, when it is combined-only, the
+    nearest split-capable station too (deduplicated when they are the same).
+    Always appends an explicit opt-out as the last option.
+
+    Returns ``(options, mapping)`` where options is a list of
+    ``SelectOptionDict`` and mapping maps each option value to its station dict
+    (or None for the opt-out).
+    """
+    options: list = []
+    mapping: dict = {}
+
+    seen: set[str] = set()
+    for station in (discovery.get("nearest"), discovery.get("nearest_split")):
+        if not station:
+            continue
+        sid = station["station_id"]
+        if sid in seen:
+            continue
+        seen.add(sid)
+        options.append(
+            SelectOptionDict(value=sid, label=_precip_choice_label(station, language))
+        )
+        mapping[sid] = station
+
+    opt_out_label = (
+        "Don’t add yesterday’s precipitation"
+        if language != "fr"
+        else "Ne pas ajouter les précipitations d’hier"
+    )
+    options.append(SelectOptionDict(value=PRECIP_OPT_OUT, label=opt_out_label))
+    mapping[PRECIP_OPT_OUT] = None
+
+    return options, mapping
+
+
+def precip_default_choice(options: list, current_station_id: str | None) -> str:
+    """Return the value to pre-select in the precip chooser.
+
+    The currently configured station when it is among the discovered options;
+    otherwise the opt-out value.
+    """
+    if current_station_id and any(o["value"] == current_station_id for o in options):
+        return current_station_id
+    return PRECIP_OPT_OUT
 
 
 def _compute_alert_bbox(lat: float, lon: float) -> str:
@@ -72,6 +147,9 @@ def _compute_geomet_bbox(lat: float, lon: float) -> str:
 
 class ECWeatherOptionsFlow(config_entries.OptionsFlow):
     """Handle options for EC Weather."""
+
+    def __init__(self) -> None:
+        self._precip_choices: dict = {}
 
     async def async_step_init(self, user_input: dict | None = None) -> FlowResult:
         """Show editable settings."""
@@ -92,9 +170,9 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options,
             )
-            # Reload the integration to apply changes
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
+            # Always continue to the precipitation-station step so it can be
+            # reviewed/changed every time. The reload happens there.
+            return await self.async_step_precip()
 
         data = self.config_entry.data
         options = self.config_entry.options
@@ -177,6 +255,67 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
             },
         )
 
+    async def async_step_precip(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        """Discover and choose yesterday's precipitation station (or opt out)."""
+        data = self.config_entry.data
+        language = data.get(CONF_LANGUAGE, DEFAULT_LANGUAGE)
+
+        if user_input is not None:
+            station = self._precip_choices.get(user_input.get(CONF_PRECIP_STATION_ID))
+            new_data = dict(self.config_entry.data)
+            new_data[CONF_PRECIP_DISCOVERED] = True
+            if station:
+                new_data[CONF_PRECIP_STATION_ID] = station["station_id"]
+                new_data[CONF_PRECIP_STATION_TYPE] = station["type"]
+                new_data[CONF_PRECIP_STATION_NAME] = station["name"]
+                new_data[CONF_PRECIP_STATION_DISTANCE_KM] = station["distance_km"]
+            else:
+                # Explicit opt-out — clear any previously chosen station.
+                for key in (
+                    CONF_PRECIP_STATION_ID, CONF_PRECIP_STATION_TYPE,
+                    CONF_PRECIP_STATION_NAME, CONF_PRECIP_STATION_DISTANCE_KM,
+                ):
+                    new_data.pop(key, None)
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=new_data,
+            )
+            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
+            return self.async_create_entry(title="", data={})
+
+        session = async_get_clientsession(self.hass)
+        discovery = await discover_precip_stations(
+            session=session,
+            lat=data.get(CONF_LAT) or 0.0,
+            lon=data.get(CONF_LON) or 0.0,
+            api_base=EC_API_BASE,
+            timeout=REQUEST_TIMEOUT,
+        )
+        options, self._precip_choices = build_precip_choices(discovery, language)
+
+        # Pre-select the currently configured station so the form shows the
+        # existing choice; fall back to opt-out when none is set or it isn't
+        # in the discovered options.
+        default = precip_default_choice(options, data.get(CONF_PRECIP_STATION_ID))
+
+        return self.async_show_form(
+            step_id="precip",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PRECIP_STATION_ID, default=default
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=options,
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={"city_name": data.get(CONF_CITY_NAME, "")},
+        )
+
 
 class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for EC Weather."""
@@ -197,6 +336,8 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._selected_city: dict = {}
         self._discovered_aqhi: str | None = None
         self._auto_detected: bool = False
+        self._pending_entry_data: dict | None = None
+        self._precip_choices: dict = {}
 
     # ------------------------------------------------------------------
     # Step 1: City name search + language (with auto-detection)
@@ -427,23 +568,22 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         language = city.get("language", DEFAULT_LANGUAGE)
 
         if user_input is not None:
-            # User confirmed (possibly with edits)
+            # User confirmed (possibly with edits). Stash the data and move on
+            # to the precipitation-station selection step.
             final_lat = user_input[CONF_LAT]
             final_lon = user_input[CONF_LON]
 
-            return self.async_create_entry(
-                title=city.get("name", city.get("id", "Unknown")),
-                data={
-                    CONF_CITY_CODE: city["id"],
-                    CONF_CITY_NAME: city.get("name", city.get("id", "")),
-                    CONF_LANGUAGE: language,
-                    CONF_LAT: final_lat,
-                    CONF_LON: final_lon,
-                    CONF_BBOX: user_input[CONF_BBOX],
-                    CONF_GEOMET_BBOX: user_input[CONF_GEOMET_BBOX],
-                    CONF_AQHI_LOCATION_ID: user_input.get(CONF_AQHI_LOCATION_ID) or None,
-                },
-            )
+            self._pending_entry_data = {
+                CONF_CITY_CODE: city["id"],
+                CONF_CITY_NAME: city.get("name", city.get("id", "")),
+                CONF_LANGUAGE: language,
+                CONF_LAT: final_lat,
+                CONF_LON: final_lon,
+                CONF_BBOX: user_input[CONF_BBOX],
+                CONF_GEOMET_BBOX: user_input[CONF_GEOMET_BBOX],
+                CONF_AQHI_LOCATION_ID: user_input.get(CONF_AQHI_LOCATION_ID) or None,
+            }
+            return await self.async_step_precip()
 
         # Pre-fill with auto-discovered values
         default_bbox = _compute_alert_bbox(lat, lon)
@@ -472,4 +612,68 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "province": city.get("province", ""),
                 "city_code": city.get("id", ""),
             },
+        )
+
+    # ------------------------------------------------------------------
+    # Step 4: Yesterday's precipitation station selection (issue #9)
+    # ------------------------------------------------------------------
+
+    async def async_step_precip(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        """Offer the nearest reporting / split-capable station, or opt out."""
+        data = self._pending_entry_data or {}
+        language = data.get(CONF_LANGUAGE, DEFAULT_LANGUAGE)
+
+        if user_input is not None:
+            station = self._precip_choices.get(user_input.get(CONF_PRECIP_STATION_ID))
+            final_data = dict(data)
+            final_data[CONF_PRECIP_DISCOVERED] = True
+            if station:
+                final_data[CONF_PRECIP_STATION_ID] = station["station_id"]
+                final_data[CONF_PRECIP_STATION_TYPE] = station["type"]
+                final_data[CONF_PRECIP_STATION_NAME] = station["name"]
+                final_data[CONF_PRECIP_STATION_DISTANCE_KM] = station["distance_km"]
+            return self.async_create_entry(
+                title=data.get(CONF_CITY_NAME) or data.get(CONF_CITY_CODE, "Unknown"),
+                data=final_data,
+            )
+
+        # Run discovery using the confirmed coordinates.
+        session = async_get_clientsession(self.hass)
+        discovery = await discover_precip_stations(
+            session=session,
+            lat=data.get(CONF_LAT) or 0.0,
+            lon=data.get(CONF_LON) or 0.0,
+            api_base=EC_API_BASE,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        options, self._precip_choices = build_precip_choices(discovery, language)
+
+        # When nothing reports nearby, only the opt-out exists — skip the step
+        # entirely rather than show a dead-end form.
+        if len(options) == 1:
+            final_data = dict(data)
+            final_data[CONF_PRECIP_DISCOVERED] = True
+            return self.async_create_entry(
+                title=data.get(CONF_CITY_NAME) or data.get(CONF_CITY_CODE, "Unknown"),
+                data=final_data,
+            )
+
+        return self.async_show_form(
+            step_id="precip",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PRECIP_STATION_ID, default=PRECIP_OPT_OUT
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=options,
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={"city_name": data.get(CONF_CITY_NAME, "")},
         )

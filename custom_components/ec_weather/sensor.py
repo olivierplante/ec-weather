@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -14,16 +15,34 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfSpeed, UnitOfTemperature
+from homeassistant.const import (
+    MATCH_ALL,
+    PERCENTAGE,
+    UnitOfPrecipitationDepth,
+    UnitOfSpeed,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_CITY_CODE, CONF_CITY_NAME, CONF_LANGUAGE, DOMAIN, GAUGE_TEMP_MAX, GAUGE_TEMP_MIN
-from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator, ECWEonGCoordinator, WEonGListenerMixin
+from .coordinator import (
+    ECAlertCoordinator,
+    ECAQHICoordinator,
+    ECClimateCoordinator,
+    ECWeatherCoordinator,
+    ECWEonGCoordinator,
+    WEonGListenerMixin,
+)
 from .models import ECWeatherData, build_device_info
-from .transforms import build_unified_hourly, filter_past_hours, merge_weong_into_daily
+from .transforms import (
+    build_unified_hourly,
+    extract_today_pop,
+    filter_past_hours,
+    merge_weong_into_daily,
+)
 
 from homeassistant.util import dt as dt_util
 
@@ -157,10 +176,15 @@ def _resolve_today_range(
 
 
 def _format_temp_label(temp: float | None) -> str | None:
-    """Format a temperature as an integer, e.g. '-14'."""
+    """Format a temperature as an integer, e.g. '-14'.
+
+    Rounds half UP like the card's JS Math.round (24.5 → 25, -24.5 → -24) —
+    Python's built-in round() is half-to-even and made the iOS widget disagree
+    with the dashboard by one degree on every .5 reading.
+    """
     if temp is None:
         return None
-    return str(int(round(temp)))
+    return str(math.floor(temp + 0.5))
 
 
 class ECGaugeSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
@@ -218,6 +242,8 @@ class ECCurrentSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
 
     _attr_has_entity_name = True
     entity_description: ECCurrentSensorDescription
+    # fetched_at changes on every successful poll — keep it out of the recorder.
+    _unrecorded_attributes = frozenset({"fetched_at"})
 
     def __init__(
         self,
@@ -239,6 +265,19 @@ class ECCurrentSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
             return self.coordinator.data.get(self.entity_description.data_key)
         current = self.coordinator.data.get("current") or {}
         return current.get(self.entity_description.data_key)
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        # Only the temperature sensor carries the success heartbeat — the
+        # card reads it to tell "EC values unchanged for hours" (fine) from
+        # "fetching has been failing for hours" (stale banner). Stamping
+        # every current sensor would force state writes across the board.
+        if self.entity_description.key != "ec_temperature":
+            return None
+        if not self.coordinator.data:
+            return None
+        fetched_at = self.coordinator.data.get("fetched_at")
+        return {"fetched_at": fetched_at} if fetched_at else None
 
 
 class ECHourlyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
@@ -352,14 +391,17 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
         ec_updated = self.coordinator.data.get("updated")
         weong_periods = {}
         weong_updated = None
+        days_fetched = None
         if self._weong_coordinator.data:
             weong_periods = self._weong_coordinator.data.get("periods") or {}
             weong_updated = self._weong_coordinator.data.get("updated")
+            days_fetched = self._weong_coordinator.data.get("days_fetched")
 
         try:
             merged = merge_weong_into_daily(
                 daily, weong_periods, hourly, lang=self._language,
                 ec_updated=ec_updated, weong_updated=weong_updated,
+                days_fetched=days_fetched,
             )
         except (KeyError, TypeError, ValueError):
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")
@@ -385,6 +427,64 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
             merged = merged[1:]
 
         return {"forecast": merged}
+
+
+class ECTodayPopSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
+    """Today's probability of precipitation (combined day/night max).
+
+    State: integer percent (0-100), or None when WEonG data is unavailable.
+    Reuses the same EC+WEonG merge as the daily forecast so the value matches
+    what the daily column shows for today.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Precipitation Probability Today"
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        weather_coordinator: ECWeatherCoordinator,
+        weong_coordinator: ECWEonGCoordinator,
+        city_code: str,
+        city_name: str,
+        language: str = "en",
+    ) -> None:
+        super().__init__(weather_coordinator)
+        self._attr_unique_id = f"ec_precip_probability_today_{city_code}"
+        # Pin the entity_id to the short form the card reads. Without this,
+        # has_entity_name prefixes the device slug, producing
+        # sensor.ec_weather_<city>_... which the card can't find.
+        self.entity_id = "sensor.ec_precip_probability_today"
+        self._weong_coordinator = weong_coordinator
+        self._attr_device_info = build_device_info(city_code, city_name)
+        self._language = language
+
+    @property
+    def native_value(self) -> int | None:
+        if not self.coordinator.data:
+            return None
+
+        daily = self.coordinator.data.get("daily") or []
+        hourly = self.coordinator.data.get("hourly") or []
+        ec_updated = self.coordinator.data.get("updated")
+        weong_periods = {}
+        weong_updated = None
+        if self._weong_coordinator.data:
+            weong_periods = self._weong_coordinator.data.get("periods") or {}
+            weong_updated = self._weong_coordinator.data.get("updated")
+
+        try:
+            merged = merge_weong_into_daily(
+                daily, weong_periods, hourly, lang=self._language,
+                ec_updated=ec_updated, weong_updated=weong_updated,
+            )
+        except (KeyError, TypeError, ValueError):
+            _LOGGER.exception("EC weather: failed to merge WEonG data for today's POP")
+            return None
+
+        today_str = dt_util.now().date().isoformat()
+        return extract_today_pop(merged, today_str)
 
 
 class ECAQHISensor(CoordinatorEntity[ECAQHICoordinator], SensorEntity):
@@ -518,6 +618,108 @@ class ECAlertsSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
         return {"alerts": self.coordinator.data.get("alerts") or []}
 
 
+# ---------------------------------------------------------------------------
+# Yesterday's precipitation sensors (issue #9)
+# ---------------------------------------------------------------------------
+
+# Maps each sensor key to the coordinator-data field it reads.
+_YESTERDAY_PRECIP_FIELDS = {
+    "yesterday_rain": "rain_mm",
+    "yesterday_snow": "snow_cm",
+    "yesterday_precipitation": "total_mm",
+}
+
+
+def yesterday_precip_sensor_keys(station_type: str) -> list[str]:
+    """Return the sensor keys to create for a given station type.
+
+    Split stations expose rain + snow + total; combined stations expose only
+    the total (they never report a rain/snow breakdown).
+    """
+    if station_type == "split":
+        return ["yesterday_rain", "yesterday_snow", "yesterday_precipitation"]
+    return ["yesterday_precipitation"]
+
+
+def stale_precip_unique_ids(station_type: str | None, city_code: str) -> list[str]:
+    """Return unique_ids of precip sensors that should NOT exist for this config.
+
+    Used to clean up orphaned entities when the user switches station type
+    (split -> combined drops rain/snow) or opts out (drops all three). HA does
+    not auto-remove entities a platform stops creating, so we remove them
+    explicitly from the registry on reload.
+    """
+    keep = set(yesterday_precip_sensor_keys(station_type)) if station_type else set()
+    all_keys = {"yesterday_rain", "yesterday_snow", "yesterday_precipitation"}
+    return [f"ec_{key}_{city_code}" for key in sorted(all_keys - keep)]
+
+
+def yesterday_precip_value(data: dict | None, key: str):
+    """Return the sensor value for a key, honouring null-vs-zero.
+
+    When the day is not yet published, every sensor reads None (HA shows
+    "unknown") — never 0. A measured 0 (published dry day) reads 0.
+    """
+    if not data or not data.get("published"):
+        return None
+    return data.get(_YESTERDAY_PRECIP_FIELDS[key])
+
+
+class ECYesterdayPrecipSensor(CoordinatorEntity[ECClimateCoordinator], SensorEntity):
+    """One of yesterday's precipitation readings (rain, snow, or total).
+
+    State: the measured amount, 0 on a published dry day, or None (unknown)
+    until yesterday's observation is published. Diagnostic attributes carry
+    the reporting station's name, distance, and data type.
+    """
+
+    _attr_has_entity_name = True
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_device_class = SensorDeviceClass.PRECIPITATION
+
+    _KEY_NAMES = {
+        "yesterday_rain": "Yesterday's Rain",
+        "yesterday_snow": "Yesterday's Snow",
+        "yesterday_precipitation": "Yesterday's Precipitation",
+    }
+    _KEY_UNITS = {
+        "yesterday_rain": UnitOfPrecipitationDepth.MILLIMETERS,
+        "yesterday_snow": UnitOfPrecipitationDepth.CENTIMETERS,
+        "yesterday_precipitation": UnitOfPrecipitationDepth.MILLIMETERS,
+    }
+
+    def __init__(
+        self,
+        coordinator: ECClimateCoordinator,
+        key: str,
+        city_code: str,
+        city_name: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = self._KEY_NAMES[key]
+        self._attr_native_unit_of_measurement = self._KEY_UNITS[key]
+        self._attr_unique_id = f"ec_{key}_{city_code}"
+        # Pin the entity_id to the short form the card reads (e.g.
+        # sensor.ec_yesterday_precipitation), not the device-prefixed default.
+        self.entity_id = f"sensor.ec_{key}"
+        self._attr_device_info = build_device_info(city_code, city_name)
+
+    @property
+    def native_value(self):
+        return yesterday_precip_value(self.coordinator.data, self._key)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        return {
+            "station_name": data.get("station_name"),
+            "distance_km": data.get("distance_km"),
+            "data_type": data.get("station_type"),
+            "published": data.get("published"),
+        }
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -540,6 +742,9 @@ async def async_setup_entry(
         ECDailyForecastSensor(data.weather, data.weong, city_code, city_name, language)
     )
     entities.append(ECWeatherSummarySensor(data.weather, city_code, city_name, language))
+    entities.append(
+        ECTodayPopSensor(data.weather, data.weong, city_code, city_name, language)
+    )
     entities.extend(
         ECGaugeSensor(data.weather, description, city_code, city_name)
         for description in GAUGE_SENSOR_DESCRIPTIONS
@@ -549,4 +754,68 @@ async def async_setup_entry(
     entities.append(ECAlertsSensor(data.alerts, city_code, city_name))
     entities.append(ECAQHISensor(data.aqhi, city_code, city_name))
 
+    # Yesterday's precipitation — only when a station is configured.
+    station_type = (
+        data.climate.station_type
+        if data.climate is not None and data.climate.station_id
+        else None
+    )
+    if station_type:
+        for key in yesterday_precip_sensor_keys(station_type):
+            entities.append(
+                ECYesterdayPrecipSensor(data.climate, key, city_code, city_name)
+            )
+
+    # Migrate any device-prefixed precip/pop entity_ids from earlier builds to
+    # the short ids the card reads, then remove sensors orphaned by a
+    # station-type change or opt-out (HA doesn't auto-remove those).
+    _migrate_precip_entity_ids(hass, city_code)
+    _remove_stale_precip_entities(hass, station_type, city_code)
+
     async_add_entities(entities)
+
+
+def _remove_stale_precip_entities(
+    hass: HomeAssistant, station_type: str | None, city_code: str
+) -> None:
+    """Delete precip entities from the registry that no longer apply."""
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    for unique_id in stale_precip_unique_ids(station_type, city_code):
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        if entity_id:
+            registry.async_remove(entity_id)
+            _LOGGER.debug("Removed stale precip entity %s", entity_id)
+
+
+# unique_id slug -> desired short entity_id, for entities the card reads by a
+# fixed id. Earlier builds registered these with a device-prefixed entity_id
+# (sensor.ec_weather_<city>_...), which the card can't find; migrate them.
+def _short_entity_id_map(city_code: str) -> dict[str, str]:
+    keys = {
+        "ec_precip_probability_today": "sensor.ec_precip_probability_today",
+        "ec_yesterday_rain": "sensor.ec_yesterday_rain",
+        "ec_yesterday_snow": "sensor.ec_yesterday_snow",
+        "ec_yesterday_precipitation": "sensor.ec_yesterday_precipitation",
+    }
+    return {f"{slug}_{city_code}": eid for slug, eid in keys.items()}
+
+
+def _migrate_precip_entity_ids(hass: HomeAssistant, city_code: str) -> None:
+    """Rename registry entities stuck on device-prefixed ids to the short form.
+
+    entity_id is only honoured at first registration, so entities created by
+    an earlier build keep their old id. Rename them to the id the card reads.
+    """
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    for unique_id, desired in _short_entity_id_map(city_code).items():
+        current = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        if not current or current == desired:
+            continue
+        # Only rename if the target id is free, to avoid collisions.
+        if registry.async_get(desired) is None:
+            registry.async_update_entity(current, new_entity_id=desired)
+            _LOGGER.debug("Migrated %s -> %s", current, desired)

@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Roboto = HA's UI font; the MDI web font ships the same glyphs ha-icon
+     uses, so headless renders match the real dashboard closely. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;600;700&display=swap">
+<style>
+  :root {
+    /* HA dark theme variables the card binds to. The light block below
+       overrides them when ?theme=light. */
+    --primary-text-color: #eef2f6;
+    --secondary-text-color: #9fb0bf;
+    --divider-color: rgba(255, 255, 255, 0.08);
+    --primary-background-color: #0c1724;
+    --mdc-dialog-scrim-color: rgba(0, 0, 0, 0.8);
+  }
+  :root[data-theme="light"] {
+    --primary-text-color: #17222d;
+    --secondary-text-color: #5f6d79;
+    --divider-color: rgba(0, 0, 0, 0.10);
+    --primary-background-color: #f4f7fa;
+  }
+  body {
+    margin: 0; padding: 24px;
+    background: #0b1220;
+    font-family: Roboto, system-ui, sans-serif;
+  }
+  :root[data-theme="light"] body { background: #dde5ee; }
+  .demo-card {
+    width: min(720px, calc(100vw - 48px)); margin: 0 auto; box-sizing: border-box;
+    background: linear-gradient(158deg, #12212f 0%, #0c1724 100%);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 18px; padding: 20px;
+    box-shadow: 0 12px 44px rgba(0, 0, 0, 0.34);
+  }
+  :root[data-theme="light"] .demo-card {
+    background: linear-gradient(158deg, #ffffff 0%, #eef3f8 100%);
+    border-color: rgba(0, 0, 0, 0.09);
+    box-shadow: 0 12px 40px rgba(24, 44, 66, 0.15);
+  }
+  ec-weather-card { display: block; }
+  ec-weather-card + ec-weather-card { margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="demo-card" id="stack"></div>
+<script type="module">
+// ha-icon shim: HA's frontend provides this element on real dashboards.
+// Renders the SVG path from @mdi/js — the same mechanism as the real ha-icon,
+// so headless output matches the dashboard pixel-for-pixel (no webfont races).
+import * as MDI from '../node_modules/@mdi/js/mdi.js';
+const iconPath = (name) => {
+  // 'mdi:weather-sunny' → 'mdiWeatherSunny'
+  const key = 'mdi' + name.replace('mdi:', '').split('-')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+  return MDI[key] || '';
+};
+class HaIconShim extends HTMLElement {
+  static get observedAttributes() { return ['icon']; }
+  connectedCallback() { this.render(); }
+  attributeChangedCallback() { this.render(); }
+  render() {
+    if (!this.shadowRoot) this.attachShadow({ mode: 'open' });
+    const d = iconPath(this.getAttribute('icon') || '');
+    this.shadowRoot.innerHTML = '<style>:host{display:inline-flex;align-items:center;'
+      + 'justify-content:center;width:var(--mdc-icon-size,24px);height:var(--mdc-icon-size,24px)}'
+      + 'svg{width:100%;height:100%;fill:currentColor}</style>'
+      + '<svg viewBox="0 0 24 24"><path d="' + d + '"></path></svg>';
+  }
+}
+customElements.define('ha-icon', HaIconShim);
+
+import '../ec-weather-card.js';
+import { buildHass } from './fixture.mjs';
+
+const params = new URLSearchParams(location.search);
+const view = params.get('view') || 'dashboard';   // dashboard | popup
+const theme = params.get('theme') || 'dark';
+if (theme === 'light') document.documentElement.dataset.theme = 'light';
+// Chromium headless clamps windows to ~515px wide, so phone viewports can't
+// come from --window-size alone. cardwidth pins the card and left-anchors it;
+// the generator then crops the window to the phone width.
+const cardWidth = params.get('cardwidth');
+if (cardWidth) {
+  const cardEl = document.querySelector('.demo-card');
+  cardEl.style.width = cardWidth + 'px';
+  cardEl.style.margin = '0';
+  // The popup overlay sizes to the (clamped) viewport too — pin it to the
+  // phone width and left-anchor it so the crop captures it whole.
+  const phoneWidth = Number(cardWidth) + 48;
+  const overlayStyle = document.createElement('style');
+  overlayStyle.textContent = '.ec-overlay { justify-content: flex-start !important; }'
+    + ' .ec-overlay-content { width: ' + phoneWidth + 'px !important;'
+    + ' max-width: ' + phoneWidth + 'px !important; border-radius: 0 !important; }';
+  document.head.appendChild(overlayStyle);
+}
+
+const hass = buildHass({ dark: theme !== 'light' });
+const stack = document.getElementById('stack');
+
+const makeSection = (section) => {
+  const card = document.createElement('ec-weather-card');
+  card.setConfig({ section });
+  stack.appendChild(card);
+  card.hass = hass;
+  return card;
+};
+
+const sections = ['alerts', 'current', 'hourly', 'daily'];
+let dailyCard;
+for (const section of sections) {
+  const card = makeSection(section);
+  if (section === 'daily') dailyCard = card;
+}
+
+if (view === 'popup') {
+  // Real overlay path: same DOM users get when tapping Today.
+  dailyCard._openDailyPopup(0);
+}
+
+// Report content height once fonts have settled so the generator can size
+// the window to fit exactly.
+const report = () => {
+  const pre = document.createElement('pre');
+  pre.id = 'MEASURE';
+  pre.style.display = 'none';
+  pre.textContent = JSON.stringify({ height: Math.ceil(document.querySelector('.demo-card').getBoundingClientRect().bottom + 24) });
+  document.body.appendChild(pre);
+};
+document.fonts.ready.then(() => setTimeout(report, 400));
+</script>
+</body>
+</html>

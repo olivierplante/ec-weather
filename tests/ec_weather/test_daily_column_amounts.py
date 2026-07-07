@@ -18,24 +18,24 @@ class TestDailyColumnAmountSource:
     """Verify daily columns use EC precip_accum with WEonG fallback."""
 
     def test_prefers_ec_precip_accum(self):
-        """Daily column must check EC precip_accum first."""
+        """The shared dailyPrecip() helper must check EC precip_accum first."""
         source = CARD_JS.read_text()
-        assert "hasEcAccum" in source, (
-            "Daily column must check hasEcAccum before falling back to WEonG"
+        start = source.find("function dailyPrecip(")
+        section = source[start:start + 1000]
+        assert "precip_accum_amount" in section, (
+            "dailyPrecip() must prefer EC accumulation before WEonG"
         )
 
     def test_falls_back_to_weong_when_no_ec_accum(self):
-        """When EC has no accum, daily column uses WEonG rain_mm_day/snow_cm_day."""
+        """When EC has no accum, dailyPrecip() uses WEonG rain_mm_day/snow_cm_day."""
         source = CARD_JS.read_text()
-        # The else branch must reference WEonG amounts
-        accum_section_start = source.find("hasEcAccum")
-        accum_section_end = source.find("pColor", accum_section_start)
-        accum_section = source[accum_section_start:accum_section_end]
-        assert "rain_mm_day" in accum_section, (
-            "WEonG rain_mm_day must be used as fallback when EC has no accum"
+        start = source.find("function dailyPrecip(")
+        section = source[start:start + 1000]
+        assert "rain_mm_day" in section, (
+            "WEonG rain_mm_day must be the fallback when EC has no accum"
         )
-        assert "snow_cm_day" in accum_section, (
-            "WEonG snow_cm_day must be used as fallback when EC has no accum"
+        assert "snow_cm_day" in section, (
+            "WEonG snow_cm_day must be the fallback when EC has no accum"
         )
 
     def test_popup_still_has_weong_amounts(self):

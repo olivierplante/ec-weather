@@ -14,6 +14,17 @@ CONF_BBOX = "bbox"
 CONF_AQHI_LOCATION_ID = "aqhi_location_id"
 CONF_GEOMET_BBOX = "geomet_bbox"
 
+# Yesterday's precipitation (issue #9) — EC climate-daily station.
+# CONF_PRECIP_STATION_ID is the chosen CLIMATE_IDENTIFIER (or None = feature off).
+# CONF_PRECIP_STATION_TYPE is "split" (reports TOTAL_RAIN/TOTAL_SNOW) or "combined".
+# CONF_PRECIP_DISCOVERED flags that one-time discovery already ran for this entry,
+# so we don't re-probe the API on every restart for unconfigured users.
+CONF_PRECIP_STATION_ID = "precip_station_id"
+CONF_PRECIP_STATION_TYPE = "precip_station_type"
+CONF_PRECIP_STATION_NAME = "precip_station_name"
+CONF_PRECIP_STATION_DISTANCE_KM = "precip_station_distance_km"
+CONF_PRECIP_DISCOVERED = "precip_discovered"
+
 DEFAULT_LANGUAGE = "en"
 SUPPORTED_LANGUAGES = {"en": "English", "fr": "Français"}
 
@@ -54,6 +65,9 @@ POLLING_MODES = {
 
 # Update intervals
 SCAN_INTERVAL_ALERTS = timedelta(minutes=30)  # alerts always poll in all modes
+# Yesterday's precip: retry every 30 min until yesterday's data publishes
+# (typically by ~06:00 local), then stay idle until the next day.
+SCAN_INTERVAL_CLIMATE = timedelta(minutes=30)
 
 # Configurable interval defaults (minutes)
 CONF_WEATHER_INTERVAL = "weather_interval"

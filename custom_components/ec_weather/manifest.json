@@ -1,13 +1,19 @@
 {
   "domain": "ec_weather",
   "name": "Environment Canada Weather",
-  "codeowners": ["@olivierplante"],
+  "codeowners": [
+    "@olivierplante"
+  ],
   "config_flow": true,
-  "dependencies": ["http", "frontend", "lovelace"],
+  "dependencies": [
+    "http",
+    "frontend",
+    "lovelace"
+  ],
   "documentation": "https://github.com/olivierplante/ec-weather",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/olivierplante/ec-weather/issues",
   "requirements": [],
-  "version": "1.8.7"
+  "version": "2.0.0"
 }

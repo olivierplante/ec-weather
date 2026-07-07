@@ -1,21 +1,29 @@
-# EC Weather
+<h1 align="center">EC Weather</h1>
 
-Weather integration for Home Assistant using Environment Canada's APIs. Includes a built-in Lovelace card. English and French.
+<p align="center">Weather integration for Home Assistant using Environment Canada's APIs, with a built-in Lovelace card. Works with any Canadian location Environment Canada serves. English and French.</p>
 
-[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/v/release/olivierplante/ec-weather)](https://github.com/olivierplante/ec-weather/releases)
-
-<p>
-  <img src="https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/weather-panel.png" alt="Weather Panel" width="300">
+<p align="center">
+  <a href="https://github.com/hacs/integration"><img src="https://img.shields.io/badge/HACS-Default-41BDF5.svg" alt="HACS Default"></a>
+  <a href="https://github.com/olivierplante/ec-weather/releases"><img src="https://img.shields.io/github/v/release/olivierplante/ec-weather" alt="GitHub Release"></a>
+  <a href="https://github.com/olivierplante/ec-weather/actions/workflows/validate.yml"><img src="https://github.com/olivierplante/ec-weather/actions/workflows/validate.yml/badge.svg" alt="CI"></a>
 </p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview-light.webp">
+    <img alt="EC Weather Card" src="https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview.webp">
+  </picture>
+</p>
+
+<p align="center"><a href="https://github.com/olivierplante/ec-weather/blob/main/docs/screenshots.md">More screenshots</a></p>
 
 ## What you get
 
-- Current conditions, 48h hourly forecast, 7-day daily forecast
+- Current conditions, a 48-hour hourly trend and a 7-day outlook
 - Active weather alerts for your area
-- Air quality (AQHI) with risk level
-- A Lovelace card that auto-registers, nothing to set up
-- Card renders in ~2 seconds, then fills in detailed data in the background
+- Feels-like (humidex / wind chill), AQHI and UV color-coded by risk
+- A Lovelace card that auto-registers, follows your HA theme (dark and light), English and Français
+- Renders in ~2 seconds, then fills in detailed data in the background
 
 ## Install
 
@@ -31,6 +39,7 @@ Weather integration for Home Assistant using Environment Canada's APIs. Includes
 - [Configuration](https://github.com/olivierplante/ec-weather/blob/main/docs/configuration.md): location, options, polling modes
 - [Entity reference](https://github.com/olivierplante/ec-weather/blob/main/docs/entities.md): sensors and attributes
 - [Lovelace card](https://github.com/olivierplante/ec-weather/blob/main/docs/card.md): sections, full panel, theming
+- [Screenshots](https://github.com/olivierplante/ec-weather/blob/main/docs/screenshots.md): desktop, mobile, popup, light theme
 - [Polling & API usage](https://github.com/olivierplante/ec-weather/blob/main/docs/polling.md): tiered loading and caching
 
 ## Support

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .coordinator.alerts import ECAlertCoordinator
     from .coordinator.aqhi import ECAQHICoordinator
     from .coordinator.weong import ECWEonGCoordinator
+    from .coordinator.climate import ECClimateCoordinator
 
 
 @dataclass
@@ -24,6 +25,8 @@ class ECWeatherData:
     alerts: ECAlertCoordinator
     aqhi: ECAQHICoordinator
     weong: ECWEonGCoordinator
+    # Yesterday's precipitation — None when no station is configured (issue #9).
+    climate: ECClimateCoordinator | None = None
 
 
 def build_device_info(city_code: str, city_name: str) -> DeviceInfo:

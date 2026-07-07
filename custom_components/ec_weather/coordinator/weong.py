@@ -146,6 +146,11 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         self._store = TimestepStore()
         # Latest HRDPS model run seen from GeoMet responses (for freshness)
         self._last_model_run: str | None = None
+        # Dates (ISO "YYYY-MM-DD") whose queries have completed at least once.
+        # A day joins this set even when it produced zero timesteps — EC removed
+        # the GDPS-WEonG layers, so days 4-6 come back empty. Attempted-and-empty
+        # must be distinguishable from not-yet-fetched (pending) downstream.
+        self._completed_days: set[str] = set()
         # Timestamp of the last actual GeoMet fetch (not projection)
         self._last_fetch_ts: str | None = None
 
@@ -372,6 +377,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             "periods": period_projection,
             "hourly": hourly_projection,
             "updated": self._last_fetch_ts,
+            "days_fetched": sorted(self._completed_days),
         }
 
     def _is_model_run_current(self) -> bool:
@@ -441,6 +447,9 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             )
             async with self._merge_lock:
                 self._results_to_store(day_results)
+                # Mark the day fetched even on zero results — attempted-and-empty
+                # (GDPS-WEonG removed) is a real answer, not a pending state.
+                self._completed_days.add(date_str)
                 try:
                     merged = self._project_output(all_periods)
                     self.async_set_updated_data(merged)
