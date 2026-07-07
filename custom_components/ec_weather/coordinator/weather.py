@@ -18,6 +18,7 @@ from ..const import (
 )
 from ..api_client import fetch_json_with_retry
 from ..parsing import (
+    compute_humidex,
     feels_like,
     icon_val,
     loc,
@@ -103,15 +104,20 @@ class ECWeatherCoordinator(OnDemandCoordinator):
         wind = current_raw.get("wind") or {}
         temp = num(current_raw.get("temperature"), lang)
         wind_speed = num(wind.get("speed"), lang)
+        dewpoint = num(current_raw.get("dewpoint"), lang)
 
         humidex_obj = current_raw.get("humidex")
         humidex = num(humidex_obj, lang) if isinstance(humidex_obj, dict) else None
+        # EC often omits humidex from currentConditions; compute it locally from
+        # temperature + dewpoint for heat. EC's own value stays authoritative.
+        if humidex is None:
+            humidex = compute_humidex(temp, dewpoint)
 
         current = {
             "temp": temp,
             "feels_like": feels_like(temp, wind_speed, humidex),
             "humidity": num(current_raw.get("relativeHumidity"), lang),
-            "dewpoint": num(current_raw.get("dewpoint"), lang),
+            "dewpoint": dewpoint,
             "wind_speed": wind_speed,
             "wind_gust": num(wind.get("gust"), lang),
             "wind_direction": str_val(wind.get("direction"), lang),
@@ -149,11 +155,17 @@ class ECWeatherCoordinator(OnDemandCoordinator):
         )
 
         self.mark_refreshed()
+        # fetched_at is the success heartbeat: the temperature sensor exposes
+        # it as an attribute so a state write happens on EVERY successful
+        # fetch, even when all values are unchanged. The card's stale banner
+        # measures this — not last_updated, which stalls on stable readings.
+        fetched_at = datetime.now(timezone.utc).isoformat()
         return {
             "current": current,
             "hourly": hourly,
             "daily": daily,
             "sunrise": utc_to_local_hhmm(self.hass, loc(rise_set.get("sunrise"), lang)),
             "sunset": utc_to_local_hhmm(self.hass, loc(rise_set.get("sunset"), lang)),
-            "updated": datetime.now(timezone.utc).isoformat(),
+            "updated": fetched_at,
+            "fetched_at": fetched_at,
         }

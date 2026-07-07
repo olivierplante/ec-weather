@@ -1,27 +1,77 @@
 {
   "entity": {
     "sensor": {
-      "ec_temperature": { "name": "Température" },
-      "ec_feels_like": { "name": "Ressenti" },
-      "ec_humidity": { "name": "Humidité" },
-      "ec_wind_speed": { "name": "Vitesse du vent" },
-      "ec_wind_gust": { "name": "Rafales" },
-      "ec_wind_direction": { "name": "Direction du vent" },
-      "ec_condition": { "name": "Condition" },
-      "ec_icon_code": { "name": "Code d'icône" },
-      "ec_sunrise": { "name": "Lever du soleil" },
-      "ec_sunset": { "name": "Coucher du soleil" },
-      "ec_hourly_forecast": { "name": "Prévisions horaires" },
-      "ec_daily_forecast": { "name": "Prévisions quotidiennes" },
-      "ec_weather_summary": { "name": "Résumé météo" },
-      "ec_air_quality": { "name": "Qualité de l'air" },
-      "ec_alert_count": { "name": "Nombre d'alertes" },
-      "ec_alerts": { "name": "Alertes" },
-      "ec_temp_gauge": { "name": "Jauge de température" },
-      "ec_feels_gauge": { "name": "Jauge de ressenti" }
+      "ec_temperature": {
+        "name": "Température"
+      },
+      "ec_feels_like": {
+        "name": "Ressenti"
+      },
+      "ec_humidity": {
+        "name": "Humidité"
+      },
+      "ec_wind_speed": {
+        "name": "Vitesse du vent"
+      },
+      "ec_wind_gust": {
+        "name": "Rafales"
+      },
+      "ec_wind_direction": {
+        "name": "Direction du vent"
+      },
+      "ec_condition": {
+        "name": "Condition"
+      },
+      "ec_icon_code": {
+        "name": "Code d'icône"
+      },
+      "ec_sunrise": {
+        "name": "Lever du soleil"
+      },
+      "ec_sunset": {
+        "name": "Coucher du soleil"
+      },
+      "ec_hourly_forecast": {
+        "name": "Prévisions horaires"
+      },
+      "ec_daily_forecast": {
+        "name": "Prévisions quotidiennes"
+      },
+      "ec_weather_summary": {
+        "name": "Résumé météo"
+      },
+      "ec_precip_probability_today": {
+        "name": "Probabilité de précipitations aujourd'hui"
+      },
+      "ec_air_quality": {
+        "name": "Qualité de l'air"
+      },
+      "ec_alert_count": {
+        "name": "Nombre d'alertes"
+      },
+      "ec_alerts": {
+        "name": "Alertes"
+      },
+      "ec_temp_gauge": {
+        "name": "Jauge de température"
+      },
+      "ec_feels_gauge": {
+        "name": "Jauge de ressenti"
+      },
+      "ec_yesterday_rain": {
+        "name": "Pluie d'hier"
+      },
+      "ec_yesterday_snow": {
+        "name": "Neige d'hier"
+      },
+      "ec_yesterday_precipitation": {
+        "name": "Précipitations d'hier"
+      }
     },
     "weather": {
-      "ec_weather": { "name": "Météo" }
+      "ec_weather": {
+        "name": "Météo"
+      }
     }
   },
   "config": {
@@ -49,8 +99,14 @@
           "lon": "Longitude",
           "bbox": "Zone d'alerte",
           "geomet_bbox": "Zone WMS GeoMet",
-          "aqhi_location_id": "ID de station CAS",
-          "climate_station_id": "ID de station climatique"
+          "aqhi_location_id": "ID de station CAS"
+        }
+      },
+      "precip": {
+        "title": "Précipitations d'hier",
+        "description": "Affichez optionnellement la quantité de pluie ou de neige tombée hier, mesurée à la station d'Environnement Canada la plus proche qui transmet des données. Les stations qui rapportent la pluie et la neige séparément donnent plus de détails; les stations combinées rapportent un seul total (la neige étant comptée selon son équivalent en eau fondue en mm). La station la plus proche peut être assez éloignée — choisissez celle que vous préférez, ou ignorez cette fonction.",
+        "data": {
+          "precip_station_id": "Station de précipitations"
         }
       }
     },
@@ -77,6 +133,29 @@
           "polling_mode": "Mode d'interrogation",
           "weather_interval": "Intervalle météo (minutes)",
           "aqhi_interval": "Intervalle CAS (minutes)"
+        }
+      },
+      "precip": {
+        "title": "Précipitations d'hier",
+        "description": "Choisissez la station utilisée pour la pluie et la neige d'hier, ou désactivez cette fonction. Les stations séparées rapportent la pluie et la neige distinctement; les stations combinées rapportent un seul total (la neige selon son équivalent en eau fondue en mm). La station la plus proche peut être assez éloignée.",
+        "data": {
+          "precip_station_id": "Station de précipitations"
+        }
+      }
+    }
+  },
+  "issues": {
+    "yesterday_precip_available": {
+      "title": "Afficher les précipitations d'hier ?",
+      "fix_flow": {
+        "step": {
+          "choose": {
+            "title": "Précipitations d'hier",
+            "description": "Environnement Canada peut indiquer la quantité de pluie ou de neige tombée hier à la station la plus proche. Les stations séparées rapportent la pluie et la neige distinctement; les stations combinées rapportent un seul total (la neige selon son équivalent en eau fondue en mm). La station la plus proche peut être assez éloignée — choisissez-en une pour activer la fonction, ou désactivez-la.",
+            "data": {
+              "precip_station_id": "Station de précipitations"
+            }
+          }
         }
       }
     }

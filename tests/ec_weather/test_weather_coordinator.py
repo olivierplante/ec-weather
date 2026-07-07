@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 from ec_weather.api_client import FetchError
 
 from ec_weather.coordinator import ECWeatherCoordinator
-from ec_weather.parsing import compute_wind_chill, feels_like, parse_daily
+from ec_weather.parsing import compute_humidex, compute_wind_chill, feels_like, parse_daily
 
 from .conftest import load_fixture
 
@@ -128,6 +128,53 @@ class TestFeelsLike:
         """Given no wind chill and no humidex → returns actual temp."""
         fl = feels_like(15.0, 3.0, None)
         assert fl == 15.0
+
+
+# ---------------------------------------------------------------------------
+# Current-conditions humidex fallback (Bug 2)
+# ---------------------------------------------------------------------------
+
+class TestCurrentHumidexFallback:
+    async def test_missing_humidex_uses_computed(self, hass: HomeAssistant, aioclient_mock):
+        """Given hot currentConditions with dewpoint but no humidex →
+        feels_like equals the locally computed humidex."""
+        data = _build_ec_response(
+            temperature={"units": {"en": "C"}, "value": {"en": 26.0, "fr": 26.0}},
+            dewpoint={"units": {"en": "C"}, "value": {"en": 18.0, "fr": 18.0}},
+            humidex=None,
+            wind={"speed": {"units": {"en": "km/h"}, "value": {"en": 6, "fr": 6}}},
+        )
+        aioclient_mock.get(
+            "https://api.weather.gc.ca/collections/citypageweather-realtime"
+            "/items/on-118?f=json&lang=en&skipGeometry=true",
+            json=data,
+        )
+
+        coord = _make_coordinator(hass)
+        result = await coord._async_update_data()
+
+        expected = compute_humidex(26.0, 18.0)
+        assert expected is not None
+        assert result["current"]["feels_like"] == pytest.approx(expected)
+
+    async def test_ec_humidex_wins_over_computed(self, hass: HomeAssistant, aioclient_mock):
+        """Given EC provides a humidex → EC value stays authoritative."""
+        data = _build_ec_response(
+            temperature={"units": {"en": "C"}, "value": {"en": 26.0, "fr": 26.0}},
+            dewpoint={"units": {"en": "C"}, "value": {"en": 18.0, "fr": 18.0}},
+            humidex={"units": {"en": "C"}, "value": {"en": 40.0, "fr": 40.0}},
+            wind={"speed": {"units": {"en": "km/h"}, "value": {"en": 6, "fr": 6}}},
+        )
+        aioclient_mock.get(
+            "https://api.weather.gc.ca/collections/citypageweather-realtime"
+            "/items/on-118?f=json&lang=en&skipGeometry=true",
+            json=data,
+        )
+
+        coord = _make_coordinator(hass)
+        result = await coord._async_update_data()
+
+        assert result["current"]["feels_like"] == 40.0
 
 
 # ---------------------------------------------------------------------------

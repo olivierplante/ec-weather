@@ -281,3 +281,157 @@ async def discover_aqhi_station(
     nearest = min(stations.values(), key=_distance)
     return nearest["location_id"]
 
+
+# ---------------------------------------------------------------------------
+# Yesterday's precipitation — climate-daily station discovery (issue #9)
+# ---------------------------------------------------------------------------
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in kilometres between two lat/lon points."""
+    import math
+
+    radius_km = 6371.0
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lon / 2) ** 2
+    )
+    return radius_km * 2 * math.asin(math.sqrt(a))
+
+
+def parse_precip_stations(data: dict, lat: float, lon: float) -> dict:
+    """Find the nearest reporting and nearest split-capable climate stations.
+
+    Pure function over a windowed ``climate-daily`` response. A station
+    "reports precipitation" if any row has a non-null TOTAL_PRECIPITATION
+    (0 counts — it's a measured dry day). A station is "split-capable" if any
+    row has a non-null TOTAL_RAIN (combined-only stations always report null
+    rain, even on dry days, so this reliably distinguishes them).
+
+    Returns ``{"nearest": <station|None>, "nearest_split": <station|None>}``
+    where each station is ``{station_id, name, type, distance_km, lat, lon}``.
+    ``type`` is "split" or "combined". ``nearest_split`` may equal ``nearest``.
+    """
+    features = data.get("features") or []
+    if not isinstance(features, list):
+        features = []
+
+    # Aggregate rows by station: a station reports if ANY row has non-null
+    # total; it is split-capable if ANY row has non-null rain.
+    stations: dict[str, dict] = {}
+    for feature in features:
+        props = feature.get("properties") or {}
+        station_id = props.get("CLIMATE_IDENTIFIER")
+        if not station_id:
+            continue
+
+        total = _safe_float(props.get("TOTAL_PRECIPITATION"))
+        rain = _safe_float(props.get("TOTAL_RAIN"))
+
+        geom = feature.get("geometry") or {}
+        coords = geom.get("coordinates") or []
+        slat = _safe_float(coords[1]) if len(coords) >= 2 else None
+        slon = _safe_float(coords[0]) if len(coords) >= 2 else None
+
+        entry = stations.get(station_id)
+        if entry is None:
+            entry = {
+                "station_id": station_id,
+                "name": props.get("STATION_NAME") or station_id,
+                "lat": slat,
+                "lon": slon,
+                "reports": False,
+                "split": False,
+            }
+            stations[station_id] = entry
+
+        # Backfill coordinates if an earlier row lacked them
+        if entry["lat"] is None and slat is not None:
+            entry["lat"] = slat
+            entry["lon"] = slon
+
+        if total is not None:
+            entry["reports"] = True
+        if rain is not None:
+            entry["split"] = True
+
+    def _finalize(entry: dict) -> dict:
+        slat = entry["lat"]
+        slon = entry["lon"]
+        distance_km = (
+            _haversine_km(lat, lon, slat, slon)
+            if slat is not None and slon is not None
+            else float("inf")
+        )
+        return {
+            "station_id": entry["station_id"],
+            "name": entry["name"],
+            "type": "split" if entry["split"] else "combined",
+            "distance_km": round(distance_km, 1),
+            "lat": slat,
+            "lon": slon,
+        }
+
+    reporting = [_finalize(e) for e in stations.values() if e["reports"]]
+    if not reporting:
+        return {"nearest": None, "nearest_split": None}
+
+    reporting.sort(key=lambda s: s["distance_km"])
+    nearest = reporting[0]
+
+    split_stations = [s for s in reporting if s["type"] == "split"]
+    nearest_split = split_stations[0] if split_stations else None
+
+    return {"nearest": nearest, "nearest_split": nearest_split}
+
+
+async def discover_precip_stations(
+    session: aiohttp.ClientSession,
+    lat: float,
+    lon: float,
+    api_base: str,
+    timeout: int,
+    window_dates: tuple[str, str] | None = None,
+    radius_deg: float = 1.0,
+) -> dict:
+    """Query climate-daily over a recent window and discover precip stations.
+
+    ``window_dates`` is an explicit (start_iso, end_iso) range; when omitted,
+    the caller-side default is the last 8 days. Returns the same shape as
+    ``parse_precip_stations``; ``{"nearest": None, "nearest_split": None}`` on
+    any network error.
+    """
+    from datetime import date, timedelta
+
+    if window_dates is None:
+        end = date.today() - timedelta(days=1)
+        start = end - timedelta(days=7)
+        window_dates = (start.isoformat(), end.isoformat())
+
+    bbox = (
+        f"{lon - radius_deg:.1f},{lat - radius_deg:.1f},"
+        f"{lon + radius_deg:.1f},{lat + radius_deg:.1f}"
+    )
+    url = (
+        f"{api_base}/collections/climate-daily/items"
+        f"?f=json&bbox={bbox}&datetime={window_dates[0]}/{window_dates[1]}"
+        f"&limit=1000"
+        f"&properties=CLIMATE_IDENTIFIER,STATION_NAME,"
+        f"TOTAL_PRECIPITATION,TOTAL_RAIN,TOTAL_SNOW"
+    )
+
+    try:
+        async with asyncio.timeout(timeout):
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+    except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as err:
+        _LOGGER.debug("Precip station discovery failed: %s", err)
+        return {"nearest": None, "nearest_split": None}
+
+    return parse_precip_stations(data, lat, lon)
+

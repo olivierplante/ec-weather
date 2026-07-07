@@ -233,6 +233,20 @@ def extract_weong_value(data: dict | None, key: str):
     return data[key] if data and data.get(key) is not None else None
 
 
+def extract_today_pop(merged_daily: list[dict], today_str: str) -> int | None:
+    """Return today's combined probability of precipitation.
+
+    ``merged_daily`` is the output of ``merge_weong_into_daily`` — each period
+    carries a combined day/night ``precip_prob``. This picks the value for
+    ``today_str`` (ISO date). Returns None when today is absent or its POP is
+    null. A real 0 is preserved (not treated as missing).
+    """
+    for period in merged_daily:
+        if period.get("date") == today_str:
+            return period.get("precip_prob")
+    return None
+
+
 def merge_weong_into_daily(
     daily_periods: list[dict],
     weong_periods: dict,
@@ -240,6 +254,7 @@ def merge_weong_into_daily(
     lang: str = "en",
     ec_updated: str | None = None,
     weong_updated: str | None = None,
+    days_fetched: list[str] | None = None,
 ) -> list[dict]:
     """Merge WEonG POP data and per-timestep breakdowns into daily forecast periods.
 
@@ -255,6 +270,8 @@ def merge_weong_into_daily(
     When hourly_forecast is provided, timesteps within the first 24h are enriched
     with EC hourly data (icon, condition, wind, feels-like) by matching UTC timestamps.
     """
+    fetched_dates = set(days_fetched) if days_fetched else set()
+
     hourly_lookup: dict[str, dict] = {}
     if hourly_forecast:
         for hourly_item in hourly_forecast:
@@ -317,6 +334,17 @@ def merge_weong_into_daily(
                 timestep.get("icon_code") is not None for timestep in all_timesteps
             )
         )
+
+        # Timeline tri-state: an empty timestep list is ambiguous — it looks
+        # the same whether the day was fetched-and-empty (GDPS-WEonG removed)
+        # or simply hasn't been fetched yet. days_fetched disambiguates:
+        # attempted-and-empty → "unavailable", not-yet-fetched → "pending".
+        if all_timesteps:
+            enriched["timesteps_state"] = "loaded"
+        elif date_str in fetched_dates:
+            enriched["timesteps_state"] = "unavailable"
+        else:
+            enriched["timesteps_state"] = "pending"
 
         merged.append(enriched)
 

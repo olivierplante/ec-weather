@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.0.0
+
+Every part of the card has been rebuilt on a single design system.
+
+![Desktop, mobile and day detail](https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview.webp)
+
+[More screenshots](https://github.com/olivierplante/ec-weather/blob/main/docs/screenshots.md)
+
+### What's new
+
+- New layout throughout: hero conditions, precipitation panel, metric bar (humidity, wind, AQHI, UV, sun), hourly trend and 7-day range bars
+- One temperature language: the hourly curve and the 7-day bars share an absolute temperature color scale
+- Rain drawn as rising water levels, with per-hour probability of precipitation
+- The sun cell is a day/night loop with a countdown to the next sunrise or sunset
+- Day detail popup rebuilt to match: narrative forecast, day/night cards and an hourly timeline, with an honest placeholder when EC has no hourly data
+- Yesterday's precipitation sensors, with automatic discovery of the nearest station that actually reports precipitation (closes #9)
+- Feels-like now works in hot and humid weather: humidex is parsed from EC and computed locally when EC omits it
+- French chrome throughout; the clock follows your HA 12/24-hour setting
+
+### Upgrading
+
+No configuration changes: the four `section:` cards and all entities are unchanged. The card looks completely different after this update. If you had themed the card, several CSS variables changed; see the [theming table](https://github.com/olivierplante/ec-weather/blob/main/docs/card.md#theming).
+
 ## 1.8.7
 
 **Documentation links fixed** — The README links to `docs/configuration.md` and the other reference pages were broken in 1.8.6 because the `docs/` folder wasn't copied to the published repo. The folder is now included.

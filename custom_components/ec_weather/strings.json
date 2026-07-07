@@ -1,27 +1,77 @@
 {
   "entity": {
     "sensor": {
-      "ec_temperature": { "name": "Temperature" },
-      "ec_feels_like": { "name": "Feels Like" },
-      "ec_humidity": { "name": "Humidity" },
-      "ec_wind_speed": { "name": "Wind Speed" },
-      "ec_wind_gust": { "name": "Wind Gust" },
-      "ec_wind_direction": { "name": "Wind Direction" },
-      "ec_condition": { "name": "Condition" },
-      "ec_icon_code": { "name": "Icon Code" },
-      "ec_sunrise": { "name": "Sunrise" },
-      "ec_sunset": { "name": "Sunset" },
-      "ec_hourly_forecast": { "name": "Hourly Forecast" },
-      "ec_daily_forecast": { "name": "Daily Forecast" },
-      "ec_weather_summary": { "name": "Weather Summary" },
-      "ec_air_quality": { "name": "Air Quality" },
-      "ec_alert_count": { "name": "Alert Count" },
-      "ec_alerts": { "name": "Alerts" },
-      "ec_temp_gauge": { "name": "Temperature Gauge" },
-      "ec_feels_gauge": { "name": "Feels Like Gauge" }
+      "ec_temperature": {
+        "name": "Temperature"
+      },
+      "ec_feels_like": {
+        "name": "Feels Like"
+      },
+      "ec_humidity": {
+        "name": "Humidity"
+      },
+      "ec_wind_speed": {
+        "name": "Wind Speed"
+      },
+      "ec_wind_gust": {
+        "name": "Wind Gust"
+      },
+      "ec_wind_direction": {
+        "name": "Wind Direction"
+      },
+      "ec_condition": {
+        "name": "Condition"
+      },
+      "ec_icon_code": {
+        "name": "Icon Code"
+      },
+      "ec_sunrise": {
+        "name": "Sunrise"
+      },
+      "ec_sunset": {
+        "name": "Sunset"
+      },
+      "ec_hourly_forecast": {
+        "name": "Hourly Forecast"
+      },
+      "ec_daily_forecast": {
+        "name": "Daily Forecast"
+      },
+      "ec_weather_summary": {
+        "name": "Weather Summary"
+      },
+      "ec_precip_probability_today": {
+        "name": "Precipitation Probability Today"
+      },
+      "ec_air_quality": {
+        "name": "Air Quality"
+      },
+      "ec_alert_count": {
+        "name": "Alert Count"
+      },
+      "ec_alerts": {
+        "name": "Alerts"
+      },
+      "ec_temp_gauge": {
+        "name": "Temperature Gauge"
+      },
+      "ec_feels_gauge": {
+        "name": "Feels Like Gauge"
+      },
+      "ec_yesterday_rain": {
+        "name": "Yesterday's Rain"
+      },
+      "ec_yesterday_snow": {
+        "name": "Yesterday's Snow"
+      },
+      "ec_yesterday_precipitation": {
+        "name": "Yesterday's Precipitation"
+      }
     },
     "weather": {
-      "ec_weather": { "name": "Weather" }
+      "ec_weather": {
+        "name": "Weather"
+      }
     }
   },
   "config": {
@@ -49,8 +99,14 @@
           "lon": "Longitude",
           "bbox": "Alert bounding box",
           "geomet_bbox": "GeoMet WMS bounding box",
-          "aqhi_location_id": "AQHI station ID",
-          "climate_station_id": "Climate station ID"
+          "aqhi_location_id": "AQHI station ID"
+        }
+      },
+      "precip": {
+        "title": "Yesterday's Precipitation",
+        "description": "Optionally show how much rain or snow fell yesterday, measured at the nearest reporting Environment Canada station. Stations that report rain and snow separately give more detail; combined stations report a single total (with snow counted as its melted water equivalent in mm). The nearest station may be some distance away — pick whichever you prefer, or skip this feature.",
+        "data": {
+          "precip_station_id": "Precipitation station"
         }
       }
     },
@@ -77,6 +133,29 @@
           "polling_mode": "Polling mode",
           "weather_interval": "Weather refresh interval (minutes)",
           "aqhi_interval": "AQHI refresh interval (minutes)"
+        }
+      },
+      "precip": {
+        "title": "Yesterday's Precipitation",
+        "description": "Choose the station used for yesterday's rain and snow, or opt out. Split stations report rain and snow separately; combined stations report a single total (snow as its melted water equivalent in mm). The nearest reporting station may be some distance away.",
+        "data": {
+          "precip_station_id": "Precipitation station"
+        }
+      }
+    }
+  },
+  "issues": {
+    "yesterday_precip_available": {
+      "title": "Show yesterday's precipitation?",
+      "fix_flow": {
+        "step": {
+          "choose": {
+            "title": "Yesterday's Precipitation",
+            "description": "Environment Canada can report how much rain or snow fell yesterday at the nearest reporting station. Split stations report rain and snow separately; combined stations report a single total (snow as its melted water equivalent in mm). The nearest station may be some distance away — pick one to enable the feature, or opt out.",
+            "data": {
+              "precip_station_id": "Precipitation station"
+            }
+          }
         }
       }
     }

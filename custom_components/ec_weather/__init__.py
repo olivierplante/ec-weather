@@ -24,6 +24,10 @@ from .const import (
     CONF_GEOMET_BBOX,
     CONF_LANGUAGE,
     CONF_POLLING_MODE,
+    CONF_PRECIP_STATION_DISTANCE_KM,
+    CONF_PRECIP_STATION_ID,
+    CONF_PRECIP_STATION_NAME,
+    CONF_PRECIP_STATION_TYPE,
     CONF_WEATHER_INTERVAL,
     COORDINATOR_WEONG,
     DEFAULT_AQHI_INTERVAL,
@@ -36,7 +40,7 @@ from .const import (
     SERVICE_FETCH_DAY_TIMESTEPS,
 )
 from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator
-from .coordinator import ECWEonGCoordinator
+from .coordinator import ECWEonGCoordinator, ECClimateCoordinator
 from .models import ECWeatherData
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,10 +78,21 @@ CARD_VERSIONED_URL = f"{CARD_RESOURCE_URL}?v={CARD_VERSION}"
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the ec-weather-card Lovelace resource."""
 
-    # Serve the JS file from inside the component directory
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_RESOURCE_URL, str(CARD_JS_FILE), cache_headers=True)]
-    )
+    # Serve the JS file from inside the component directory. The screenshots
+    # dir is served too when present (docs rendered inside HA reference it),
+    # but HACS installs don't ship it (.hacsignore) — guard, or setup breaks
+    # for every HACS user.
+    static_paths = [
+        StaticPathConfig(CARD_RESOURCE_URL, str(CARD_JS_FILE), cache_headers=True)
+    ]
+    screenshots_dir = CARD_JS_FILE.parent.parent / "screenshots"
+    if screenshots_dir.is_dir():
+        static_paths.append(
+            StaticPathConfig(
+                "/ec_weather/screenshots", str(screenshots_dir), cache_headers=True
+            )
+        )
+    await hass.http.async_register_static_paths(static_paths)
 
     # Register in the Lovelace resource registry
     resources = hass.data.get("lovelace", {}).resources
@@ -178,6 +193,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, geomet_bbox, polling=weong_polls,
     )
 
+    # Yesterday's precipitation — only when a station was discovered/opted in.
+    precip_station_id = entry.data.get(CONF_PRECIP_STATION_ID)
+    climate_coordinator = None
+    if precip_station_id:
+        climate_coordinator = ECClimateCoordinator(
+            hass,
+            precip_station_id,
+            station_type=entry.data.get(CONF_PRECIP_STATION_TYPE, "combined"),
+            station_name=entry.data.get(CONF_PRECIP_STATION_NAME),
+            distance_km=entry.data.get(CONF_PRECIP_STATION_DISTANCE_KM),
+        )
+
     # Fetch all three coordinators in parallel (~2s instead of ~6s sequential)
     weather_task = weather_coordinator.async_config_entry_first_refresh()
     alert_task = alert_coordinator.async_config_entry_first_refresh()
@@ -201,7 +228,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         alerts=alert_coordinator,
         aqhi=aqhi_coordinator,
         weong=weong_coordinator,
+        climate=climate_coordinator,
     )
+
+    # Yesterday's precip is non-blocking — fetch in the background so a slow
+    # or unpublished climate response never delays setup. It retries on its
+    # own 30-min interval until yesterday publishes.
+    if climate_coordinator is not None:
+        entry.async_create_background_task(
+            hass,
+            climate_coordinator.async_refresh(),
+            name="ec_weather_climate_first_refresh",
+        )
+
+    # Offer the yesterday-precipitation feature to users who haven't set it up.
+    from .repairs import async_manage_precip_issue
+    async_manage_precip_issue(hass, entry)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

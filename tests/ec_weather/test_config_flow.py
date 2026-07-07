@@ -18,6 +18,7 @@ from homeassistant.core import HomeAssistant
 from ec_weather.config_flow import (
     ECWeatherConfigFlow,
     ECWeatherOptionsFlow,
+    PRECIP_OPT_OUT,
     _compute_alert_bbox,
     _compute_geomet_bbox,
 )
@@ -28,6 +29,7 @@ from ec_weather.const import (
     CONF_CITY_CODE,
     CONF_CITY_NAME,
     CONF_GEOMET_BBOX,
+    CONF_PRECIP_STATION_ID,
     CONF_LANGUAGE,
     CONF_LAT,
     CONF_LON,
@@ -382,10 +384,16 @@ class TestAsyncStepConfirm:
         assert result["description_placeholders"]["province"] == "ON"
         assert result["description_placeholders"]["city_code"] == "on-118"
 
+    @patch("ec_weather.config_flow.discover_precip_stations")
     async def test_creates_entry_with_user_input(
-        self, hass: HomeAssistant,
+        self, mock_discover, hass: HomeAssistant,
     ) -> None:
-        """Submitting confirm form creates a config entry with correct data."""
+        """Submitting confirm form leads to entry creation with correct data.
+
+        With no precip station nearby, the precip step auto-skips and the
+        entry is created with the confirmed data.
+        """
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
         flow = _make_flow(hass)
         flow._selected_city = {**OTTAWA_CITY, "language": "en"}
         flow._discovered_aqhi = None
@@ -417,10 +425,12 @@ class TestAsyncStepConfirm:
         assert data[CONF_GEOMET_BBOX] == "44.420,-76.700,46.420,-74.700"
         assert data[CONF_AQHI_LOCATION_ID] == "AQHI-456"
 
+    @patch("ec_weather.config_flow.discover_precip_stations")
     async def test_empty_aqhi_stored_as_none(
-        self, hass: HomeAssistant,
+        self, mock_discover, hass: HomeAssistant,
     ) -> None:
         """Empty string AQHI location is stored as None."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
         flow = _make_flow(hass)
         flow._selected_city = {**OTTAWA_CITY, "language": "en"}
         flow._discovered_aqhi = None
@@ -439,10 +449,12 @@ class TestAsyncStepConfirm:
         data = flow.async_create_entry.call_args[1]["data"]
         assert data[CONF_AQHI_LOCATION_ID] is None
 
+    @patch("ec_weather.config_flow.discover_precip_stations")
     async def test_confirm_uses_city_id_as_title_fallback(
-        self, hass: HomeAssistant,
+        self, mock_discover, hass: HomeAssistant,
     ) -> None:
         """If city has no name, title falls back to city id."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
         flow = _make_flow(hass)
         flow._selected_city = {"id": "qc-99", "language": "en"}
         flow._discovered_aqhi = None
@@ -590,10 +602,12 @@ class TestOptionsFlowInit:
         assert result["description_placeholders"]["city_name"] == "Ottawa"
         assert result["description_placeholders"]["city_code"] == "on-118"
 
+    @patch("ec_weather.config_flow.discover_precip_stations")
     async def test_mutable_keys_go_to_options(
-        self, hass: HomeAssistant,
+        self, mock_discover, hass: HomeAssistant,
     ) -> None:
         """Mutable keys (polling_mode, intervals) are saved to options, not data."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
         flow = await self._make_options_flow(hass)
 
         # Mock async_update_entry and async_reload
@@ -630,10 +644,12 @@ class TestOptionsFlowInit:
         assert new_data[CONF_CITY_CODE] == "on-118"
         assert new_data[CONF_LANGUAGE] == "en"
 
+    @patch("ec_weather.config_flow.discover_precip_stations")
     async def test_immutable_keys_go_to_data(
-        self, hass: HomeAssistant,
+        self, mock_discover, hass: HomeAssistant,
     ) -> None:
         """Immutable keys (city_code, language, bbox, etc.) are saved to data."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
         flow = await self._make_options_flow(hass)
 
         hass.config_entries = MagicMock()
@@ -688,17 +704,15 @@ class TestOptionsFlowInit:
         assert defaults[CONF_WEATHER_INTERVAL] == 60
         assert defaults[CONF_AQHI_INTERVAL] == 360
 
-    async def test_reloads_entry_after_save(
-        self, hass: HomeAssistant,
+    @patch("ec_weather.config_flow.discover_precip_stations")
+    async def test_init_routes_to_precip_step(
+        self, mock_discover, hass: HomeAssistant,
     ) -> None:
-        """Options flow triggers a reload after saving."""
+        """Saving the init form always continues to the precip step."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
         flow = await self._make_options_flow(hass)
-        entry_id = flow.handler
 
-        # Patch only async_reload on the real config entries manager
-        with patch.object(hass.config_entries, "async_reload", new=AsyncMock()) as mock_reload:
-            flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
-
+        with patch.object(hass.config_entries, "async_update_entry"):
             user_input = {
                 CONF_CITY_CODE: "on-118",
                 CONF_LANGUAGE: "en",
@@ -709,6 +723,24 @@ class TestOptionsFlowInit:
                 CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
                 CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
             }
-            await flow.async_step_init(user_input=user_input)
+            result = await flow.async_step_init(user_input=user_input)
 
-            mock_reload.assert_awaited_once_with(entry_id)
+        assert result["type"] == "form"
+        assert result["step_id"] == "precip"
+
+    async def test_reloads_entry_after_precip_save(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """Submitting the precip step triggers a reload."""
+        flow = await self._make_options_flow(hass)
+        entry_id = flow.handler
+        flow._precip_choices = {PRECIP_OPT_OUT: None}
+
+        with patch.object(hass.config_entries, "async_update_entry"), \
+                patch.object(hass.config_entries, "async_reload", new=AsyncMock()) as mock_reload:
+            flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+            await flow.async_step_precip(
+                user_input={CONF_PRECIP_STATION_ID: PRECIP_OPT_OUT}
+            )
+
+        mock_reload.assert_awaited_once_with(entry_id)

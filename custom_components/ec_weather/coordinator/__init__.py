@@ -6,6 +6,7 @@ from .weather import ECWeatherCoordinator
 from .alerts import ECAlertCoordinator
 from .aqhi import ECAQHICoordinator
 from .weong import ECWEonGCoordinator
+from .climate import ECClimateCoordinator
 
 __all__ = [
     "OnDemandCoordinator",
@@ -14,4 +15,5 @@ __all__ = [
     "ECAlertCoordinator",
     "ECAQHICoordinator",
     "ECWEonGCoordinator",
+    "ECClimateCoordinator",
 ]

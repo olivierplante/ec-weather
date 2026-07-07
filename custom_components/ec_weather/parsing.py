@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import date, datetime, timedelta, timezone
 from itertools import zip_longest
 from typing import Any
@@ -24,6 +25,7 @@ __all__ = [
     "parse_daily",
     "utc_to_local_hhmm",
     "compute_wind_chill",
+    "compute_humidex",
 ]
 
 
@@ -93,6 +95,28 @@ def compute_wind_chill(temp: float | None, wind_speed: float | None) -> float | 
         + 0.3965 * temp * (wind_speed ** 0.16),
         1,
     )
+
+
+def compute_humidex(temp: float | None, dewpoint: float | None) -> float | None:
+    """Compute humidex from air temperature and dewpoint (MSC formula).
+
+    Returns None when outside EC's own display convention:
+      - temp or dewpoint missing
+      - temp < 20 C
+      - computed humidex < temp + 1 (EC displays humidex only when it is at
+        least 1 degree above the air temperature — EC climate glossary)
+    """
+    if temp is None or dewpoint is None:
+        return None
+    if temp < 20:
+        return None
+    vapour_pressure = 6.11 * math.exp(
+        5417.7530 * (1 / 273.16 - 1 / (dewpoint + 273.15))
+    )
+    humidex = round(temp + 0.5555 * (vapour_pressure - 10.0), 1)
+    if humidex < temp + 1:
+        return None
+    return humidex
 
 
 def feels_like(
@@ -238,11 +262,22 @@ def _parse_precip_accumulation(period: dict, lang: str) -> dict:
 
 
 def _parse_humidex(period: dict, lang: str) -> float | None:
-    """Extract humidex value from a forecast period."""
+    """Extract humidex value from a forecast period.
+
+    Handles two EC shapes:
+      - hourly-style measurement: {"value": {"en": 35}}
+      - daily-period-style:       {"calculated": {"en": "32"}} (string value)
+    """
     humidex_obj = period.get("humidex")
     if not isinstance(humidex_obj, dict):
         return None
-    return num(humidex_obj, lang)
+    value = num(humidex_obj, lang)
+    if value is not None:
+        return value
+    calculated = humidex_obj.get("calculated")
+    if isinstance(calculated, dict):
+        return safe_float(calculated.get(lang))
+    return None
 
 
 def _extract_period_fields(
