@@ -255,6 +255,9 @@ def merge_weong_into_daily(
     ec_updated: str | None = None,
     weong_updated: str | None = None,
     days_fetched: list[str] | None = None,
+    precip_windows: dict[str, list[dict]] | None = None,
+    outlook: list[dict] | None = None,
+    outlook_backfill: dict | None = None,
 ) -> list[dict]:
     """Merge WEonG POP data and per-timestep breakdowns into daily forecast periods.
 
@@ -271,6 +274,7 @@ def merge_weong_into_daily(
     with EC hourly data (icon, condition, wind, feels-like) by matching UTC timestamps.
     """
     fetched_dates = set(days_fetched) if days_fetched else set()
+    precip_windows_by_date = precip_windows or {}
 
     hourly_lookup: dict[str, dict] = {}
     if hourly_forecast:
@@ -336,8 +340,8 @@ def merge_weong_into_daily(
         )
 
         # Timeline tri-state: an empty timestep list is ambiguous — it looks
-        # the same whether the day was fetched-and-empty (GDPS-WEonG removed)
-        # or simply hasn't been fetched yet. days_fetched disambiguates:
+        # the same whether the day was fetched-and-empty (past the RDPS-WEonG
+        # 84h horizon) or simply hasn't been fetched yet. days_fetched disambiguates:
         # attempted-and-empty → "unavailable", not-yet-fetched → "pending".
         if all_timesteps:
             enriched["timesteps_state"] = "loaded"
@@ -346,6 +350,32 @@ def merge_weong_into_daily(
         else:
             enriched["timesteps_state"] = "pending"
 
+        # Additive GEPS band payload — only present on extended (geps) days, so
+        # the official 7-day entries keep their exact existing key set. The card
+        # renders future-spanning precip vessels from these 12h windows.
+        day_windows = precip_windows_by_date.get(date_str)
+        if day_windows:
+            enriched["precip_windows"] = day_windows
+
+        # Refinement 2 — last official day overnight-low backfill. When extended
+        # is enabled and EC hasn't published this day's night period yet, fill
+        # ONLY the absent low / night POP from the GEPS night trough. Published
+        # citypage values are never overwritten (guarded on None).
+        if outlook_backfill and date_str == outlook_backfill.get("date"):
+            if period.get("temp_low") is None and outlook_backfill.get("temp_low") is not None:
+                enriched["temp_low"] = outlook_backfill["temp_low"]
+            if enriched.get("precip_prob_night") is None and outlook_backfill.get("pop_night") is not None:
+                enriched["precip_prob_night"] = outlook_backfill["pop_night"]
+
         merged.append(enriched)
+
+    # Append GEPS outlook entries (days beyond the official 7) after the
+    # official rows. Only present when the forecast_days option is > 7; the
+    # official entries above keep their exact shape (backward compatible). The
+    # outlook entries carry source:"outlook" and no timeline, so the card
+    # renders them as muted outlook rows.
+    if outlook:
+        for entry in outlook:
+            merged.append(dict(entry))
 
     return merged

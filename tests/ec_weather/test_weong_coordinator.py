@@ -9,15 +9,20 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
+from freezegun import freeze_time
+
+from ec_weather.const import WEONG_CACHE_TTL_HRDPS, WEONG_CACHE_TTL_RDPS
 from ec_weather.coordinator import ECWEonGCoordinator
 from ec_weather.coordinator.weong_helpers import (
     _HRDPS_PREFIX,
-    _GDPS_PREFIX,
+    _RDPS_PREFIX,
     _LAYER_SUFFIXES,
+    _model_from_layer,
+    _models_for_day,
     _weong_layer_name,
     build_periods,
 )
-from ec_weather.transforms import derive_icon
+from ec_weather.transforms import derive_icon, merge_weong_into_daily
 
 from .conftest import MOCK_CONFIG_DATA
 
@@ -54,45 +59,44 @@ def _build_all_results(
     Each entry is (layer_name, timestep, period_key, value).
     """
     results = []
-    prefix = _HRDPS_PREFIX if model == "hrdps" else _GDPS_PREFIX
-    suffix_3h = ".3h" if model == "gdps" else ""
+    prefix = _HRDPS_PREFIX if model == "hrdps" else _RDPS_PREFIX
 
     for i, ts in enumerate(timesteps):
         # POP
         pop = pop_values[i] if i < len(pop_values) else None
-        layer = f"{prefix}{_LAYER_SUFFIXES['precip_prob']}{suffix_3h}"
+        layer = f"{prefix}{_LAYER_SUFFIXES['precip_prob']}"
         results.append((layer, ts, period_key, pop))
 
         # AirTemp
         temp = None
         if temp_values and i < len(temp_values):
             temp = temp_values[i]
-        layer = f"{prefix}{_LAYER_SUFFIXES['air_temp']}{suffix_3h}"
+        layer = f"{prefix}{_LAYER_SUFFIXES['air_temp']}"
         results.append((layer, ts, period_key, temp))
 
         # Rain
         if rain_values and i < len(rain_values) and rain_values[i] is not None:
-            layer = f"{prefix}{_LAYER_SUFFIXES['rain_amt']}{suffix_3h}"
+            layer = f"{prefix}{_LAYER_SUFFIXES['rain_amt']}"
             results.append((layer, ts, period_key, rain_values[i]))
 
         # Snow
         if snow_values and i < len(snow_values) and snow_values[i] is not None:
-            layer = f"{prefix}{_LAYER_SUFFIXES['snow_amt']}{suffix_3h}"
+            layer = f"{prefix}{_LAYER_SUFFIXES['snow_amt']}"
             results.append((layer, ts, period_key, snow_values[i]))
 
         # Freezing precip
         if freezing_values and i < len(freezing_values) and freezing_values[i] is not None:
-            layer = f"{prefix}{_LAYER_SUFFIXES['freezing_precip_amt']}{suffix_3h}"
+            layer = f"{prefix}{_LAYER_SUFFIXES['freezing_precip_amt']}"
             results.append((layer, ts, period_key, freezing_values[i]))
 
         # Ice pellets
         if ice_values and i < len(ice_values) and ice_values[i] is not None:
-            layer = f"{prefix}{_LAYER_SUFFIXES['ice_pellet_amt']}{suffix_3h}"
+            layer = f"{prefix}{_LAYER_SUFFIXES['ice_pellet_amt']}"
             results.append((layer, ts, period_key, ice_values[i]))
 
         # Sky state
         if sky_values and i < len(sky_values) and sky_values[i] is not None:
-            layer = f"{prefix}{_LAYER_SUFFIXES['sky_state']}{suffix_3h}"
+            layer = f"{prefix}{_LAYER_SUFFIXES['sky_state']}"
             results.append((layer, ts, period_key, sky_values[i]))
 
     return results
@@ -329,49 +333,32 @@ class TestBuildPeriods:
 # ---------------------------------------------------------------------------
 
 class TestTimestepAlignment:
-    """Tests that GDPS and HRDPS timestep generation is correct."""
+    """Tests that RDPS and HRDPS timestep generation is correct."""
 
-    def test_gdps_timesteps_on_3h_boundaries(self, hass: HomeAssistant):
-        """GDPS timesteps must align to 00,03,06,...,21 UTC boundaries."""
+    @freeze_time("2026-03-22T12:00:00Z")
+    def test_rdps_far_day_timesteps_are_hourly(self, hass: HomeAssistant):
+        """RDPS far-day timesteps are hourly (no 3h snapping)."""
         hass.config.time_zone = "America/Toronto"
-        # Day 3 (GDPS only): today + 3 days
+        coord = _make_weong_coordinator(hass)
         today = date(2026, 3, 22)
         now_utc = datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc)
         local_tz = dt_util.get_time_zone(hass.config.time_zone)
 
         periods = build_periods(today, now_utc, local_tz)
+        # Day 3 (2026-03-25) is RDPS-only and inside the 84h horizon.
+        day3_periods = [p for p in periods if p[0] == "2026-03-25"]
+        timestep_info = coord._build_timestep_info(day3_periods, today)
 
-        # Get the day period for day+3 (2026-03-25)
-        target_date = "2026-03-25"
-        day_period = None
-        for date_str, ptype, utc_start, utc_end in periods:
-            if date_str == target_date and ptype == "day":
-                day_period = (utc_start, utc_end)
-                break
+        rdps_steps = [ts for ts, _, model in timestep_info if model == "rdps"]
+        assert rdps_steps, "Day 3 should generate RDPS timesteps"
+        assert all(m == "rdps" for _, _, m in timestep_info)
 
-        assert day_period is not None
-        utc_start, utc_end = day_period
-
-        # Simulate GDPS timestep generation (same logic as _async_update_data)
-        h = utc_start.hour
-        remainder = h % 3
-        if remainder == 0:
-            t = utc_start.replace(minute=0, second=0, microsecond=0)
-        else:
-            t = (utc_start.replace(minute=0, second=0, microsecond=0)
-                 + timedelta(hours=3 - remainder))
-
-        timesteps = []
-        while t < utc_end:
-            timesteps.append(t)
-            t += timedelta(hours=3)
-
-        # All timesteps must be on 3h boundaries
-        for ts in timesteps:
-            assert ts.hour % 3 == 0, f"GDPS timestep {ts} not on 3h boundary"
-
-        # Should have at least 1 timestep
-        assert len(timesteps) >= 1
+        # Consecutive RDPS timesteps must be exactly 1h apart — no 3h snapping.
+        ordered = sorted(rdps_steps)
+        for earlier, later in zip(ordered, ordered[1:]):
+            assert later - earlier == timedelta(hours=1), (
+                f"RDPS timesteps must be hourly, got gap {later - earlier}"
+            )
 
     def test_hrdps_timesteps_hourly(self, hass: HomeAssistant):
         """HRDPS timesteps are hourly (1h apart)."""
@@ -436,3 +423,205 @@ class TestQueryFeatureInfo:
 
         # Should return transient error sentinel, NOT None
         assert result is coord._TRANSIENT_ERROR
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 — RDPS-WEonG (resurrected far-day model path)
+# ---------------------------------------------------------------------------
+
+def _daily_stub(period: str, date_str: str) -> dict:
+    """Minimal daily forecast item for merge_weong_into_daily."""
+    return {
+        "period": period,
+        "date": date_str,
+        "temp_high": 1,
+        "temp_low": -10,
+        "icon_code": 16,
+        "icon_code_night": 38,
+        "condition_day": "Snow",
+        "condition_night": "Cloudy periods",
+        "text_summary_day": "Snow. High 1.",
+        "text_summary_night": "Cloudy. Low minus 10.",
+    }
+
+
+class TestRdpsLayerNames:
+    """RDPS layer names are bare (no .3h suffix); HRDPS keeps its prefix."""
+
+    def test_rdps_layer_name_has_no_3h_suffix(self):
+        """Plan test 1: rdps layer is 'RDPS-WEonG_10km_<suffix>' with no .3h."""
+        assert (
+            _weong_layer_name("Precip-Prob", "rdps")
+            == "RDPS-WEonG_10km_Precip-Prob"
+        )
+
+    def test_rdps_layer_names_never_carry_3h(self):
+        """Every logical suffix builds a bare RDPS layer name."""
+        for suffix in _LAYER_SUFFIXES.values():
+            layer = _weong_layer_name(suffix, "rdps")
+            assert layer == f"RDPS-WEonG_10km_{suffix}"
+            assert ".3h" not in layer
+
+    def test_hrdps_layer_name_unchanged(self):
+        """HRDPS layer names keep the 2.5km prefix and no suffix."""
+        assert (
+            _weong_layer_name("Precip-Prob", "hrdps")
+            == "HRDPS-WEonG_2.5km_Precip-Prob"
+        )
+
+
+class TestRdpsModelsForDay:
+    """Plan test 2: day-to-model mapping. WEonG hourly, GEPS 3-hourly (days 4-6)."""
+
+    def test_days_0_1_hrdps_only(self):
+        assert _models_for_day(0) == [("hrdps", 1)]
+        assert _models_for_day(1) == [("hrdps", 1)]
+
+    def test_day_2_dual_model_rdps_hourly(self):
+        assert _models_for_day(2) == [("hrdps", 1), ("rdps", 1)]
+
+    def test_day_3_rdps_only(self):
+        assert _models_for_day(3) == [("rdps", 1)]
+
+    def test_day_4_rdps_plus_geps(self):
+        # Day 4 straddles the 84h cap: RDPS to the cap, GEPS for the remainder.
+        assert _models_for_day(4) == [("rdps", 1), ("geps", 3)]
+
+    def test_days_5_6_geps_only(self):
+        assert _models_for_day(5) == [("geps", 3)]
+        assert _models_for_day(6) == [("geps", 3)]
+
+    def test_weong_models_are_hourly_geps_is_three_hourly(self):
+        """WEonG (HRDPS/RDPS) steps are 1h; GEPS steps are 3h."""
+        for days_ahead in range(7):
+            for model, step_hours in _models_for_day(days_ahead):
+                if model == "geps":
+                    assert step_hours == 3, f"GEPS day {days_ahead} must be 3-hourly"
+                else:
+                    assert step_hours == 1, (
+                        f"day {days_ahead} model {model} must be hourly"
+                    )
+
+
+class TestRdpsModelFromLayer:
+    """Plan test 4: model detection round-trips for both prefixes."""
+
+    def test_model_from_hrdps_layer(self):
+        assert _model_from_layer("HRDPS-WEonG_2.5km_AirTemp") == "hrdps"
+
+    def test_model_from_rdps_layer(self):
+        assert _model_from_layer("RDPS-WEonG_10km_AirTemp") == "rdps"
+
+    def test_round_trip_both_models(self):
+        for model in ("hrdps", "rdps"):
+            layer = _weong_layer_name(_LAYER_SUFFIXES["air_temp"], model)
+            assert _model_from_layer(layer) == model
+
+
+class TestRdpsCacheTtl:
+    """Plan test 5: cache TTL selection keys on the model prefix."""
+
+    def test_rdps_layer_uses_rdps_ttl(self, hass: HomeAssistant):
+        coord = _make_weong_coordinator(hass)
+        rdps_layer = _weong_layer_name(_LAYER_SUFFIXES["precip_prob"], "rdps")
+        assert coord._cache_ttl(rdps_layer) == WEONG_CACHE_TTL_RDPS
+
+    def test_hrdps_layer_uses_hrdps_ttl(self, hass: HomeAssistant):
+        coord = _make_weong_coordinator(hass)
+        hrdps_layer = _weong_layer_name(_LAYER_SUFFIXES["precip_prob"], "hrdps")
+        assert coord._cache_ttl(hrdps_layer) == WEONG_CACHE_TTL_HRDPS
+
+
+class TestRdpsHorizonCap:
+    """Plan test 3: timesteps stop at model_run + 84h; far days stay honest."""
+
+    @freeze_time("2026-07-07T12:00:00Z")
+    def test_no_timesteps_generated_past_84h(self, hass: HomeAssistant):
+        """Timestep generation yields nothing after expected_run + 84h."""
+        hass.config.time_zone = "America/Toronto"
+        coord = _make_weong_coordinator(hass)
+        today = date(2026, 7, 7)
+        now_utc = datetime(2026, 7, 7, 12, 0, tzinfo=timezone.utc)
+        local_tz = dt_util.get_time_zone(hass.config.time_zone)
+
+        periods = build_periods(today, now_utc, local_tz)
+        timestep_info = coord._build_timestep_info(periods, today)
+
+        # Expected model run at 12:00Z is the 06Z run (06 + 2h delay = 08Z passed).
+        # Cap = 2026-07-07T06:00Z + 84h = 2026-07-10T18:00Z.
+        horizon_cap = datetime(2026, 7, 10, 18, 0, tzinfo=timezone.utc)
+        assert timestep_info, "Near days should still generate timesteps"
+        for timestep, _period_key, _model in timestep_info:
+            assert timestep <= horizon_cap, (
+                f"timestep {timestep} exceeds 84h horizon cap {horizon_cap}"
+            )
+
+    @freeze_time("2026-07-07T12:00:00Z")
+    def test_day_wholly_past_cap_generates_nothing(self, hass: HomeAssistant):
+        """Day 5 (2026-07-12) lies entirely past the cap → zero timesteps."""
+        hass.config.time_zone = "America/Toronto"
+        coord = _make_weong_coordinator(hass)
+        today = date(2026, 7, 7)
+        now_utc = datetime(2026, 7, 7, 12, 0, tzinfo=timezone.utc)
+        local_tz = dt_util.get_time_zone(hass.config.time_zone)
+
+        periods = build_periods(today, now_utc, local_tz)
+        timestep_info = coord._build_timestep_info(periods, today)
+
+        day5 = [t for t, pk, _ in timestep_info if pk[0] == "2026-07-12"]
+        assert day5 == [], "Day 5 is past the 84h horizon; expected no timesteps"
+
+    def test_far_day_empty_but_fetched_is_unavailable(self, hass: HomeAssistant):
+        """A far day marked completed with zero timesteps → 'unavailable'.
+
+        The horizon cap produces no timesteps for days 5-6, but the day is
+        still attempted (enters _completed_days), so transforms keeps the
+        honest 'unavailable' state (not 'pending').
+        """
+        coord = _make_weong_coordinator(hass)
+        far_date = "2026-07-12"
+        utc_start = datetime(2026, 7, 12, 10, 0, tzinfo=timezone.utc)
+        utc_end = datetime(2026, 7, 12, 22, 0, tzinfo=timezone.utc)
+        periods = _make_periods(far_date, "day", utc_start, utc_end)
+
+        coord._completed_days.add(far_date)
+        output = coord._project_output(periods)
+        assert far_date in output["days_fetched"]
+
+        daily = [_daily_stub("Sunday", far_date)]
+        merged = merge_weong_into_daily(
+            daily, output["periods"], days_fetched=output["days_fetched"],
+        )
+        assert merged[0]["timesteps_state"] == "unavailable"
+
+
+class TestRdpsInvalidLayerRegression:
+    """Plan test 6: the GDPS-WEonG death mode (no data) degrades honestly."""
+
+    def test_all_none_results_no_crash_and_unavailable(self, hass: HomeAssistant):
+        """All-None query results (InvalidLayersParameter death mode) must not
+        crash, must leave the store empty, and the attempted day is unavailable.
+        """
+        coord = _make_weong_coordinator(hass)
+        far_date = "2026-07-12"
+        timestep = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
+        period_key = (far_date, "day")
+        layer = _weong_layer_name(_LAYER_SUFFIXES["precip_prob"], "rdps")
+
+        all_none_results = [(layer, timestep, period_key, None)]
+        failed_count = coord._results_to_store(all_none_results)
+
+        assert failed_count == 1
+        assert len(coord._store) == 0  # no entries created, no crash
+
+        coord._completed_days.add(far_date)
+        utc_start = datetime(2026, 7, 12, 10, 0, tzinfo=timezone.utc)
+        utc_end = datetime(2026, 7, 12, 22, 0, tzinfo=timezone.utc)
+        output = coord._project_output(
+            _make_periods(far_date, "day", utc_start, utc_end),
+        )
+        daily = [_daily_stub("Sunday", far_date)]
+        merged = merge_weong_into_daily(
+            daily, output["periods"], days_fetched=output["days_fetched"],
+        )
+        assert merged[0]["timesteps_state"] == "unavailable"

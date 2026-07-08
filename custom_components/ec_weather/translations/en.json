@@ -132,7 +132,11 @@
           "aqhi_location_id": "AQHI station ID",
           "polling_mode": "Polling mode",
           "weather_interval": "Weather refresh interval (minutes)",
-          "aqhi_interval": "AQHI refresh interval (minutes)"
+          "aqhi_interval": "AQHI refresh interval (minutes)",
+          "extended_forecast": "Extended 14-day forecast"
+        },
+        "data_description": {
+          "extended_forecast": "Shows 7 extra days beyond Environment Canada's official 7-day forecast. The extra days are a longer-range outlook and are less precise: temperatures and rain chances are estimates, not exact values, and there is less daily detail. They appear dimmed in the card to set them apart."
         }
       },
       "precip": {

@@ -12,7 +12,7 @@ from ..timestep_store import TimestepData
 # ---------------------------------------------------------------------------
 
 _HRDPS_PREFIX = "HRDPS-WEonG_2.5km_"
-_GDPS_PREFIX = "GDPS-WEonG_15km_"
+_RDPS_PREFIX = "RDPS-WEonG_10km_"
 
 _LAYER_SUFFIXES: dict[str, str] = {
     "precip_prob": "Precip-Prob",
@@ -52,50 +52,69 @@ _TO_CM: dict[str, int] = {"snow_amt": 100, "ice_pellet_amt": 100}
 # ---------------------------------------------------------------------------
 
 def _weong_layer_name(suffix: str, model: str) -> str:
-    """Build the full WMS layer name for the given model ('hrdps' or 'gdps')."""
+    """Build the full WMS layer name for the given model ('hrdps' or 'rdps').
+
+    RDPS-WEonG layers are bare names (no '.3h' suffix): the WMS TIME
+    parameter selects the forecast hour on the hourly time dimension.
+    """
     if model == "hrdps":
         return f"{_HRDPS_PREFIX}{suffix}"
-    return f"{_GDPS_PREFIX}{suffix}.3h"
+    return f"{_RDPS_PREFIX}{suffix}"
 
 
 def _models_for_day(days_ahead: int) -> list[tuple[str, int]]:
     """Return list of (model, step_hours) to query for a given day offset.
 
     Days 0-1: HRDPS only (1h steps, reliable ~48h coverage).
-    Day 2: Both HRDPS (1h, may partially cover) and GDPS (3h, full coverage).
-           HRDPS data is preferred; GDPS fills gaps.
-    Days 3+: GDPS only (3h steps).
+    Day 2: Both HRDPS (1h, may partially cover) and RDPS (1h, extends coverage).
+           HRDPS data is preferred; RDPS fills gaps.
+    Day 3: RDPS only (1h steps) — the last day fully inside the 84h horizon.
+    Day 4: RDPS (1h, to the 84h cap) + GEPS (3h ensemble) for the remainder.
+           Store priority makes RDPS win where both land on the same timestep.
+    Days 5-6: GEPS only (3h ensemble). RDPS-WEonG cannot reach this far.
+    Days 7+: RDPS only — kept for backward compatibility; past the 84h horizon
+             it produces no timesteps, and phase C gates the GEPS outlook.
+
+    WEonG models (HRDPS/RDPS) are hourly; GEPS is 3-hourly. The coordinator
+    (not this helper) caps generated timesteps per model — WEonG at the 84h
+    horizon, GEPS at the end of local day 6 for phase B.
     """
     if days_ahead <= 1:
         return [("hrdps", 1)]
     if days_ahead == 2:
-        return [("hrdps", 1), ("gdps", 3)]
-    return [("gdps", 3)]
+        return [("hrdps", 1), ("rdps", 1)]
+    if days_ahead == 3:
+        return [("rdps", 1)]
+    if days_ahead == 4:
+        return [("rdps", 1), ("geps", 3)]
+    if days_ahead in (5, 6):
+        return [("geps", 3)]
+    return [("rdps", 1)]
 
 
 def _bare_layer_name(layer: str) -> str:
-    """Strip HRDPS/GDPS prefix and optional '.3h' suffix from a layer name.
+    """Strip the HRDPS/RDPS prefix from a layer name.
 
     Returns the bare suffix portion, e.g. 'Precip-Prob' from
-    'HRDPS-WEonG_2.5km_Precip-Prob' or 'GDPS-WEonG_15km_Precip-Prob.3h'.
+    'HRDPS-WEonG_2.5km_Precip-Prob' or 'RDPS-WEonG_10km_Precip-Prob'.
     """
     bare = layer
-    for prefix in (_HRDPS_PREFIX, _GDPS_PREFIX):
+    for prefix in (_HRDPS_PREFIX, _RDPS_PREFIX):
         if bare.startswith(prefix):
             bare = bare[len(prefix):]
             break
-    return bare.removesuffix(".3h")
+    return bare
 
 
 def _model_from_layer(layer: str) -> str:
     """Determine the model family from a full layer name.
 
     Returns 'hrdps' if the layer starts with the HRDPS prefix,
-    otherwise 'gdps'.
+    otherwise 'rdps'.
     """
     if layer.startswith(_HRDPS_PREFIX):
         return "hrdps"
-    return "gdps"
+    return "rdps"
 
 
 def build_periods(
@@ -105,8 +124,10 @@ def build_periods(
 ) -> list[tuple[str, str, datetime, datetime]]:
     """Build a list of (date_str, 'day'|'night', utc_start, utc_end) tuples.
 
-    Generates up to 6 days of day/night periods starting from the current
-    time window. Past periods (whose end time is before now) are skipped.
+    Generates up to 7 days (day offsets 0-6) of day/night periods starting from
+    the current time window. Past periods (whose end time is before now) are
+    skipped. The 7-day span matches EC's official daily forecast and reaches the
+    extended GEPS horizon (end of local day 6) that phase B fills.
 
     Day/night boundaries use local time (06:00/18:00) converted to UTC,
     matching EC's forecast period definitions and handling DST transitions.
@@ -140,8 +161,9 @@ def build_periods(
         if night_end > now_utc:
             periods.append((date_str, "night", night_start, night_end))
 
-    # Limit to ~12 periods (matching typical daily forecast length)
-    return periods[:12]
+    # Limit to 14 periods (7 days x day/night) so day 6 — the extended GEPS
+    # horizon — is always covered, not truncated away like the old 12-cap did.
+    return periods[:14]
 
 
 def build_timestep_data(

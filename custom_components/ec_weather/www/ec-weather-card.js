@@ -91,6 +91,12 @@ const I18N = {
     calm: 'Calm',
     chance: 'chance',
     week: '7-day',
+    weekN: '{n}-day',
+    outlookBadge: 'Outlook',
+    outlookTemp: 'Likely {low}-{high}°',
+    outlookPop: ', around {pop}% chance of rain',
+    outlookAmount: ', {amt} possible',
+    outlookFootnote: 'EC publishes official forecasts 7 days out; this outlook comes from model ensembles.',
     sunriseIn: 'sunrise in',
     sunsetIn: 'sets in',
     ofDaylight: 'of daylight',
@@ -134,6 +140,12 @@ const I18N = {
     calm: 'Calme',
     chance: 'de risque',
     week: '7 jours',
+    weekN: '{n} jours',
+    outlookBadge: 'Aperçu',
+    outlookTemp: 'Probablement {low}-{high}°',
+    outlookPop: ', environ {pop} % de risque de pluie',
+    outlookAmount: ', {amt} possibles',
+    outlookFootnote: 'EC publie des prévisions officielles jusqu’à 7 jours; cet aperçu provient d’ensembles de modèles.',
     sunriseIn: 'lever dans',
     sunsetIn: 'coucher dans',
     ofDaylight: 'd’ensoleillement',
@@ -190,6 +202,9 @@ const TOKEN_CSS = `
     --ecw-sunglow: rgba(230,201,138,0.16);
     --ecw-curve: var(--ec-weather-curve, #8ec6e8);
     --ecw-pop: var(--ec-weather-pop, #6f96b3);
+    /* Outlook (days 8+) rows/popup are muted: less-certain model data reads
+       quieter than the official week. Overridable via --ec-weather-outlook-opacity. */
+    --ecw-outlook: var(--ec-weather-outlook-opacity, 0.72);
     --ecw-heroicon: var(--ec-weather-hero-icon, var(--primary-text-color, #eaf1f8));
     --ecw-ppbg: var(--ec-weather-panel-bg, rgba(70,176,236,0.05));
     --ecw-ppbd: var(--ec-weather-panel-border, rgba(120,170,210,0.16));
@@ -226,6 +241,13 @@ const POPUP_STYLE = `
   .ecp-title { font-size: 23px; font-weight: 600; letter-spacing: -0.01em; color: var(--ecw-text); }
   .ecp-date { font-size: 12.5px; color: var(--ecw-muted); }
   .ecp-narr { font-size: 14px; line-height: 1.5; color: var(--ecw-text2); margin: 0; }
+  .ecp-badge {
+    display: inline-block; margin-left: 8px; padding: 2px 8px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; vertical-align: middle; color: var(--ecw-muted);
+    border: 1px solid var(--ecw-hair); border-radius: 999px;
+  }
+  .ecp-footnote { font-size: 11.5px; line-height: 1.45; color: var(--ecw-muted); }
   .ecp-periods { display: flex; gap: 12px; }
   .ecp-period {
     flex: 1; display: flex; flex-direction: column; gap: 10px;
@@ -535,9 +557,23 @@ const STRIP_CSS = `
   .ecs-rainamt { color: var(--ecw-rain); }
   .ecs-snowamt { color: var(--ecw-snow); }
 
+  /* Window-spanning amount vessels (days 4-6). GEPS gives no per-hour amounts,
+     so instead of one vessel per column a single wide block spans a 12h
+     window's columns, labeled with the amount band. Absolutely positioned by
+     pixel offset so windows that don't touch (a dry gap between them) leave
+     honest empty space. Emitted in BOTH the shadow root and the popup light
+     DOM, same as the rest of the ecs- family. */
+  .ecs-wfillzone { position: relative; margin-top: 14px; }
+  .ecs-wvessel {
+    position: absolute; top: 0; display: flex; flex-direction: column;
+    align-items: center; gap: 4px;
+  }
+  .ecs-wblock { width: 100%; border-radius: 4px; background: var(--ecw-rain); }
+  .ecs-strip-compact .ecs-wfillzone { margin-top: 12px; }
+
   /* Popup deltas: the same strip, one calendar day, denser (no band padding,
      tighter gaps and fonts). */
-  .ecs-strip-compact .ecs-band { padding: 0; }
+  .ecs-strip-compact .ecs-band { padding: 8px 0; }
   .ecs-strip-compact .ecs-header { margin-bottom: 6px; }
   .ecs-strip-compact .ecs-time { font-size: 11px; }
   .ecs-strip-compact .ecs-cluster { margin-top: 8px; }
@@ -545,16 +581,27 @@ const STRIP_CSS = `
   .ecs-strip-compact .ecs-fl { font-size: 10px; }
   .ecs-strip-compact .ecs-pop { font-size: 10px; }
   .ecs-strip-compact .ecs-fill { margin-top: 12px; }
+
+  /* Halves-mode band titles (popup only): the DAY / NIGHT labels need breathing
+     room the calendar strip doesn't — the popup is denser, so give the label
+     row extra height + a wider gap below (clear of the hour labels beneath) and
+     inset each title from its segment's left edge (clear of the tint seam and
+     of a neighbouring title on a short segment). */
+  .ecs-strip-compact .ecs-labels { height: 16px; margin-bottom: 6px; }
+  .ecs-strip-compact .ecs-daylbl { padding-left: 7px; padding-top: 1px; }
 `;
 
 // Card-strip defaults for buildHourlyStripHtml. The popup overrides each key.
 const STRIP_DEFAULTS = {
   colWidth: 64,
   curveGeometry: { chartHeight: 50, plotTop: 10, plotHeight: 30 },
-  showDayBands: true,    // alternating day tints + midnight labels
+  showDayBands: true,    // alternating band tints + boundary labels
+  bandMode: 'calendar',  // 'calendar' = per-day tints + midnight labels (card);
+                         // 'halves' = day/night tints + DAY/NIGHT labels (popup)
   vesselWidth: 38,       // water-fill vessel px (inside each column)
   vesselHeight: 30,      // fixed vessel height; fill scales against it
   compact: false,        // toggles the .ecs-strip-compact size deltas
+  precipWindows: null,   // days 4-6 GEPS 12h windows → spanning amount vessels
 };
 
 /**
@@ -568,6 +615,37 @@ export function fmtHourLabel(date, use24) {
   if (hour === 0) return '12 AM';
   if (hour === 12) return '12 PM';
   return hour < 12 ? hour + ' AM' : (hour - 12) + ' PM';
+}
+
+/**
+ * Halves-mode band computation for buildHourlyStripHtml. Segments the strip at
+ * the EC day/night boundaries (day = local hour in [6,18), night = out) rather
+ * than at calendar midnight — mirroring the popup's Day/Night boxes one-to-one.
+ * Returns, per column: a `tints` flag (segments alternate untinted/tinted,
+ * starting untinted) and a sparse `labels` array carrying a title only at each
+ * segment's first column (blank elsewhere). Day segments use the DAY i18n key;
+ * night segments use NIGHT, and when a night run crosses into a new calendar
+ * date the label carries that date's short weekday ("NIGHT · THU") — the night
+ * stays one continuous band across midnight.
+ */
+function computeHalvesBands(timesteps, dayText, nightText) {
+  const count = timesteps.length;
+  const tints = new Array(count).fill(false);
+  const labels = new Array(count).fill('');
+  const dates = timesteps.map((ts) => new Date(ts.time));
+  const isDay = dates.map((d) => { const hour = d.getHours(); return hour >= 6 && hour < 18; });
+  let segmentIndex = -1;
+  for (let i = 0; i < count; i++) {
+    const startsSegment = i === 0 || isDay[i] !== isDay[i - 1];
+    if (startsSegment) {
+      segmentIndex++;
+      // Plain DAY/NIGHT only: the label sits at the segment START, so naming
+      // the night for the date it ends on read backwards (user feedback).
+      labels[i] = isDay[i] ? dayText : nightText;
+    }
+    tints[i] = (segmentIndex % 2) === 1;
+  }
+  return { tints, labels };
 }
 
 /**
@@ -593,9 +671,15 @@ export function fmtHourLabel(date, use24) {
  */
 export function buildHourlyStripHtml(timesteps, hass, options = {}) {
   const opts = { ...STRIP_DEFAULTS, ...options };
-  const { colWidth, curveGeometry, showDayBands, vesselWidth, vesselHeight, compact } = opts;
+  const { colWidth, curveGeometry, showDayBands, bandMode, vesselWidth, vesselHeight, compact, precipWindows } = opts;
   const use24 = use24Hour(hass);
   const dayNames = t(hass, 'days');
+  // Halves mode segments at the 6/18 day/night boundaries; precompute its
+  // per-column tint flags + boundary labels (needs a look-ahead across the
+  // night run, so it can't be derived column-at-a-time in the emit loop).
+  const halves = (showDayBands && bandMode === 'halves')
+    ? computeHalvesBands(timesteps, t(hass, 'day'), t(hass, 'night'))
+    : null;
   const totalWidth = timesteps.length * colWidth;
   const colStyle = 'style="width:' + colWidth + 'px"';
 
@@ -625,7 +709,13 @@ export function buildHourlyStripHtml(timesteps, hass, options = {}) {
     if (i > 0 && isMidnight) dayCount++;
     const hasTemp = ts.temp != null;
 
-    if (showDayBands) {
+    if (showDayBands && halves) {
+      // Halves: alternating tint per day/night segment, DAY/NIGHT title at each
+      // segment start (night carries the crossed-into date; see computeHalvesBands).
+      tintsHtml += '<div style="width:' + colWidth + 'px;flex:none;height:100%;background:'
+        + (halves.tints[i] ? 'var(--ecw-tint)' : 'transparent') + '"></div>';
+      labelsHtml += '<div class="ecs-daylbl" ' + colStyle + '>' + halves.labels[i] + '</div>';
+    } else if (showDayBands) {
       // Alternating faint tint per calendar day, label at index 0 and each midnight.
       tintsHtml += '<div style="width:' + colWidth + 'px;flex:none;height:100%;background:'
         + ((dayCount % 2) ? 'var(--ecw-tint)' : 'transparent') + '"></div>';
@@ -712,7 +802,35 @@ export function buildHourlyStripHtml(timesteps, hass, options = {}) {
   }
 
   const chartHeight = curveGeometry.chartHeight;
-  const fillZoneHtml = hasQty ? '<div class="ecs-fill">' + fillHtml + '</div>' : '';
+
+  // Days 4-6 (GEPS): replace the per-column vessel row with ONE wide block per
+  // qualifying 12h window. Only taken when the caller passes precip_windows —
+  // days 0-3 and the main hourly section pass none, so the branch below is the
+  // exact original expression, keeping that output byte-identical.
+  const useWindows = Array.isArray(precipWindows) && precipWindows.length > 0;
+  let fillZoneHtml;
+  if (useWindows) {
+    const spans = spanningWindows(timesteps, precipWindows, colWidth);
+    if (spans.length) {
+      const pad = 4;
+      let blocks = '';
+      spans.forEach((span) => {
+        const label = fmtAmtBand(span.amountLow, span.amountHigh, 'mm');
+        blocks += '<div class="ecs-wvessel" style="left:' + (span.left + pad)
+          + 'px;width:' + (span.width - 2 * pad) + 'px">'
+          + '<div class="ecs-wblock" style="height:' + vesselHeight + 'px"></div>'
+          + '<div class="ecs-amt">'
+          + (label ? '<span class="ecs-rainamt">' + label + '</span>' : '')
+          + '</div></div>';
+      });
+      fillZoneHtml = '<div class="ecs-fill ecs-wfillzone" style="height:'
+        + (vesselHeight + 18) + 'px">' + blocks + '</div>';
+    } else {
+      fillZoneHtml = '';
+    }
+  } else {
+    fillZoneHtml = hasQty ? '<div class="ecs-fill">' + fillHtml + '</div>' : '';
+  }
   const tintsBeltHtml = showDayBands ? '<div class="ecs-tints">' + tintsHtml + '</div>' : '';
   const labelsRowHtml = showDayBands ? '<div class="ecs-labels">' + labelsHtml + '</div>' : '';
 
@@ -987,6 +1105,75 @@ export function fmtAmt(val) {
 export function fmtAmtUnit(value, unit) {
   const amt = fmtAmt(value);
   return amt === null ? null : amt + unit;
+}
+
+/**
+ * Compact amount BAND label ("4-9mm"). Collapses to a single value when the
+ * low and high round to the same string, or when either bound is absent —
+ * so a band without a distinct high never reads as "5-5mm". Returns null when
+ * both bounds are absent/zero. The unit string is appended verbatim, so a
+ * leading-space unit (" mm") yields the prose form "4-9 mm" for the outlook
+ * sentence.
+ */
+export function fmtAmtBand(low, high, unit) {
+  const lowStr = fmtAmt(low);
+  const highStr = fmtAmt(high);
+  if (lowStr === null && highStr === null) return null;
+  if (lowStr === null) return highStr + unit;
+  if (highStr === null || highStr === lowStr) return lowStr + unit;
+  return lowStr + '-' + highStr + unit;
+}
+
+/**
+ * Interpolate a {placeholder} template from the I18N tables. Unknown keys are
+ * left in place (never blanked) so a missing param surfaces as visible text
+ * rather than a silent gap. Used by the dynamic section header and the outlook
+ * sentence.
+ */
+export function tf(hass, key, params) {
+  const template = t(hass, key);
+  return String(template).replace(/\{(\w+)\}/g, (match, name) =>
+    (params && params[name] != null ? params[name] : match));
+}
+
+/**
+ * Window-spanning amount vessels (days 4-6 GEPS timeline). Given the rendered
+ * timesteps, a day's `precip_windows` and the column width, returns one
+ * placement per 12h window that BOTH covers at least one rendered column AND
+ * qualifies (pop >= 30 with real band data). Placement is in strip pixels:
+ * `left` = first covered column's left edge, `width` = the covered column span.
+ * Windows below the POP floor, without band data, or entirely outside the
+ * rendered timestep range produce nothing (an honest dry look).
+ */
+export function spanningWindows(timesteps, windows, colWidth) {
+  const times = timesteps.map((ts) => new Date(ts.time).getTime());
+  const out = [];
+  (windows || []).forEach((window) => {
+    const pop = window.pop;
+    const hasBand = window.amount_p25 != null || window.amount_p75 != null;
+    if (pop == null || pop < 30 || !hasBand) return;
+    const startMs = new Date(window.start).getTime();
+    const endMs = new Date(window.end).getTime();
+    let firstIdx = -1;
+    let lastIdx = -1;
+    times.forEach((tMs, i) => {
+      if (tMs >= startMs && tMs < endMs) {
+        if (firstIdx === -1) firstIdx = i;
+        lastIdx = i;
+      }
+    });
+    if (firstIdx === -1) return;
+    out.push({
+      firstIdx,
+      lastIdx,
+      left: firstIdx * colWidth,
+      width: (lastIdx - firstIdx + 1) * colWidth,
+      amountLow: window.amount_p25 != null ? window.amount_p25 : null,
+      amountHigh: window.amount_p75 != null ? window.amount_p75 : null,
+      pop,
+    });
+  });
+  return out;
 }
 
 /** Determine precip color based on rain/snow amounts and precip type. */
@@ -1971,6 +2158,17 @@ export class ECWeatherCard extends HTMLElement {
     // visible — so each popup carries its own <style> (TOKEN_CSS + the ecp-
     // classes), wrapped in a .ecc theme div so the tokens resolve.
     this._dailyPopups = forecast.map((item) => {
+      // Outlook days (8+): a summary view — no timeline, no envelope graphic.
+      // Composed entirely of existing popup pieces (header + sentence + slimmed
+      // Day/Night boxes + footnote).
+      if (item.source === 'outlook') {
+        // Skeleton rows (pending, no data yet) get no popup — they read as
+        // "loading" and must not open on tap. A null entry here plus the
+        // guard in the delegated click handler keeps them inert.
+        if (item.pending) return null;
+        return this._buildOutlookPopup(item);
+      }
+
       const title = escapeHtml(item.period || '');
 
       let dateLine = '';
@@ -1996,7 +2194,7 @@ export class ECWeatherCard extends HTMLElement {
       let timelineBody;
       if (tlState === 'timeline') {
         const timesteps = (item.timesteps_day || []).concat(item.timesteps_night || []);
-        timelineBody = this._renderPopupTimeline(timesteps);
+        timelineBody = this._renderPopupTimeline(timesteps, item.precip_windows);
       } else {
         // Empty is normal for far-out days (GDPS-WEonG dropped). 'unavailable'
         // — fetched and EC has no hourly product; 'pending' — not fetched yet.
@@ -2048,20 +2246,48 @@ export class ECWeatherCard extends HTMLElement {
     const weekMin = weekTemps.length ? Math.min.apply(null, weekTemps) : 0;
     const weekMax = weekTemps.length ? Math.max.apply(null, weekTemps) : 0;
 
+    // Outlook (days 8+) rows are muted GEPS ensemble medians; their count drives
+    // the dynamic section header ("10-day" / "14-day") below.
+    const outlookCount = forecast.filter((item) => item.source === 'outlook').length;
+
     let rowsHtml = '';
     forecast.forEach((item, i) => {
-      const firstWord = (item.period || '').split(' ')[0];
-      const dayLabel = escapeHtml(dayAbbr[firstWord] || firstWord);
+      const isOutlook = item.source === 'outlook';
+      // Skeleton rows: outlook dates with no data yet. Rendered as a muted
+      // weekday row with an empty bar track (no icons/temps/POP) so enabling
+      // the extended forecast reads as "loading", not broken.
+      const isPending = isOutlook && item.pending;
 
-      // Dual icons: day colored by condition family, night dimmed.
-      const dayIconHtml = item.icon_code != null
-        ? '<ha-icon icon="' + ecIcon(item.icon_code) + '" style="--mdc-icon-size:18px;color:'
-          + dailyIconColor(ecIcon(item.icon_code)) + '"></ha-icon>'
-        : missingIconHtml(18);
-      const nightIcon = item.icon_code_night != null
-        ? ecIcon(item.icon_code_night) : 'mdi:weather-night';
-      const nightIconHtml = '<ha-icon icon="' + nightIcon
-        + '" style="--mdc-icon-size:18px;color:var(--ecw-muted)"></ha-icon>';
+      // Outlook rows carry an ISO date as their period; derive the weekday from
+      // the date instead. Official rows keep their period-word label.
+      let dayLabel;
+      if (isOutlook && item.date) {
+        const outlookDate = new Date(item.date + 'T00:00:00');
+        const weekdayName = isNaN(outlookDate) ? ''
+          : outlookDate.toLocaleDateString('en-CA', { weekday: 'long' });
+        dayLabel = escapeHtml(dayAbbr[weekdayName] || weekdayName);
+      } else {
+        const firstWord = (item.period || '').split(' ')[0];
+        dayLabel = escapeHtml(dayAbbr[firstWord] || firstWord);
+      }
+
+      // Outlook rows pick icons from icon_day/icon_night (the GEPS keys); the
+      // official rows keep icon_code/icon_code_night.
+      const dayIconCode = isOutlook ? item.icon_day : item.icon_code;
+      const nightIconCode = isOutlook ? item.icon_night : item.icon_code_night;
+
+      // Dual icons: day colored by condition family, night dimmed. Skeleton
+      // rows leave the icon cell empty (not even the missing-icon glyph).
+      const dayIconHtml = isPending ? ''
+        : (dayIconCode != null
+          ? '<ha-icon icon="' + ecIcon(dayIconCode) + '" style="--mdc-icon-size:18px;color:'
+            + dailyIconColor(ecIcon(dayIconCode)) + '"></ha-icon>'
+          : missingIconHtml(18));
+      const nightIcon = nightIconCode != null
+        ? ecIcon(nightIconCode) : 'mdi:weather-night';
+      const nightIconHtml = isPending ? ''
+        : '<ha-icon icon="' + nightIcon
+          + '" style="--mdc-icon-size:18px;color:var(--ecw-muted)"></ha-icon>';
 
       // Range bar geometry (span clamping, single-value dot, isothermal
       // guard) — see rangeBarGeometry for the semantics.
@@ -2082,32 +2308,54 @@ export class ECWeatherCard extends HTMLElement {
       // column is ALWAYS emitted — empty on dry days — so every row's range
       // bar shares one length/scale (user feedback: the DC's dry-day
       // omission misaligned the bars). The narrow float stays wet-only.
-      const precip = dailyPrecip(item);
-      const isWet = precip.showPrecip || precip.rainAmt > 0 || precip.snowAmt > 0;
       let precipColHtml = '<span class="dprecip"></span>';
       let floatHtml = '';
-      if (isWet) {
-        let precipHtml = '';
-        const floatParts = [];
-        if (precip.showPrecip) {
-          precipHtml += '<span class="dpop">' + precip.popRounded + '%</span>';
-          floatParts.push('<span style="color:var(--ecw-pop);font-weight:600">' + precip.popRounded + '%</span>');
+      if (isOutlook) {
+        // Outlook rows show POP only (no amounts) from the pre-thresholded
+        // *_display fields, taking the higher of the two halves — same "one
+        // number" treatment official rows give their max POP.
+        const displays = [item.pop_day_display, item.pop_night_display]
+          .filter((value) => value != null);
+        if (displays.length) {
+          const pop = Math.max.apply(null, displays);
+          precipColHtml = '<span class="dprecip"><span class="dpop">' + pop + '%</span></span>';
+          floatHtml = '<div class="dfloat"><span style="color:var(--ecw-pop);font-weight:600">'
+            + pop + '%</span></div>';
         }
-        let amtsHtml = '';
-        if (precip.rainAmt > 0) {
-          amtsHtml += '<span style="color:var(--ecw-rain)">' + fmtAmtUnit(precip.rainAmt, 'mm') + '</span>';
-          floatParts.push('<span style="color:var(--ecw-rain)">' + fmtAmtUnit(precip.rainAmt, 'mm') + '</span>');
+      } else {
+        // Precip: POP% + amounts. A WET day renders it TWICE — the fixed
+        // .dprecip column (wide) and a .dfloat centered above the bar (narrow
+        // tile); the container query (below) swaps which one shows. The wide
+        // column is ALWAYS emitted — empty on dry days — so every row's range
+        // bar shares one length/scale (user feedback: the DC's dry-day
+        // omission misaligned the bars). The narrow float stays wet-only.
+        const precip = dailyPrecip(item);
+        const isWet = precip.showPrecip || precip.rainAmt > 0 || precip.snowAmt > 0;
+        if (isWet) {
+          let precipHtml = '';
+          const floatParts = [];
+          if (precip.showPrecip) {
+            precipHtml += '<span class="dpop">' + precip.popRounded + '%</span>';
+            floatParts.push('<span style="color:var(--ecw-pop);font-weight:600">' + precip.popRounded + '%</span>');
+          }
+          let amtsHtml = '';
+          if (precip.rainAmt > 0) {
+            amtsHtml += '<span style="color:var(--ecw-rain)">' + fmtAmtUnit(precip.rainAmt, 'mm') + '</span>';
+            floatParts.push('<span style="color:var(--ecw-rain)">' + fmtAmtUnit(precip.rainAmt, 'mm') + '</span>');
+          }
+          if (precip.snowAmt > 0) {
+            amtsHtml += '<span style="color:var(--ecw-snow)">' + fmtAmtUnit(precip.snowAmt, 'cm') + '</span>';
+            floatParts.push('<span style="color:var(--ecw-snow)">' + fmtAmtUnit(precip.snowAmt, 'cm') + '</span>');
+          }
+          if (amtsHtml) precipHtml += '<span class="damts">' + amtsHtml + '</span>';
+          precipColHtml = '<span class="dprecip">' + precipHtml + '</span>';
+          floatHtml = '<div class="dfloat">' + floatParts.join('') + '</div>';
         }
-        if (precip.snowAmt > 0) {
-          amtsHtml += '<span style="color:var(--ecw-snow)">' + fmtAmtUnit(precip.snowAmt, 'cm') + '</span>';
-          floatParts.push('<span style="color:var(--ecw-snow)">' + fmtAmtUnit(precip.snowAmt, 'cm') + '</span>');
-        }
-        if (amtsHtml) precipHtml += '<span class="damts">' + amtsHtml + '</span>';
-        precipColHtml = '<span class="dprecip">' + precipHtml + '</span>';
-        floatHtml = '<div class="dfloat">' + floatParts.join('') + '</div>';
       }
 
-      rowsHtml += '<div class="drow' + (i === 0 ? ' dtoday' : '') + '" data-index="' + i + '">'
+      rowsHtml += '<div class="drow' + (i === 0 ? ' dtoday' : '')
+        + (isOutlook ? ' drow-outlook' : '') + (isPending ? ' drow-pending' : '')
+        + '" data-index="' + i + '">'
         + '<span class="dday">' + dayLabel + '</span>'
         + '<span class="dicons">' + dayIconHtml + nightIconHtml + '</span>'
         + precipColHtml
@@ -2144,6 +2392,11 @@ export class ECWeatherCard extends HTMLElement {
         @media (hover: hover) { .drow:hover { background: var(--ecw-hover); } }
         .dday { width: 60px; font-size: 14px; white-space: nowrap; color: var(--ecw-text2); }
         .dtoday .dday { color: var(--ecw-text); font-weight: 600; }
+        /* Outlook rows: quieter (model ensemble, past EC's official horizon). */
+        .drow-outlook { opacity: var(--ecw-outlook); }
+        /* Skeleton rows: no data yet, so not interactive (reads as loading). */
+        .drow-pending { cursor: default; }
+        .drow-pending:active, .drow-pending:hover { background: transparent; }
         .dicons { width: 44px; display: flex; align-items: center; justify-content: center; gap: 3px; }
         .dprecip {
           width: 84px; display: flex; flex-direction: column; gap: 2px;
@@ -2183,7 +2436,7 @@ export class ECWeatherCard extends HTMLElement {
         }
       </style>
       <div class="${themeClass(h)}">
-        <div class="seclbl">${t(h, 'week')}</div>
+        <div class="seclbl">${outlookCount > 0 ? tf(h, 'weekN', { n: forecast.length }) : t(h, 'week')}</div>
         <div class="drows" id="daily-rows">${rowsHtml}</div>
       </div>
     `;
@@ -2193,9 +2446,120 @@ export class ECWeatherCard extends HTMLElement {
       const row = e.target.closest('.drow');
       if (row) {
         e.stopPropagation();
+        // Skeleton rows carry no data yet — never open a popup.
+        if (row.classList.contains('drow-pending')) return;
         this._openDailyPopup(parseInt(row.dataset.index));
       }
     });
+  }
+
+  /**
+   * Outlook (days 8+) summary popup — no timeline, no envelope graphic. Header
+   * with an Outlook badge, the generated i18n sentence, slimmed Day/Night
+   * boxes, and the outlook footnote + attribution. Composed entirely from the
+   * existing ecp- pieces. timesteps_state "outlook" never reaches here as a
+   * placeholder — the source check in _renderDaily routes outlook items straight
+   * to this builder.
+   */
+  _buildOutlookPopup(item) {
+    const h = this._hass;
+    const lang = (h && h.language) || 'en';
+    const locale = lang === 'fr' ? 'fr-CA' : 'en-CA';
+
+    let title = escapeHtml(item.period || '');
+    let dateLine = '';
+    if (item.date) {
+      const outlookDate = new Date(item.date + 'T00:00:00');
+      if (!isNaN(outlookDate)) {
+        title = escapeHtml(titleCase(outlookDate.toLocaleDateString(locale, { weekday: 'long' })));
+        dateLine = escapeHtml(outlookDate.toLocaleDateString(locale, {
+          weekday: 'short', month: 'short', day: 'numeric',
+        }));
+      }
+    }
+    const badge = '<span class="ecp-badge">' + t(h, 'outlookBadge') + '</span>';
+    const header = '<div class="ecp-hdr"><span class="ecp-title">' + title + badge + '</span>'
+      + (dateLine ? '<span class="ecp-date">' + dateLine + '</span>' : '') + '</div>';
+
+    // Generated sentence: temperature range always; the POP clause only when a
+    // dominant POP survived the >=30 rule (else it's a temperature-only day);
+    // the amount clause only alongside a real POP and a real band.
+    const sentenceParams = item.sentence || {};
+    let sentence = tf(h, 'outlookTemp', {
+      low: sentenceParams.range_low, high: sentenceParams.range_high,
+    });
+    if (sentenceParams.dominant_pop != null) {
+      sentence += tf(h, 'outlookPop', { pop: sentenceParams.dominant_pop });
+      const band = sentenceParams.amount_band;
+      if (band && (band.low != null || band.high != null)) {
+        sentence += tf(h, 'outlookAmount', { amt: fmtAmtBand(band.low, band.high, ' mm') });
+      }
+    }
+    sentence += '.';
+    const narrativeHtml = '<p class="ecp-narr">' + escapeHtml(sentence) + '</p>';
+
+    const periods = '<div class="ecp-periods">'
+      + this._renderOutlookPeriod(item, 'day')
+      + this._renderOutlookPeriod(item, 'night') + '</div>';
+
+    const footnote = '<p class="ecp-footnote">' + t(h, 'outlookFootnote') + '</p>';
+    const footer = '<div class="ecp-foot"><span></span>'
+      + '<span style="display:flex;align-items:center;gap:5px">'
+      + '<ha-icon icon="mdi:map-marker"></ha-icon>' + t(h, 'ecAttribution') + '</span></div>';
+
+    const content = '<style>' + TOKEN_CSS + POPUP_STYLE + STRIP_CSS + '</style>'
+      + '<div class="' + themeClass(h) + '"><div class="ecp-root">'
+      + header + narrativeHtml + periods + footnote + footer
+      + '</div></div>';
+
+    return { title, content };
+  }
+
+  /**
+   * A slimmed Day/Night box for the outlook popup. Each GEPS 12h window IS a
+   * half: icon (ensemble recipe), median temp (high for day / low for night),
+   * feels-like when present, the raw per-half POP (always shown — this is the
+   * detail view), and the amount band only when that half's POP >= 50. No
+   * humidity/wind/condition/UV (not rebuildable past EC's horizon).
+   */
+  _renderOutlookPeriod(item, half) {
+    const h = this._hass;
+    const isDay = half === 'day';
+    const iconCode = isDay ? item.icon_day : item.icon_night;
+    const temp = isDay ? item.temp_high : item.temp_low;
+    const feels = isDay ? item.feels_like_day : item.feels_like_night;
+    const pop = isDay ? item.pop_day : item.pop_night;
+    const band = item.amount_band;
+    const labelIcon = isDay
+      ? '<ha-icon icon="mdi:weather-sunny" style="--mdc-icon-size:15px;color:var(--ecw-sun)"></ha-icon>'
+      : '<ha-icon icon="mdi:weather-night" style="--mdc-icon-size:15px;color:var(--ecw-muted)"></ha-icon>';
+
+    let card = '<div class="ecp-period">';
+    card += '<span class="ecp-plabel">' + labelIcon + t(h, half) + '</span>';
+
+    const iconHtml = iconCode != null
+      ? '<ha-icon icon="' + ecIcon(iconCode) + '" class="ecp-pico"></ha-icon>'
+      : missingIconHtml(40);
+    const tempTxt = temp != null ? Math.round(temp) + '°' : '—°';
+    card += '<div class="ecp-prow">' + iconHtml
+      + '<div><div class="ecp-ptemp">' + tempTxt + '</div></div></div>';
+
+    let meta = '';
+    if (feels != null && temp != null && Math.round(feels) !== Math.round(temp)) {
+      meta += '<div class="ecp-mline"><ha-icon icon="mdi:thermometer"></ha-icon>'
+        + t(h, 'feels') + ' ' + Math.round(feels) + '°</div>';
+    }
+    if (pop != null) {
+      meta += '<div class="ecp-mline"><ha-icon icon="mdi:water-percent"></ha-icon>'
+        + Math.round(pop) + '% ' + t(h, 'chance') + '</div>';
+    }
+    if (band && pop != null && pop >= 50 && (band.low != null || band.high != null)) {
+      meta += '<div class="ecp-mline ecp-rain"><ha-icon icon="mdi:water"></ha-icon>'
+        + fmtAmtBand(band.low, band.high, 'mm') + '</div>';
+    }
+    if (meta) card += '<div class="ecp-pmeta">' + meta + '</div>';
+
+    return card + '</div>';
   }
 
   /**
@@ -2278,14 +2642,20 @@ export class ECWeatherCard extends HTMLElement {
    * 60px columns, a 42px chart, a smaller 34x28 water-fill vessel. Only the
    * scroll container is added here — no right-edge fade (card section only).
    */
-  _renderPopupTimeline(timesteps) {
+  _renderPopupTimeline(timesteps, precipWindows) {
     const strip = buildHourlyStripHtml(timesteps, this._hass, {
       colWidth: 60,
       curveGeometry: { chartHeight: 42, plotTop: 6, plotHeight: 24 },
-      showDayBands: false,
+      // Segment the timeline into day/night halves that mirror the Day/Night
+      // boxes one-to-one (bands break at the 6/18 boundaries, not midnight).
+      // The night half stays one continuous band across midnight, carrying the
+      // crossed-into date in its "NIGHT · <weekday>" label.
+      showDayBands: true,
+      bandMode: 'halves',
       vesselWidth: 34,
       vesselHeight: 28,
       compact: true,
+      precipWindows,
     });
     return '<div class="ecp-scroll">' + strip + '</div>';
   }

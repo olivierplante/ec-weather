@@ -392,16 +392,23 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
         weong_periods = {}
         weong_updated = None
         days_fetched = None
+        precip_windows = None
+        outlook = None
+        outlook_backfill = None
         if self._weong_coordinator.data:
             weong_periods = self._weong_coordinator.data.get("periods") or {}
             weong_updated = self._weong_coordinator.data.get("updated")
             days_fetched = self._weong_coordinator.data.get("days_fetched")
+            precip_windows = self._weong_coordinator.data.get("precip_windows")
+            outlook = self._weong_coordinator.data.get("outlook")
+            outlook_backfill = self._weong_coordinator.data.get("outlook_backfill")
 
         try:
             merged = merge_weong_into_daily(
                 daily, weong_periods, hourly, lang=self._language,
                 ec_updated=ec_updated, weong_updated=weong_updated,
-                days_fetched=days_fetched,
+                days_fetched=days_fetched, precip_windows=precip_windows,
+                outlook=outlook, outlook_backfill=outlook_backfill,
             )
         except (KeyError, TypeError, ValueError):
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")

@@ -124,33 +124,41 @@ class TestConfigurableIntervals:
 
 class TestPerDayParallel:
     def test_build_timestep_info_groups_by_model(self, hass: HomeAssistant):
-        """_build_timestep_info produces HRDPS (1h) and GDPS (3h) timesteps."""
-        from datetime import datetime, timezone
+        """_build_timestep_info produces HRDPS (1h) and RDPS (1h) timesteps."""
+        from datetime import datetime, timedelta, timezone
+
+        from freezegun import freeze_time
 
         coord = ECWEonGCoordinator(hass, "44.420,-76.700,46.420,-74.700")
-        today = datetime(2026, 3, 23).date()
 
-        # Day 0 period (HRDPS)
-        periods_day0 = [
-            ("2026-03-23", "day",
-             datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
-             datetime(2026, 3, 23, 22, 0, tzinfo=timezone.utc)),
-        ]
-        ts_info = coord._build_timestep_info(periods_day0, today)
-        # HRDPS: 12 hours at 1h steps
-        assert len(ts_info) == 12
-        assert all(m == "hrdps" for _, _, m in ts_info)
+        # Freeze so the 84h horizon cap covers the hand-built day periods.
+        with freeze_time("2026-03-23T00:00:00Z"):
+            today = datetime(2026, 3, 23).date()
 
-        # Day 4 period (GDPS)
-        periods_day4 = [
-            ("2026-03-27", "day",
-             datetime(2026, 3, 27, 10, 0, tzinfo=timezone.utc),
-             datetime(2026, 3, 27, 22, 0, tzinfo=timezone.utc)),
-        ]
-        ts_info = coord._build_timestep_info(periods_day4, today)
-        # GDPS: 12 hours at 3h steps = 4 timesteps
-        assert len(ts_info) == 4
-        assert all(m == "gdps" for _, _, m in ts_info)
+            # Day 0 period (HRDPS)
+            periods_day0 = [
+                ("2026-03-23", "day",
+                 datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
+                 datetime(2026, 3, 23, 22, 0, tzinfo=timezone.utc)),
+            ]
+            ts_info = coord._build_timestep_info(periods_day0, today)
+            # HRDPS: 12 hours at 1h steps
+            assert len(ts_info) == 12
+            assert all(m == "hrdps" for _, _, m in ts_info)
+
+            # Day 3 morning (RDPS only), inside the 84h horizon.
+            periods_day3 = [
+                ("2026-03-26", "day",
+                 datetime(2026, 3, 26, 0, 0, tzinfo=timezone.utc),
+                 datetime(2026, 3, 26, 6, 0, tzinfo=timezone.utc)),
+            ]
+            ts_info = coord._build_timestep_info(periods_day3, today)
+            # RDPS is hourly now (no 3h snapping) — all steps are model 'rdps'.
+            assert ts_info, "Day 3 morning should be inside the 84h horizon"
+            assert all(m == "rdps" for _, _, m in ts_info)
+            ordered = sorted(ts for ts, _, _ in ts_info)
+            for earlier, later in zip(ordered, ordered[1:]):
+                assert later - earlier == timedelta(hours=1)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +431,7 @@ class TestTransientErrorNotCached:
 
         ts = datetime(2026, 3, 25, 12, 0, tzinfo=timezone.utc)
         period_key = ("2026-03-25", "day")
-        layer = "GDPS-WEonG_15km_Precip-Prob.3h"
+        layer = "RDPS-WEonG_10km_Precip-Prob"
 
         # Mock _query_feature_info to return TRANSIENT_ERROR
         async def mock_query(session, layer, timestep):

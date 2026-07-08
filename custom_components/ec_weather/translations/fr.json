@@ -132,7 +132,11 @@
           "aqhi_location_id": "ID de station CAS",
           "polling_mode": "Mode d'interrogation",
           "weather_interval": "Intervalle météo (minutes)",
-          "aqhi_interval": "Intervalle CAS (minutes)"
+          "aqhi_interval": "Intervalle CAS (minutes)",
+          "extended_forecast": "Prévisions étendues sur 14 jours"
+        },
+        "data_description": {
+          "extended_forecast": "Affiche 7 jours de plus que les prévisions officielles de 7 jours d'Environnement Canada. Ces jours supplémentaires sont un aperçu à plus longue échéance et sont moins précis : les températures et les probabilités de pluie sont des estimations, pas des valeurs exactes, et le détail quotidien est réduit. Ils apparaissent atténués dans la carte pour les distinguer."
         }
       },
       "precip": {

@@ -14,21 +14,42 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from ..const import (
+    CACHE_TTL_GEPS,
     DOMAIN,
     GEOMET_REQUEST_TIMEOUT,
-    WEONG_CACHE_TTL_GDPS,
     WEONG_CACHE_TTL_HRDPS,
+    WEONG_CACHE_TTL_RDPS,
     WEONG_SEMAPHORE_LIMIT,
 )
 from ..api_client import TransientGeoMetError, query_geomet_feature_info
 from ..timestep_store import TimestepData, TimestepStore
 from .base import OnDemandCoordinator
+from .extended_helpers import GEPS_POP_12H, GEPS_TEMPERATURE_P50, geps_window_for
+from .extended import (
+    GEPS_QUERY_TAG,
+    OUTLOOK_FIRST_DAY,
+    build_geps_timesteps,
+    build_outlook_entry,
+    build_precip_windows,
+    days_ahead_for,
+    geps_timesteps_for_periods,
+    geps_windows_for_periods,
+    index_results,
+    is_geps_day,
+    outlook_dates,
+    outlook_sample_points,
+    plan_base_queries,
+    plan_outlook_base_queries,
+    plan_pop_queries,
+    plan_wet_queries,
+    wet_window_ends,
+)
 from .weong_helpers import (
     _AMT_LAYERS_COLD,
     _AMT_LAYERS_TRANSITION,
     _AMT_LAYERS_WARM,
     _COLD_THRESHOLD,
-    _GDPS_PREFIX,
+    _RDPS_PREFIX,
     _LAYER_SUFFIXES,
     _WARM_THRESHOLD,
     _bare_layer_name,
@@ -44,6 +65,10 @@ _LOGGER = logging.getLogger(__name__)
 # HRDPS model runs at 00Z, 06Z, 12Z, 18Z with ~2h processing delay.
 _HRDPS_RUN_HOURS = (0, 6, 12, 18)
 _HRDPS_PROCESSING_DELAY_H = 2
+
+# RDPS-WEonG forecast horizon: layers extend to model_run + 84h. Timesteps
+# past this are not generated, so far days (5-6) stay honestly "unavailable".
+_RDPS_HORIZON_HOURS = 84
 
 
 def _expected_hrdps_model_run(now_utc: datetime) -> str:
@@ -122,6 +147,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         hass: HomeAssistant,
         geomet_bbox: str,
         polling: bool = False,
+        forecast_days: int = 7,
     ) -> None:
         super().__init__(
             hass,
@@ -131,9 +157,14 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             polling=polling,
         )
         self.geomet_bbox = geomet_bbox
+        # Extended-forecast scope (phase C): 7 official days (default), or
+        # 10/14 to append GEPS outlook rows for the calendar days beyond EC's
+        # 7-day list. Read once at setup; the options flow reloads the entry on
+        # change, so a new coordinator picks up the new value.
+        self._forecast_days = forecast_days
         self._had_transient_errors: bool = False
         # Cache: (layer, time_str) -> (value, fetched_timestamp)
-        # Model data doesn't change between runs (HRDPS every 6h, GDPS every 12h),
+        # Model data doesn't change between runs (HRDPS and RDPS both every 6h),
         # so we cache results and only re-query when the TTL expires.
         self._cache: dict[tuple[str, str], tuple[float | None, float]] = {}
         # Lock for concurrent day merges during progressive loading
@@ -147,12 +178,28 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         # Latest HRDPS model run seen from GeoMet responses (for freshness)
         self._last_model_run: str | None = None
         # Dates (ISO "YYYY-MM-DD") whose queries have completed at least once.
-        # A day joins this set even when it produced zero timesteps — EC removed
-        # the GDPS-WEonG layers, so days 4-6 come back empty. Attempted-and-empty
+        # A day joins this set even when it produced zero timesteps — days past
+        # the RDPS 84h horizon (5-6) generate no timesteps. Attempted-and-empty
         # must be distinguishable from not-yet-fetched (pending) downstream.
         self._completed_days: set[str] = set()
         # Timestamp of the last actual GeoMet fetch (not projection)
         self._last_fetch_ts: str | None = None
+        # Per-day GEPS precip band payload (phase B): {date_str: [window, ...]}.
+        # Additive; only geps days (4-6) get an entry, projected onto the daily
+        # forecast attribute for the card's future-spanning precip vessels.
+        self._precip_windows: dict[str, list[dict]] = {}
+        # Per-date GEPS outlook payload (phase C): {date_str: outlook_entry}.
+        # Populated only when forecast_days > 7, for the calendar days beyond
+        # the official 7. Appended to the daily forecast attribute; the store
+        # is untouched (outlook days carry no timeline).
+        self._outlook: dict[str, dict] = {}
+        # Day-7 (last official day) overnight-low backfill (refinement 2).
+        # EC's citypage publishes the 7th day without its night period until
+        # later in the day; when extended is enabled the outlook wave samples
+        # the GEPS night trough so the merge can fill ONLY the missing low /
+        # night POP. None when extended is off. Shape:
+        # {"date": str, "temp_low": int | None, "pop_night": int | None}.
+        self._day7_backfill: dict | None = None
 
     def needs_refresh(self) -> bool:
         """Return True when new data should be fetched.
@@ -165,9 +212,15 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         return not self._is_model_run_current()
 
     def _cache_ttl(self, layer: str) -> int:
-        """Return cache TTL in seconds based on model type."""
-        if layer.startswith(_GDPS_PREFIX):
-            return WEONG_CACHE_TTL_GDPS
+        """Return cache TTL in seconds based on model type.
+
+        GEPS layers cache for 12h (their run cadence), so the extended wave
+        fetches once per new GEPS run instead of on every WEonG refresh.
+        """
+        if layer.startswith("GEPS."):
+            return CACHE_TTL_GEPS
+        if layer.startswith(_RDPS_PREFIX):
+            return WEONG_CACHE_TTL_RDPS
         return WEONG_CACHE_TTL_HRDPS
 
     async def _execute_queries(
@@ -222,28 +275,41 @@ class ECWEonGCoordinator(OnDemandCoordinator):
     ) -> list[tuple[datetime, tuple[str, str], str]]:
         """Build timestep info list from period definitions.
 
-        Returns list of (timestep_utc, period_key, model) tuples.
-        GDPS timesteps snap to 3h boundaries from 00Z.
+        Returns list of (timestep_utc, period_key, model) tuples. Every model
+        is hourly. Timesteps are capped at the RDPS 84h horizon (measured from
+        the expected model run), so days wholly past the horizon generate no
+        timesteps and stay honestly "unavailable" downstream.
         """
+        horizon_cap = self._horizon_cap()
         timestep_info: list[tuple[datetime, tuple[str, str], str]] = []
         for date_str, period_type, utc_start, utc_end in periods:
             period_key = (date_str, period_type)
             days_ahead = max(0, (datetime.strptime(date_str, "%Y-%m-%d").date() - today).days)
             for model, step_h in _models_for_day(days_ahead):
-                if model == "gdps":
-                    hour = utc_start.hour
-                    remainder = hour % 3
-                    if remainder == 0:
-                        t = utc_start.replace(minute=0, second=0, microsecond=0)
-                    else:
-                        t = (utc_start.replace(minute=0, second=0, microsecond=0)
-                             + timedelta(hours=3 - remainder))
-                else:
-                    t = utc_start
+                if model == "geps":
+                    # The extended GEPS wave (_fetch_geps_day) owns these — its
+                    # layers, 3h grid and day-6 horizon differ from WEonG's.
+                    continue
+                t = utc_start
                 while t < utc_end:
+                    if t > horizon_cap:
+                        break  # past the 84h horizon — stop generating
                     timestep_info.append((t, period_key, model))
                     t += timedelta(hours=step_h)
         return timestep_info
+
+    def _horizon_cap(self) -> datetime:
+        """Return the latest UTC timestep that can carry data.
+
+        RDPS-WEonG layers extend to model_run + 84h. Beyond that there is no
+        forecast data, so the coordinator does not generate those timesteps.
+        """
+        now_utc = datetime.now(timezone.utc)
+        expected_run_iso = _expected_hrdps_model_run(now_utc)
+        expected_run = datetime.strptime(
+            expected_run_iso, "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=timezone.utc)
+        return expected_run + timedelta(hours=_RDPS_HORIZON_HOURS)
 
     async def _fetch_day(
         self,
@@ -262,7 +328,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         if not timestep_info:
             return []
 
-        # POP + AirTemp for all models (HRDPS + GDPS)
+        # POP + AirTemp for all models (HRDPS + RDPS)
         pop_suffix = _LAYER_SUFFIXES["precip_prob"]
         temp_suffix = _LAYER_SUFFIXES["air_temp"]
         always_queries = []
@@ -325,6 +391,188 @@ class ECWEonGCoordinator(OnDemandCoordinator):
 
         return always_results + amt_results + sky_results
 
+    async def _fetch_geps_day(
+        self,
+        date_str: str,
+        day_periods: list[tuple[str, str, datetime, datetime]],
+        today: date,
+        now_ts: float,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+    ) -> tuple[list[TimestepData], list[dict] | None]:
+        """Fetch the GEPS extended timeline for one calendar day (days 4-6).
+
+        Runs the GEPS wave beside the WEonG per-day fetch: 3h TT/HMX/NT p50 for
+        every step, a POP (PRMM ERGE1) query per covering 12h window, and — only
+        for wet windows (POP >= 30) — the amount band (ERC25/75) and precip-type
+        medians (RNMM/SNMM). Values fold into synthesized ``TimestepData``
+        (model="geps") plus a per-day ``precip_windows`` band payload.
+
+        Returns ``([], None)`` for days outside the GEPS coverage band, so the
+        caller can call it unconditionally. All queries reuse the cached executor
+        (12h GEPS TTL), keeping the wave to one fetch per GEPS run.
+        """
+        if not is_geps_day(days_ahead_for(date_str, today)):
+            return [], None
+
+        steps = geps_timesteps_for_periods(day_periods)
+        if not steps:
+            return [], None
+
+        half_windows = geps_windows_for_periods(day_periods)
+        # Distinct covering windows: every step's window plus each half's window.
+        window_ends = sorted({
+            geps_window_for(step)[1] for step in steps
+        } | {half["end"] for half in half_windows})
+
+        # Phase 1 — POP per 12h window (drives wet-gating and stepwise POP).
+        pop_results, _, _ = await self._execute_queries(
+            plan_pop_queries(window_ends), now_ts, session, semaphore,
+        )
+        pop_values = index_results(pop_results)
+        pop_by_window_end = {
+            end: pop_values.get((GEPS_POP_12H, end)) for end in window_ends
+        }
+
+        # Phase 2 — always-run continuous fields (TT/HMX/NT p50 per 3h step).
+        base_results, _, _ = await self._execute_queries(
+            plan_base_queries(steps), now_ts, session, semaphore,
+        )
+
+        # Phase 3 — wet windows only: amount band + precip-type medians.
+        wet_ends = wet_window_ends(pop_by_window_end)
+        wet_results: list = []
+        if wet_ends:
+            wet_results, _, _ = await self._execute_queries(
+                plan_wet_queries(wet_ends), now_ts, session, semaphore,
+            )
+
+        values = index_results(base_results)
+        values.update(index_results(wet_results))
+
+        entries = build_geps_timesteps(steps, pop_by_window_end, values)
+        precip_windows = build_precip_windows(half_windows, pop_by_window_end, values)
+        return entries, precip_windows
+
+    async def _fetch_outlook(
+        self,
+        today: date,
+        now_ts: float,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        local_tz,
+    ) -> None:
+        """Fetch and build the GEPS outlook entries (calendar days beyond 7).
+
+        No-op in mode 7. In modes 10/14 each outlook date is fetched with the
+        cached GEPS executor (12h TTL), so the wave runs once per GEPS run.
+        Rebuilds ``self._outlook`` from scratch each run — the cache makes a
+        full refetch cheap and keeps stale (rolled-off) dates from lingering.
+        """
+        if self._forecast_days <= 7:
+            self._outlook = {}
+            return
+
+        dates = outlook_dates(today, self._forecast_days)
+        entries = await asyncio.gather(*[
+            self._fetch_one_outlook_day(
+                date_str, local_tz, now_ts, session, semaphore,
+            )
+            for date_str in dates
+        ])
+        self._outlook = {
+            date_str: entry
+            for date_str, entry in zip(dates, entries)
+            if entry is not None
+        }
+
+    async def _fetch_one_outlook_day(
+        self,
+        date_str: str,
+        local_tz,
+        now_ts: float,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+    ) -> dict | None:
+        """Build one outlook day: POP (wet-gate) -> continuous fields -> band."""
+        points = outlook_sample_points(date_str, local_tz)
+        window_ends = [points["day_window_end"], points["night_window_end"]]
+
+        # Phase 1 — POP per 12h half-window (drives wet-gating).
+        pop_results, _, _ = await self._execute_queries(
+            plan_pop_queries(window_ends), now_ts, session, semaphore,
+        )
+        pop_values = index_results(pop_results)
+        pop_by_window_end = {
+            end: pop_values.get((GEPS_POP_12H, end)) for end in window_ends
+        }
+
+        # Phase 2 — continuous fields at the two representative hours.
+        base_results, _, _ = await self._execute_queries(
+            plan_outlook_base_queries(points["day_rep"], points["night_rep"]),
+            now_ts, session, semaphore,
+        )
+
+        # Phase 3 — wet windows only: amount band + precip-type medians.
+        wet_ends = wet_window_ends(pop_by_window_end)
+        wet_results: list = []
+        if wet_ends:
+            wet_results, _, _ = await self._execute_queries(
+                plan_wet_queries(wet_ends), now_ts, session, semaphore,
+            )
+
+        values = index_results(base_results)
+        values.update(index_results(wet_results))
+        return build_outlook_entry(date_str, points, pop_by_window_end, values)
+
+    async def _fetch_day7_backfill(
+        self,
+        today: date,
+        now_ts: float,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        local_tz,
+    ) -> None:
+        """Sample the GEPS night trough for the last official day's overnight low.
+
+        No-op in mode 7. When extended is enabled, EC's 7th (last official) day
+        may lack its night period (the citypage publishes it later in the day),
+        so its daily row reads as a half-empty hole above the outlook rows. We
+        sample GEPS TT p50 at the ~05:00 local trough of the following morning
+        (the same trough convention ``outlook_sample_points`` uses) plus the
+        covering 12h ERGE1 POP, and stash them in ``self._day7_backfill``. The
+        merge fills ONLY the missing low / night POP — published values stay
+        untouched. Two queries, on the cached GEPS executor (12h TTL).
+        """
+        if self._forecast_days <= 7:
+            self._day7_backfill = None
+            return
+
+        # Last official day is the day just before the first outlook day.
+        last_official = (today + timedelta(days=OUTLOOK_FIRST_DAY - 1)).isoformat()
+        points = outlook_sample_points(last_official, local_tz)
+        night_rep = points["night_rep"]
+        night_window_end = points["night_window_end"]
+
+        results, _, _ = await self._execute_queries(
+            [
+                (GEPS_TEMPERATURE_P50, night_rep, GEPS_QUERY_TAG),
+                (GEPS_POP_12H, night_window_end, GEPS_QUERY_TAG),
+            ],
+            now_ts, session, semaphore,
+        )
+        values = index_results(results)
+        tt_low = values.get((GEPS_TEMPERATURE_P50, night_rep))
+        pop_night = values.get((GEPS_POP_12H, night_window_end))
+
+        # Round the low to a whole degree to match EC's official low convention
+        # (citypage lows are whole-number values); POP is an integer percent.
+        self._day7_backfill = {
+            "date": last_official,
+            "temp_low": round(tt_low) if tt_low is not None else None,
+            "pop_night": int(round(pop_night)) if pop_night is not None else None,
+        }
+
     def _results_to_store(
         self,
         all_results: list[tuple[str, datetime, tuple[str, str], float | None]],
@@ -361,6 +609,27 @@ class ECWEonGCoordinator(OnDemandCoordinator):
 
         return total_failed
 
+    def apply_forecast_days(self, forecast_days: int) -> None:
+        """Apply a forecast-range change in place, without an entry reload.
+
+        Publishes the re-projection immediately so skeleton outlook rows
+        render the instant the option is saved; the real outlook data rides
+        the refresh scheduled right after. Turning the option off drops any
+        stored outlook entries at once.
+        """
+        if forecast_days == self._forecast_days:
+            return
+        self._forecast_days = forecast_days
+        if forecast_days <= 7:
+            self._outlook = {}
+        now = datetime.now(timezone.utc)
+        today = dt_util.now().date()
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        self.async_set_updated_data(
+            self._project_output(build_periods(today, now, local_tz))
+        )
+        self.hass.async_create_task(self.async_request_refresh())
+
     def _project_output(
         self,
         periods: list[tuple[str, str, datetime, datetime]],
@@ -373,11 +642,42 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         period_projection = self._store.project_periods(periods)
         hourly_projection = self._store.project_hourly()
 
+        # Only surface precip_windows for dates still in the forecast range.
+        valid_dates = {date_str for date_str, _pt, _s, _e in periods}
+        precip_windows = {
+            date_str: windows
+            for date_str, windows in self._precip_windows.items()
+            if date_str in valid_dates
+        }
+
+        # Outlook entries (days beyond the official 7), sorted by date. Empty in
+        # mode 7. Appended to the daily forecast attribute by the sensor; the HA
+        # weather entity does not read these, so its forecast stays official-only.
+        #
+        # Refinement 1 — skeleton rows on enable: every expected outlook date
+        # with no real entry yet gets a SKELETON (date + source + pending, no
+        # temps/icons/sentence). Real entries win (setdefault). This makes the
+        # daily attribute show the full expected date range immediately after
+        # the reload that follows enabling, replaced as fetches land.
+        outlook_by_date = dict(self._outlook)
+        if self._forecast_days > 7:
+            today = dt_util.now().date()
+            for date_str in outlook_dates(today, self._forecast_days):
+                outlook_by_date.setdefault(date_str, {
+                    "date": date_str,
+                    "source": "outlook",
+                    "pending": True,
+                })
+        outlook = [outlook_by_date[date_str] for date_str in sorted(outlook_by_date)]
+
         return {
             "periods": period_projection,
             "hourly": hourly_projection,
             "updated": self._last_fetch_ts,
             "days_fetched": sorted(self._completed_days),
+            "precip_windows": precip_windows,
+            "outlook": outlook,
+            "outlook_backfill": self._day7_backfill,
         }
 
     def _is_model_run_current(self) -> bool:
@@ -441,14 +741,23 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         all_periods: list = list(periods)
 
         async def _process_day(date_str: str, day_periods: list) -> None:
-            """Fetch one day and merge results progressively."""
+            """Fetch one day (WEonG + extended GEPS) and merge progressively."""
             day_results = await self._fetch_day(
                 day_periods, today, now_ts, session, semaphore,
             )
+            geps_entries, geps_windows = await self._fetch_geps_day(
+                date_str, day_periods, today, now_ts, session, semaphore,
+            )
             async with self._merge_lock:
                 self._results_to_store(day_results)
+                # GEPS entries are already synthesized TimestepData; merge them
+                # straight in. Store priority keeps RDPS ahead of GEPS on overlap.
+                for entry in geps_entries:
+                    self._store.merge(entry)
+                if geps_windows is not None:
+                    self._precip_windows[date_str] = geps_windows
                 # Mark the day fetched even on zero results — attempted-and-empty
-                # (GDPS-WEonG removed) is a real answer, not a pending state.
+                # (past the RDPS 84h horizon) is a real answer, not a pending state.
                 self._completed_days.add(date_str)
                 try:
                     merged = self._project_output(all_periods)
@@ -464,6 +773,15 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             _process_day(date_str, day_periods)
             for date_str, day_periods in sorted(periods_by_date.items())
         ])
+
+        # Extended outlook wave (modes 10/14): the calendar days beyond the
+        # official 7. Runs once the near-day gather is done; cached GEPS TTL
+        # keeps it to one fetch per GEPS run.
+        await self._fetch_outlook(today, now_ts, session, semaphore, local_tz)
+
+        # Backfill the last official day's overnight low from the GEPS night
+        # trough (refinement 2) — part of the same extended outlook wave.
+        await self._fetch_day7_backfill(today, now_ts, session, semaphore, local_tz)
 
         # Record the actual fetch time
         self._last_fetch_ts = datetime.now(timezone.utc).isoformat()
@@ -523,11 +841,9 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         """Lazy-fetch popup detail for a specific day's timesteps.
 
         Called by the ec_weather.fetch_day_timesteps service when the user
-        opens a daily popup. What gets fetched depends on the model:
-
-        - HRDPS days (0-2): SkyState only (AirTemp/amounts already in store
-          from background sweep)
-        - GDPS days (3+): AirTemp + amounts + SkyState (not fetched in background)
+        opens a daily popup. SkyState is fetched for every timestep of the day
+        (HRDPS days 0-2 and RDPS days 3+); POP, AirTemp and amounts are already
+        in the store from the background sweep.
 
         Results merge into the canonical store and listeners are notified.
         Cached per-date with model-appropriate TTL.
@@ -565,33 +881,45 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             _LOGGER.debug("EC WEonG: no periods for date %s", date_str)
             return
 
-        # Build timesteps for this day
-        timestep_info = self._build_timestep_info(day_periods, today)
-        if not timestep_info:
-            return
-
         session = async_get_clientsession(self.hass)
         semaphore = asyncio.Semaphore(WEONG_SEMAPHORE_LIMIT)
 
-        # Lazy fetch: SkyState for all timesteps (POP + AirTemp + amounts
+        # Extended GEPS day (4-6): the on-demand open triggers the GEPS wave, so
+        # a popup works even before the background sweep has reached this day.
+        # GEPS days have no WEonG timesteps (past the 84h horizon), so this runs
+        # independently of the SkyState path below.
+        geps_entries, geps_windows = await self._fetch_geps_day(
+            date_str, day_periods, today, now_ts, session, semaphore,
+        )
+
+        # Lazy fetch: SkyState for all WEonG timesteps (POP + AirTemp + amounts
         # already in store from background sweep). SkyState is needed even
         # for wet timesteps when POP > 0 but amounts = 0.
-        all_queries: list[tuple[str, datetime, tuple[str, str]]] = []
+        timestep_info = self._build_timestep_info(day_periods, today)
+        sky_queries: list[tuple[str, datetime, tuple[str, str]]] = []
         for ts, pk, model in timestep_info:
-            all_queries.append((
+            sky_queries.append((
                 _weong_layer_name(_LAYER_SUFFIXES["sky_state"], model), ts, pk,
             ))
 
-        if not all_queries:
+        sky_results: list = []
+        if sky_queries:
+            sky_results, _, _ = await self._execute_queries(
+                sky_queries, now_ts, session, semaphore,
+            )
+
+        # Nothing to fetch (no WEonG timesteps and not a GEPS day) — cache empty.
+        if not sky_results and not geps_entries and geps_windows is None:
             self._timestep_cache[date_str] = ({}, now_mono)
             return
 
-        results, _, _ = await self._execute_queries(
-            all_queries, now_ts, session, semaphore,
-        )
-
         # Merge all results into the canonical store
-        self._results_to_store(results)
+        self._results_to_store(sky_results)
+        for entry in geps_entries:
+            self._store.merge(entry)
+        if geps_windows is not None:
+            self._precip_windows[date_str] = geps_windows
+        self._completed_days.add(date_str)
 
         # Re-project and publish updated data
         updated = self._project_output(all_periods)
@@ -604,10 +932,10 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             oldest_key = min(self._timestep_cache, key=lambda k: self._timestep_cache[k][1])
             del self._timestep_cache[oldest_key]
 
-        fetched_count = sum(1 for _, _, _, v in results if v is not None)
+        fetched_count = sum(1 for _, _, _, v in sky_results if v is not None)
         _LOGGER.debug(
-            "EC WEonG: lazy-fetched %d values for %s",
-            fetched_count, date_str,
+            "EC WEonG: lazy-fetched %d SkyState + %d GEPS timesteps for %s",
+            fetched_count, len(geps_entries), date_str,
         )
 
 

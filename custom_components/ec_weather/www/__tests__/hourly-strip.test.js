@@ -81,6 +81,84 @@ describe("buildHourlyStripHtml — day bands", () => {
   });
 });
 
+// Every non-empty day-label the strip emitted, in order (the empty spacer
+// cells at non-boundary columns are dropped).
+const bandLabels = (html) =>
+  [...html.matchAll(/<div class="ecs-daylbl"[^>]*>([^<]*)<\/div>/g)]
+    .map((m) => m[1])
+    .filter(Boolean);
+
+// A full EC "day" the popup renders: 06:00 (day start) through 05:00 next
+// calendar date (night end) — the 6AM→6AM span the Day/Night boxes use.
+const sixToSix = () => {
+  const steps = [];
+  for (let hour = 6; hour <= 23; hour++) {
+    steps.push({ time: `2026-01-07T${String(hour).padStart(2, "0")}:00:00`, temp: 5, icon_code: 1 });
+  }
+  for (let hour = 0; hour <= 5; hour++) {
+    steps.push({ time: `2026-01-08T${String(hour).padStart(2, "0")}:00:00`, temp: 5, icon_code: 1 });
+  }
+  return steps;
+};
+
+describe("buildHourlyStripHtml — bandMode: halves (popup day/night segments)", () => {
+  it("segments a 6AM→6AM day into exactly two bands (day, then night unsplit at midnight)", () => {
+    const html = buildHourlyStripHtml(sixToSix(), hass24, { bandMode: "halves" });
+    // Exactly two labels: the day half, then one continuous night half whose
+    // label carries the date it crosses into — NO extra label at midnight.
+    expect(bandLabels(html)).toEqual(["DAY", "NIGHT"]);
+  });
+
+  it("labels every night segment as plain NIGHT (no weekday suffix: the label sits at the segment START, and naming it for where it ends read backwards — user feedback)", () => {
+    const eveningOnly = [18, 19, 20, 21, 22, 23].map((hour) => ({
+      time: `2026-01-07T${String(hour).padStart(2, "0")}:00:00`, temp: 5, icon_code: 1,
+    }));
+    const html = buildHourlyStripHtml(eveningOnly, hass24, { bandMode: "halves" });
+    expect(bandLabels(html)).toEqual(["NIGHT"]);
+  });
+
+  it("labels a day-only segment as a plain DAY (no date)", () => {
+    const daytimeOnly = [10, 11, 12, 13].map((hour) => ({
+      time: `2026-01-07T${String(hour).padStart(2, "0")}:00:00`, temp: 5, icon_code: 1,
+    }));
+    const html = buildHourlyStripHtml(daytimeOnly, hass24, { bandMode: "halves" });
+    expect(bandLabels(html)).toEqual(["DAY"]);
+  });
+
+  it("tints the night segment and leaves the day segment untinted (alternating by half)", () => {
+    const html = buildHourlyStripHtml(sixToSix(), hass24, { bandMode: "halves" });
+    const tints = [...html.matchAll(/height:100%;background:(var\(--ecw-tint\)|transparent)"/g)].map((m) => m[1]);
+    // 12 day columns (06–17) transparent, 12 night columns (18–05) tinted.
+    expect(tints.slice(0, 12).every((t) => t === "transparent")).toBe(true);
+    expect(tints.slice(12).every((t) => t === "var(--ecw-tint)")).toBe(true);
+  });
+
+  it("carries no calendar date label in halves mode (only DAY / NIGHT titles)", () => {
+    const html = buildHourlyStripHtml(sixToSix(), hass24, { bandMode: "halves" });
+    // The calendar-mode labels (e.g. "WED 7") must never appear.
+    expect(bandLabels(html).some((label) => /\d/.test(label))).toBe(false);
+  });
+});
+
+describe("buildHourlyStripHtml — bandMode default is byte-identical calendar", () => {
+  it("an explicit bandMode:'calendar' produces the exact same bytes as the default", () => {
+    const withDefault = buildHourlyStripHtml(CROSS_MIDNIGHT, hass24, {});
+    const withCalendar = buildHourlyStripHtml(CROSS_MIDNIGHT, hass24, { bandMode: "calendar" });
+    expect(withCalendar).toBe(withDefault);
+  });
+
+  it("stays byte-identical on a full 6AM→6AM series too (regression pin)", () => {
+    const series = sixToSix();
+    expect(buildHourlyStripHtml(series, hass24, { bandMode: "calendar" }))
+      .toBe(buildHourlyStripHtml(series, hass24, {}));
+  });
+
+  it("calendar mode still labels each midnight with the weekday + date", () => {
+    const html = buildHourlyStripHtml(CROSS_MIDNIGHT, hass24, { bandMode: "calendar" });
+    expect(bandLabels(html)).toEqual(["WED 7", "THU 8"]);
+  });
+});
+
 describe("buildHourlyStripHtml — column order (header top, cluster below curve)", () => {
   const one = [{ time: "2026-01-07T09:00:00", temp: 5, icon_code: 1, feels_like: 9, precipitation_probability: 30 }];
 
@@ -341,5 +419,23 @@ describe("strip cells never exceed their declared column width", () => {
     const stripCss = source.slice(
       source.indexOf("const STRIP_CSS"), source.indexOf("const STRIP_DEFAULTS"));
     expect(stripCss).toContain(".ecs-strip, .ecs-strip * { box-sizing: border-box; }");
+  });
+
+  // The popup renders DAY/NIGHT band titles in a denser strip than the card;
+  // scoped compact rules give the label row extra height + gap and inset each
+  // title from its segment edge, so titles never crowd the hour labels below,
+  // the tint seam, or a neighbouring title. Scoped to .ecs-strip-compact so the
+  // card's calendar strip stays pixel-identical.
+  it("STRIP_CSS gives the compact (popup) band labels breathing room", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync("ec-weather-card.js", "utf8");
+    const stripCss = source.slice(
+      source.indexOf("const STRIP_CSS"), source.indexOf("const STRIP_DEFAULTS"));
+    expect(stripCss).toContain(".ecs-strip-compact .ecs-labels { height: 16px; margin-bottom: 6px; }");
+    // hour text must not sit flush against the tint band top edge
+    // Symmetric 8px band padding keeps popup content off the tint band's
+    // top and bottom edges (the main section uses 14px via .ecs-band).
+    expect(stripCss).toContain(".ecs-strip-compact .ecs-band { padding: 8px 0; }");
+    expect(stripCss).toContain(".ecs-strip-compact .ecs-daylbl { padding-left: 7px; padding-top: 1px; }");
   });
 });

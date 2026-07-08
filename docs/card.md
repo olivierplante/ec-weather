@@ -28,7 +28,7 @@ section: current
 | `alerts` | Neutral alert bars (one style for every warning type) with expand/collapse. Hidden when nothing is active. |
 | `current` | Hero (temperature, condition, feels-like), precipitation panel (today's chance + amounts, optional yesterday), metric bar (humidity · wind · AQHI · UV · sun arc). |
 | `hourly` | 48-hour scrollable trend: temperature curve, POP + rain/snow amounts with bars, per-day bands. |
-| `daily` | 7-day rows with day/night icons, POP + amounts, and temperature range bars colored by absolute temperature. Tap a day for a detail overlay (wind, humidity, UV, precipitation amounts, hourly timeline). |
+| `daily` | 7-day rows with day/night icons, POP + amounts, and temperature range bars colored by absolute temperature. Tap a day for a detail overlay (wind, humidity, UV, precipitation amounts, hourly timeline). When the forecast range is set to 10 or 14 days, the days past 7 render as muted model-outlook rows and tap open a summary popup instead of a timeline. See [Extended forecast](#extended-forecast). |
 
 ## Full panel example
 
@@ -48,6 +48,21 @@ cards:
     section: daily
 ```
 
+## Extended forecast
+
+The `daily` section can reach past Environment Canada's official 7-day forecast.
+Set the forecast range to 7 (default), 10, or 14 days in the integration options (see [Configuration](configuration.md)).
+
+EC only publishes official forecasts 7 days out, so the days past 7 are a model outlook derived from the GEPS ensemble, not an official EC forecast.
+The card keeps that distinction honest instead of pretending the extra days are as certain as the first week.
+
+Outlook rows render like the official rows but muted, with a small "Model outlook" caption.
+Each row shows the ensemble median high and low, the ensemble POP (hidden below 30 percent, since below that it is measured base-rate noise), and a day and night icon from the same ensemble recipe used across the far days.
+Tapping an outlook day opens a summary popup rather than an hourly timeline: an "Outlook" badge, a plain-language sentence ("Likely 22-27°, around 40% chance of rain") whose range widens with distance to carry the growing uncertainty, slimmed Day and Night boxes (icon, median temperature, feels-like, per-half POP, and an amount band when POP is at least 50 percent), and a footnote explaining that the outlook comes from model ensembles.
+Humidity, wind, condition text, UV, and AQHI are absent on outlook days by design, because they are not honestly rebuildable that far out.
+
+The section header label follows the range automatically ("7-day", "10-day", or "Outlook").
+
 ## Theming
 
 The card follows your active HA theme automatically. Colors resolve in this order:
@@ -65,6 +80,7 @@ variables. Your `--ec-weather-*` override always wins in both themes.
 | `--ec-weather-text-primary` | `--primary-text-color` | Primary text |
 | `--ec-weather-text-secondary` | `--secondary-text-color` | Secondary text |
 | `--ec-weather-text-muted` | `--secondary-text-color` | Muted text (feels-like, captions) |
+| `--ec-weather-outlook-opacity` | `0.72` | Opacity of the muted model-outlook daily rows (days past 7) |
 | `--ec-weather-divider` | `--divider-color` | Hairlines and dividers |
 | `--ec-weather-precip-rain` | - | Rain accent (chips, bars, amounts) |
 | `--ec-weather-precip-snow` | - | Snow accent (chips, amounts) |

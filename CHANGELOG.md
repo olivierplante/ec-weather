@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.1.0
+
+The forecast now reaches as far as the data honestly allows.
+
+![Desktop, mobile and day detail](https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview.webp)
+
+[More screenshots](https://github.com/olivierplante/ec-weather/blob/main/docs/screenshots.md)
+
+### What's new
+
+- Hourly detail is back for days 3 and 4: Environment Canada removed the GDPS data source in early July 2026, and the card now uses the RDPS model (10 km, 84-hour horizon) at full hourly resolution instead of the previous 3-hour blocks
+- Days 4 to 6 show a 3-hour timeline again, built from EC's GEPS ensemble: temperatures, feels-like, icons and a real probability of precipitation per half-day window, with rain amounts drawn as blocks spanning the window they belong to
+- New option: extended 14-day forecast, off by default. It adds a week of outlook beyond EC's official 7-day forecast. Nobody can predict the exact weather 12 days out, so these days deliberately show less: a likely temperature, the chance of rain and a general sky tendency, dimmed to set them apart from the real forecast. Good for spotting a warm stretch or a wet week ahead, not for planning around a specific hour
+
+### Fixed
+
+- The integration no longer sends hundreds of daily queries to the dataset EC removed
+- The HACS page showed a raw picture tag above the screenshot; the README now renders cleanly in HACS
+
 ## 2.0.0
 
 Every part of the card has been rebuilt on a single design system.
