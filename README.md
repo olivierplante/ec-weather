@@ -9,10 +9,7 @@
 </p>
 
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview-light.webp">
-    <img alt="EC Weather Card" src="https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview.webp">
-  </picture>
+  <img alt="EC Weather Card" src="https://raw.githubusercontent.com/olivierplante/ec-weather/main/screenshots/overview.webp">
 </p>
 
 <p align="center"><a href="https://github.com/olivierplante/ec-weather/blob/main/docs/screenshots.md">More screenshots</a></p>

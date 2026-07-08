@@ -25,7 +25,7 @@ from homeassistant.util import dt as dt_util
 from ec_weather.coordinator import ECWEonGCoordinator
 from ec_weather.coordinator.weong_helpers import (
     _HRDPS_PREFIX,
-    _GDPS_PREFIX,
+    _RDPS_PREFIX,
     _LAYER_SUFFIXES,
     _bare_layer_name,
     _model_from_layer,
@@ -81,9 +81,9 @@ class TestBackgroundSweep:
 
         # Should have queries for both models
         hrdps_pop = _count_queries_by_model(pop_queries, "hrdps")
-        gdps_pop = _count_queries_by_model(pop_queries, "gdps")
+        rdps_pop = _count_queries_by_model(pop_queries, "rdps")
         assert hrdps_pop > 0, "Should have HRDPS POP queries"
-        assert gdps_pop > 0, "Should have GDPS POP queries"
+        assert rdps_pop > 0, "Should have RDPS POP queries"
 
     def test_background_queries_airtemp_for_all_models(self, hass: HomeAssistant):
         """Background sweep queries AirTemp for both HRDPS and GDPS."""
@@ -102,9 +102,9 @@ class TestBackgroundSweep:
             airtemp_queries.append((_weong_layer_name(_LAYER_SUFFIXES["air_temp"], model), ts, pk))
 
         hrdps_temp = _count_queries_by_model(airtemp_queries, "hrdps")
-        gdps_temp = _count_queries_by_model(airtemp_queries, "gdps")
+        rdps_temp = _count_queries_by_model(airtemp_queries, "rdps")
         assert hrdps_temp > 0, "Should have HRDPS AirTemp queries"
-        assert gdps_temp > 0, "Should have GDPS AirTemp queries"
+        assert rdps_temp > 0, "Should have RDPS AirTemp queries"
 
     def test_background_skips_skystate(self, hass: HomeAssistant):
         """Background sweep does NOT query SkyState — deferred to lazy popup."""
@@ -135,19 +135,19 @@ class TestLazyPopupEnrichment:
     """Verify lazy popup fetches the right data based on day distance."""
 
     @freeze_time("2026-03-22T12:00:00Z")
-    async def test_lazy_fetch_gdps_day_gets_skystate_only(self, hass: HomeAssistant):
-        """For GDPS days, lazy fetch gets SkyState only (AirTemp+amounts in background)."""
+    async def test_lazy_fetch_rdps_day_gets_skystate_only(self, hass: HomeAssistant):
+        """For RDPS days, lazy fetch gets SkyState only (AirTemp+amounts in background)."""
         hass.config.time_zone = "America/Toronto"
         coord = _make_coord(hass)
 
-        # Day 4 from today (2026-03-22) = 2026-03-26 -> GDPS only
-        target_date = "2026-03-26"
+        # Day 3 from today (2026-03-22) = 2026-03-25 -> RDPS only, inside 84h horizon
+        target_date = "2026-03-25"
         # Seed store with POP + AirTemp data (simulating background sweep)
         coord._store.merge(TimestepData(
-            time=f"{target_date}T12:00:00Z", pop=40, temp=-5.0, model="gdps",
+            time=f"{target_date}T12:00:00Z", pop=40, temp=-5.0, model="rdps",
         ))
         coord._store.merge(TimestepData(
-            time=f"{target_date}T15:00:00Z", pop=10, temp=-3.0, model="gdps",
+            time=f"{target_date}T15:00:00Z", pop=10, temp=-3.0, model="rdps",
         ))
         coord.data = {"periods": {}, "hourly": {}}
 
@@ -156,8 +156,8 @@ class TestLazyPopupEnrichment:
         def mock_build_periods(today, now_utc, local_tz):
             return [
                 (target_date, "day",
-                 datetime(2026, 3, 26, 10, 0, tzinfo=timezone.utc),
-                 datetime(2026, 3, 26, 22, 0, tzinfo=timezone.utc)),
+                 datetime(2026, 3, 25, 10, 0, tzinfo=timezone.utc),
+                 datetime(2026, 3, 25, 16, 0, tzinfo=timezone.utc)),
             ]
 
         async def mock_execute(queries, now_ts, session, semaphore):

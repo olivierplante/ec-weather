@@ -21,6 +21,9 @@ from .const import (
     CONF_AQHI_LOCATION_ID,
     CONF_BBOX,
     CONF_CITY_CODE,
+    CONF_EXTENDED_FORECAST,
+    CONF_FORECAST_DAYS,
+    EXTENDED_FORECAST_DAYS,
     CONF_GEOMET_BBOX,
     CONF_LANGUAGE,
     CONF_POLLING_MODE,
@@ -31,6 +34,7 @@ from .const import (
     CONF_WEATHER_INTERVAL,
     COORDINATOR_WEONG,
     DEFAULT_AQHI_INTERVAL,
+    DEFAULT_FORECAST_DAYS,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
@@ -189,8 +193,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         interval_minutes=aqhi_interval, polling=aqhi_polls,
     )
     weong_polls = polling_mode == POLLING_MODE_FULL
+    # The extended-forecast checkbox gates the outlook days (legacy phase-C
+    # select values are honored: "14" behaves as checked).
+    # (7 official days, or 14 with
+    # GEPS outlook rows). Stored as a string by the select; coerce to int.
+    extended = bool(
+        entry.options.get(
+            CONF_EXTENDED_FORECAST,
+            str(entry.options.get(CONF_FORECAST_DAYS, "")) == "14",
+        )
+    )
+    forecast_days = EXTENDED_FORECAST_DAYS if extended else DEFAULT_FORECAST_DAYS
     weong_coordinator = ECWEonGCoordinator(
-        hass, geomet_bbox, polling=weong_polls,
+        hass, geomet_bbox, polling=weong_polls, forecast_days=forecast_days,
     )
 
     # Yesterday's precipitation — only when a station was discovered/opted in.

@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -23,11 +24,15 @@ from ec_weather.config_flow import (
     _compute_geomet_bbox,
 )
 from ec_weather.const import (
+    EXTENDED_FORECAST_DAYS,
+    CONF_PRECIP_DISCOVERED,
     CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
     CONF_BBOX,
     CONF_CITY_CODE,
     CONF_CITY_NAME,
+    CONF_EXTENDED_FORECAST,
+    CONF_FORECAST_DAYS,
     CONF_GEOMET_BBOX,
     CONF_PRECIP_STATION_ID,
     CONF_LANGUAGE,
@@ -36,6 +41,7 @@ from ec_weather.const import (
     CONF_POLLING_MODE,
     CONF_WEATHER_INTERVAL,
     DEFAULT_AQHI_INTERVAL,
+    DEFAULT_FORECAST_DAYS,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
@@ -728,6 +734,72 @@ class TestOptionsFlowInit:
         assert result["type"] == "form"
         assert result["step_id"] == "precip"
 
+    async def test_forecast_days_defaults_to_seven(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """With no stored option, the extended-forecast checkbox defaults to off."""
+        flow = await self._make_options_flow(hass)
+
+        result = await flow.async_step_init(user_input=None)
+
+        schema_dict = dict(result["data_schema"].schema)
+        defaults = {}
+        for key_obj in schema_dict:
+            if hasattr(key_obj, "schema") and hasattr(key_obj, "default"):
+                defaults[key_obj.schema] = key_obj.default()
+
+        assert CONF_EXTENDED_FORECAST in defaults
+        assert defaults[CONF_EXTENDED_FORECAST] is False
+
+    async def test_forecast_days_default_from_current_option(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """The checkbox pre-fills from the stored option, incl. the legacy select value."""
+        # Legacy phase-C string value must pre-check the box.
+        flow = await self._make_options_flow(
+            hass, options={CONF_FORECAST_DAYS: "14"},
+        )
+
+        result = await flow.async_step_init(user_input=None)
+
+        schema_dict = dict(result["data_schema"].schema)
+        defaults = {}
+        for key_obj in schema_dict:
+            if hasattr(key_obj, "schema") and hasattr(key_obj, "default"):
+                defaults[key_obj.schema] = key_obj.default()
+
+        assert defaults[CONF_EXTENDED_FORECAST] is True
+
+    @patch("ec_weather.config_flow.discover_precip_stations")
+    async def test_forecast_days_saved_to_options(
+        self, mock_discover, hass: HomeAssistant,
+    ) -> None:
+        """Checking the box stores the boolean in options (mutable), not data."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
+        flow = await self._make_options_flow(hass)
+
+        hass.config_entries = MagicMock()
+        hass.config_entries.async_update_entry = MagicMock()
+        hass.config_entries.async_reload = AsyncMock()
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+
+        user_input = {
+            CONF_CITY_CODE: "on-118",
+            CONF_LANGUAGE: "en",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
+            CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
+            CONF_AQHI_LOCATION_ID: "",
+            CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
+            CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
+            CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+            CONF_EXTENDED_FORECAST: True,
+        }
+        await flow.async_step_init(user_input=user_input)
+
+        call_kwargs = hass.config_entries.async_update_entry.call_args[1]
+        assert call_kwargs["options"][CONF_EXTENDED_FORECAST] is True
+        assert CONF_EXTENDED_FORECAST not in call_kwargs["data"]
+
     async def test_reloads_entry_after_precip_save(
         self, hass: HomeAssistant,
     ) -> None:
@@ -744,3 +816,89 @@ class TestOptionsFlowInit:
             )
 
         mock_reload.assert_awaited_once_with(entry_id)
+
+class TestOptionsPersistenceAndFastPath(TestOptionsFlowInit):
+    """The options-wipe bug and the in-place extended-forecast fast path.
+
+    HA core assigns the terminal async_create_entry data payload to
+    entry.options. Returning data={} therefore wipes every option AFTER the
+    manual save + reload already ran with good values: works on save, lost
+    on reboot (user-reported 2026-07-09).
+    """
+
+    def _base_input(self):
+        return {
+            CONF_CITY_CODE: "on-118",
+            CONF_LANGUAGE: "en",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
+            CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
+            CONF_AQHI_LOCATION_ID: "",
+            CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
+            CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
+            CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+            CONF_EXTENDED_FORECAST: True,
+        }
+
+    async def _save_both_steps(self, hass, flow, init_input):
+        with patch(
+            "ec_weather.config_flow.discover_precip_stations",
+            return_value={"nearest": None, "nearest_split": None},
+        ):
+            await flow.async_step_init(user_input=init_input)
+            return await flow.async_step_precip(
+                user_input={CONF_PRECIP_STATION_ID: "__none__"},
+            )
+
+    async def test_terminal_create_entry_carries_options(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """The terminal payload must be the saved options, never {}."""
+        flow = await self._make_options_flow(hass)
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+        with patch.object(
+            hass.config_entries, "async_reload", AsyncMock(),
+        ):
+            await self._save_both_steps(hass, flow, self._base_input())
+
+        payload = flow.async_create_entry.call_args[1]["data"]
+        assert payload != {}
+        assert payload[CONF_EXTENDED_FORECAST] is True
+
+    async def test_extended_only_change_applies_in_place(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """Only the checkbox changed: no reload, coordinator updated live."""
+        flow = await self._make_options_flow(hass)
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+        weong = MagicMock()
+        hass.data.setdefault(DOMAIN, {})[flow.config_entry.entry_id] = (
+            SimpleNamespace(weong=weong)
+        )
+        # Precip already opted out and discovered: the precip step's data
+        # write is then a no-op, leaving the checkbox as the only change.
+        hass.config_entries.async_update_entry(
+            flow.config_entry,
+            data={**flow.config_entry.data, CONF_PRECIP_DISCOVERED: True},
+        )
+        with patch.object(
+            hass.config_entries, "async_reload", AsyncMock(),
+        ) as mock_reload:
+            await self._save_both_steps(hass, flow, self._base_input())
+
+        mock_reload.assert_not_awaited()
+        weong.apply_forecast_days.assert_called_once_with(EXTENDED_FORECAST_DAYS)
+
+    async def test_other_option_change_still_reloads(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """Any non-checkbox change keeps the full reload."""
+        flow = await self._make_options_flow(hass)
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+        changed = self._base_input()
+        changed[CONF_WEATHER_INTERVAL] = DEFAULT_WEATHER_INTERVAL + 30
+        with patch.object(
+            hass.config_entries, "async_reload", AsyncMock(),
+        ) as mock_reload:
+            await self._save_both_steps(hass, flow, changed)
+
+        mock_reload.assert_awaited_once()

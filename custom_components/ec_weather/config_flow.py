@@ -40,6 +40,7 @@ from .const import (
     CONF_BBOX,
     CONF_CITY_CODE,
     CONF_CITY_NAME,
+    CONF_FORECAST_DAYS,
     CONF_GEOMET_BBOX,
     CONF_LANGUAGE,
     CONF_LAT,
@@ -52,11 +53,14 @@ from .const import (
     CONF_PRECIP_STATION_TYPE,
     CONF_WEATHER_INTERVAL,
     DEFAULT_AQHI_INTERVAL,
+    DEFAULT_FORECAST_DAYS,
+    EXTENDED_FORECAST_DAYS,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
     DEFAULT_WEATHER_INTERVAL,
     DOMAIN,
     EC_API_BASE,
+    CONF_EXTENDED_FORECAST,
     POLLING_MODES,
     REQUEST_TIMEOUT,
     SUPPORTED_LANGUAGES,
@@ -155,10 +159,15 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
         """Show editable settings."""
         mutable_keys = {
             CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
-            CONF_AQHI_INTERVAL,
+            CONF_AQHI_INTERVAL, CONF_EXTENDED_FORECAST,
         }
 
         if user_input is not None:
+            # Snapshot the pre-save state so the terminal step can tell a
+            # checkbox-only change (in-place fast path) from one needing a
+            # full reload.
+            self._pre_flow_data = dict(self.config_entry.data)
+            self._pre_flow_options = dict(self.config_entry.options)
             # Separate immutable data from mutable options
             new_data = dict(self.config_entry.data)
             new_options = dict(self.config_entry.options)
@@ -247,6 +256,16 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                             mode=NumberSelectorMode.BOX,
                         )
                     ),
+                    vol.Optional(
+                        CONF_EXTENDED_FORECAST,
+                        # Legacy phase-C select value ("14") pre-checks the box.
+                        default=bool(
+                            options.get(
+                                CONF_EXTENDED_FORECAST,
+                                str(options.get(CONF_FORECAST_DAYS, "")) == "14",
+                            )
+                        ),
+                    ): bool,
                 }
             ),
             description_placeholders={
@@ -281,8 +300,58 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data,
             )
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
+            # HA core assigns this terminal payload to entry.options — an
+            # empty dict here silently WIPES every saved option after the
+            # reload already ran with good values (lost-on-reboot bug).
+            # Always hand back the full current options.
+            options_now = dict(self.config_entry.options)
+
+            # Fast path: when the extended-forecast checkbox is the only
+            # change, skip the full reload and apply it in place — skeleton
+            # outlook rows then appear instantly instead of after a reload
+            # plus refetch cycle.
+            pre_data = getattr(self, "_pre_flow_data", None)
+            pre_options = getattr(self, "_pre_flow_options", None)
+            # Compare EFFECTIVE values (missing key == its default), or an
+            # empty options store would make every default-filled save look
+            # like a change and defeat the fast path.
+            option_defaults = {
+                CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
+                CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
+                CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+            }
+            others_unchanged = pre_options is not None and all(
+                options_now.get(key, default)
+                == pre_options.get(key, default)
+                for key, default in option_defaults.items()
+            )
+            def _normalized(payload: dict) -> dict:
+                # Empty strings from untouched text fields round-trip stored
+                # None values; treat them as equal so a no-op save stays a
+                # no-op.
+                return {
+                    key: (None if value == "" else value)
+                    for key, value in payload.items()
+                    if key != CONF_PRECIP_DISCOVERED
+                }
+
+            data_unchanged = pre_data is not None and _normalized(
+                dict(self.config_entry.data)
+            ) == _normalized(pre_data)
+            checkbox_only = others_unchanged and data_unchanged
+            entry_data = self.hass.data.get(DOMAIN, {}).get(
+                self.config_entry.entry_id,
+            )
+            if checkbox_only and entry_data is not None:
+                extended = bool(options_now.get(CONF_EXTENDED_FORECAST, False))
+                entry_data.weong.apply_forecast_days(
+                    EXTENDED_FORECAST_DAYS if extended else DEFAULT_FORECAST_DAYS,
+                )
+            else:
+                await self.hass.config_entries.async_reload(
+                    self.config_entry.entry_id,
+                )
+            return self.async_create_entry(title="", data=options_now)
 
         session = async_get_clientsession(self.hass)
         discovery = await discover_precip_stations(

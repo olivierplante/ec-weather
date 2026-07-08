@@ -69,6 +69,16 @@ SCAN_INTERVAL_ALERTS = timedelta(minutes=30)  # alerts always poll in all modes
 # (typically by ~06:00 local), then stay idle until the next day.
 SCAN_INTERVAL_CLIMATE = timedelta(minutes=30)
 
+# Extended-forecast scope (options flow). Gates how far the daily forecast
+# reaches: 7 = official EC days only (default), 10/14 = plus GEPS model outlook
+# rows for the calendar days beyond EC's 7-day list. Stored as a string by the
+# select selector; consumers coerce with int().
+CONF_FORECAST_DAYS = "forecast_days"
+DEFAULT_FORECAST_DAYS = 7
+# Legacy select key kept readable for entries saved by the pre-checkbox flow.
+CONF_EXTENDED_FORECAST = "extended_forecast"
+EXTENDED_FORECAST_DAYS = 14
+
 # Configurable interval defaults (minutes)
 CONF_WEATHER_INTERVAL = "weather_interval"
 CONF_AQHI_INTERVAL = "aqhi_interval"
@@ -88,7 +98,10 @@ GEOMET_REQUEST_TIMEOUT = 10  # seconds, per individual GetFeatureInfo request
 
 # WEonG cache TTLs — model data doesn't change between runs
 WEONG_CACHE_TTL_HRDPS = 6 * 3600   # seconds — HRDPS runs every 6h
-WEONG_CACHE_TTL_GDPS = 12 * 3600   # seconds — GDPS runs every 12h
+WEONG_CACHE_TTL_RDPS = 6 * 3600    # seconds — RDPS runs every 6h (00/06/12/18Z)
+# GEPS ensemble (extended forecast, days 4+) runs twice a day at 00Z/12Z, so a
+# 12h TTL keeps the extended wave to one fetch per model run.
+CACHE_TTL_GEPS = 12 * 3600         # seconds — GEPS runs every 12h (00/12Z)
 
 # Coordinator storage keys
 COORDINATOR_WEATHER = "weather"

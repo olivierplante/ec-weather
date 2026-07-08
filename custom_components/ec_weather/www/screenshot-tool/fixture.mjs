@@ -51,7 +51,9 @@ function buildDayTimesteps(nowMs, dayOffset, half) {
     ? [[8, 18, 12, 40, 1.8], [11, 20, 12, 80, 3.6], [14, 22, 6, 60, 1.2], [17, 23, 2, 30, 0.6]]
     : [[20, 21, 30, 10, null], [23, 19, 30, 0, null], [2, 18, 30, 0, null], [5, 17, 30, 0, null]];
   return specs.map(([hourOfDay, temp, icon, pop, rain]) => {
-    const d = new Date(nowMs + dayOffset * 86400000);
+    // Small-hour night steps (2AM, 5AM) belong to the NEXT calendar day.
+    const daySpill = half === 'night' && hourOfDay < 6 ? 1 : 0;
+    const d = new Date(nowMs + (dayOffset + daySpill) * 86400000);
     d.setHours(hourOfDay, 0, 0, 0);
     return {
       time: d.toISOString().replace(/\.\d{3}Z$/, 'Z'),
@@ -63,6 +65,52 @@ function buildDayTimesteps(nowMs, dayOffset, half) {
       snow_cm: null,
     };
   });
+}
+
+/** GEPS far-day (4-6) 3h timesteps: amounts ALWAYS null — the amount lives in
+ *  the window-spanning vessels, driven by precip_windows below. */
+function buildGepsTimesteps(nowMs, dayOffset, half) {
+  const specs = half === 'day'
+    ? [[8, 22, 12, 60], [11, 23, 12, 60], [14, 21, 6, 50], [17, 19, 2, 40]]
+    : [[20, 18, 30, 20], [23, 17, 30, 10], [2, 16, 30, 5], [5, 15, 30, 5]];
+  return specs.map(([hourOfDay, temp, icon, pop]) => {
+    const d = new Date(nowMs + dayOffset * 86400000);
+    d.setHours(hourOfDay, 0, 0, 0);
+    return {
+      time: d.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      temp,
+      icon_code: icon,
+      feels_like: pop >= 60 ? temp - 1 : null,
+      precipitation_probability: pop,
+      rain_mm: null,
+      snow_cm: null,
+    };
+  });
+}
+
+/** Two 12h GEPS windows for a far day: a wet daytime window (pop >= 30 + band →
+ *  a spanning vessel) and a dry night window (renders nothing). */
+function buildPrecipWindows(nowMs, dayOffset) {
+  const at = (hourOfDay, dayShift = 0) => {
+    const d = new Date(nowMs + (dayOffset + dayShift) * 86400000);
+    d.setHours(hourOfDay, 0, 0, 0);
+    return d.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  };
+  return [
+    { start: at(6), end: at(18), pop: 60, amount_p25: 4.0, amount_p75: 9.0 },
+    { start: at(18), end: at(6, 1), pop: 15, amount_p25: null, amount_p75: null },
+  ];
+}
+
+/** GEPS outlook entry (days 8+): medians + bands, muted row, summary popup. */
+function buildOutlookEntry(nowMs, offset, spec) {
+  return {
+    period: dateStrAtDayOffset(nowMs, offset),
+    date: dateStrAtDayOffset(nowMs, offset),
+    source: 'outlook',
+    timesteps_state: 'outlook',
+    ...spec,
+  };
 }
 
 function buildDaily(nowMs) {
@@ -96,7 +144,67 @@ function buildDaily(nowMs) {
     { period: weekday(3), date: day(3), icon_code: 12, icon_code_night: 12, temp_high: 22, temp_low: 15, precip_prob_day: 80, rain_mm_day: 12, timesteps_day: [], timesteps_night: [], timesteps_state: 'unavailable', icons_complete: true },
     { period: weekday(4), date: day(4), icon_code: 1, icon_code_night: 30, temp_high: 26, temp_low: 13, precip_prob_day: 0, timesteps_day: [], timesteps_night: [], timesteps_state: 'unavailable', icons_complete: true },
     { period: weekday(5), date: day(5), icon_code: 0, icon_code_night: 30, temp_high: 28, temp_low: 14, precip_prob_day: 0, timesteps_day: [], timesteps_night: [], timesteps_state: 'unavailable', icons_complete: true },
-    { period: weekday(6), date: day(6), icon_code: 2, icon_code_night: 33, temp_high: 27, temp_low: 15, precip_prob_day: 30, timesteps_day: [], timesteps_night: [], timesteps_state: 'unavailable', icons_complete: true },
+    // A GEPS far day (4-6): 3h timesteps with null amounts + precip_windows, so
+    // the popup timeline shows the window-spanning amount vessels.
+    {
+      period: weekday(6), date: day(6), icon_code: 12, icon_code_night: 33,
+      temp_high: 23, temp_low: 15, precip_prob_day: 60,
+      timesteps_day: buildGepsTimesteps(nowMs, 6, 'day'),
+      timesteps_night: buildGepsTimesteps(nowMs, 6, 'night'),
+      timesteps_state: 'loaded', icons_complete: true,
+      precip_windows: buildPrecipWindows(nowMs, 6),
+    },
+    // GEPS outlook rows (days 8-10): a wet day with an amount band, a dry
+    // temperature-only day, and a chance-band day.
+    buildOutlookEntry(nowMs, 7, {
+      temp_high: 22, temp_low: 12, temp_range: { low: 10, high: 24 },
+      pop_day: 55, pop_night: 20, pop_day_display: 55, pop_night_display: null,
+      icon_day: 12, icon_night: 30, feels_like_day: 26, feels_like_night: null,
+      amount_band: { low: 4.0, high: 9.0 },
+      sentence: { range_low: 10, range_high: 24, dominant_pop: 55, amount_band: { low: 4.0, high: 9.0 } },
+    }),
+    buildOutlookEntry(nowMs, 8, {
+      temp_high: 24, temp_low: 13, temp_range: { low: 11, high: 26 },
+      pop_day: 20, pop_night: 10, pop_day_display: null, pop_night_display: null,
+      icon_day: 1, icon_night: 30, feels_like_day: null, feels_like_night: null,
+      amount_band: null,
+      sentence: { range_low: 11, range_high: 26, dominant_pop: null, amount_band: null },
+    }),
+    buildOutlookEntry(nowMs, 9, {
+      temp_high: 26, temp_low: 14, temp_range: { low: 12, high: 28 },
+      pop_day: 40, pop_night: 15, pop_day_display: 40, pop_night_display: null,
+      icon_day: 2, icon_night: 33, feels_like_day: null, feels_like_night: null,
+      amount_band: null,
+      sentence: { range_low: 12, range_high: 28, dominant_pop: 40, amount_band: null },
+    }),
+    buildOutlookEntry(nowMs, 10, {
+      temp_high: 24, temp_low: 13, temp_range: { low: 10, high: 27 },
+      pop_day: 30, pop_night: 25, pop_day_display: 30, pop_night_display: null,
+      icon_day: 6, icon_night: 32, feels_like_day: null, feels_like_night: null,
+      amount_band: null,
+      sentence: { range_low: 10, range_high: 27, dominant_pop: 30, amount_band: null },
+    }),
+    buildOutlookEntry(nowMs, 11, {
+      temp_high: 27, temp_low: 15, temp_range: { low: 12, high: 30 },
+      pop_day: 20, pop_night: 10, pop_day_display: null, pop_night_display: null,
+      icon_day: 0, icon_night: 30, feels_like_day: 29, feels_like_night: null,
+      amount_band: null,
+      sentence: { range_low: 12, range_high: 30, dominant_pop: 20, amount_band: null },
+    }),
+    buildOutlookEntry(nowMs, 12, {
+      temp_high: 29, temp_low: 17, temp_range: { low: 14, high: 33 },
+      pop_day: 55, pop_night: 45, pop_day_display: 55, pop_night_display: 45,
+      icon_day: 6, icon_night: 36, feels_like_day: 32, feels_like_night: null,
+      amount_band: { low: 2, high: 7 },
+      sentence: { range_low: 14, range_high: 33, dominant_pop: 55, amount_band: { low: 2, high: 7 } },
+    }),
+    buildOutlookEntry(nowMs, 13, {
+      temp_high: 25, temp_low: 14, temp_range: { low: 10, high: 29 },
+      pop_day: 25, pop_night: 20, pop_day_display: null, pop_night_display: null,
+      icon_day: 2, icon_night: 33, feels_like_day: null, feels_like_night: null,
+      amount_band: null,
+      sentence: { range_low: 10, range_high: 29, dominant_pop: 25, amount_band: null },
+    }),
   ];
 }
 

@@ -8,7 +8,7 @@ of this store.
 Design principles:
 - One source of truth: no parallel data shapes
 - Append-only: new data enriches existing timesteps, never wipes them
-- HRDPS preferred: HRDPS data is not overwritten by GDPS
+- HRDPS preferred: HRDPS data is not overwritten by RDPS
 - SkyState survives: lazy-fetched SkyState persists across refreshes
 """
 
@@ -67,7 +67,7 @@ class TimestepData:
 
     # Internal (for icon derivation and cache management)
     sky_state: float | None = None
-    model: str | None = None  # "hrdps" or "gdps"
+    model: str | None = None  # "hrdps" or "rdps"
     model_run: str | None = None  # reference_datetime
 
     def to_dict(self) -> dict:
@@ -90,8 +90,10 @@ class TimestepData:
         }
 
 
-# Model preference: HRDPS > GDPS
-_MODEL_PRIORITY = {"hrdps": 2, "gdps": 1}
+# Model preference: HRDPS > RDPS > GEPS. Finer, nearer-term sources win where
+# they overlap the extended GEPS ensemble, so progressive refinement is
+# automatic — as a date nears, RDPS-WEonG overwrites the coarse GEPS synthesis.
+_MODEL_PRIORITY = {"hrdps": 3, "rdps": 2, "geps": 1}
 
 # Merge-eligible fields (all fields except time, which is the key)
 _MERGE_FIELDS = [
@@ -108,8 +110,8 @@ class TimestepStore:
 
     1. New non-None values overwrite existing values
     2. None values do NOT overwrite existing non-None values
-    3. HRDPS data is never overwritten by GDPS data
-    4. GDPS can fill in null fields of an existing HRDPS entry
+    3. HRDPS data is never overwritten by RDPS data
+    4. RDPS can fill in null fields of an existing HRDPS entry
     """
 
     def __init__(self) -> None:
@@ -128,8 +130,8 @@ class TimestepStore:
         If no entry exists for this timestamp, the new data is inserted.
         If an entry exists, fields are merged according to the rules:
         - None values in new don't overwrite existing non-None values
-        - GDPS doesn't overwrite existing HRDPS data
-        - GDPS can fill in null fields of an existing HRDPS entry
+        - RDPS doesn't overwrite existing HRDPS data
+        - RDPS can fill in null fields of an existing HRDPS entry
         """
         existing = self._entries.get(new.time)
         if existing is None:
@@ -140,8 +142,8 @@ class TimestepStore:
         existing_priority = _MODEL_PRIORITY.get(existing.model or "", 0)
         new_priority = _MODEL_PRIORITY.get(new.model or "", 0)
 
-        # If existing is HRDPS and new is GDPS, only fill null fields
-        gdps_filling_hrdps = (
+        # If existing is HRDPS and new is RDPS, only fill null fields
+        rdps_filling_hrdps = (
             existing_priority > new_priority
             and new.model is not None
             and existing.model is not None
@@ -154,17 +156,17 @@ class TimestepStore:
             if new_val is None:
                 continue  # Rule 2: None doesn't overwrite
 
-            if gdps_filling_hrdps:
-                # Rule 4: GDPS can only fill null fields
+            if rdps_filling_hrdps:
+                # Rule 4: RDPS can only fill null fields
                 if existing_val is not None and field_name != "model":
                     continue
-                # Don't overwrite model field with gdps
+                # Don't overwrite model field with the lower-priority model
                 if field_name == "model":
                     continue
                 setattr(existing, field_name, new_val)
             else:
                 # Rule 1: new non-None overwrites, or
-                # Rule 3: HRDPS overwrites GDPS
+                # Rule 3: HRDPS overwrites RDPS
                 setattr(existing, field_name, new_val)
 
     def merge_batch(self, entries: list[TimestepData]) -> None:
@@ -245,12 +247,13 @@ class TimestepStore:
         """Project the store into hourly output format.
 
         Returns dict keyed by ISO timestamp with weather data for
-        the hourly scroll. Only includes HRDPS entries (1h resolution)
-        since GDPS (3h) would create gaps in the hourly view.
+        the hourly scroll. Only includes HRDPS entries: the hourly strip is
+        the near-term high-resolution view, so far-day RDPS and extended GEPS
+        data are excluded.
         """
         result: dict[str, dict] = {}
         for ts_key, entry in self._entries.items():
-            if entry.model == "gdps":
-                continue  # Skip GDPS for hourly view
+            if entry.model in ("rdps", "geps"):
+                continue  # Skip far-day RDPS / extended GEPS for the hourly view
             result[ts_key] = entry.to_hourly_dict()
         return result

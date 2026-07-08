@@ -172,11 +172,11 @@ class TestStoreMerge:
         assert entry.temp == -3.0  # preserved
         assert entry.pop == 60  # enriched
 
-    def test_merge_hrdps_preferred_over_gdps(self):
-        """HRDPS data is preferred over GDPS for the same timestep."""
+    def test_merge_hrdps_preferred_over_rdps(self):
+        """HRDPS data is preferred over RDPS for the same timestep."""
         store = _make_store()
         store.merge(TimestepData(
-            time=_ts(12), temp=-3.0, model="gdps",
+            time=_ts(12), temp=-3.0, model="rdps",
         ))
         store.merge(TimestepData(
             time=_ts(12), temp=-5.0, model="hrdps",
@@ -186,33 +186,33 @@ class TestStoreMerge:
         assert entry.temp == -5.0
         assert entry.model == "hrdps"
 
-    def test_merge_gdps_does_not_overwrite_hrdps(self):
-        """GDPS data does NOT overwrite existing HRDPS data."""
+    def test_merge_rdps_does_not_overwrite_hrdps(self):
+        """RDPS data does NOT overwrite existing HRDPS data."""
         store = _make_store()
         store.merge(TimestepData(
             time=_ts(12), temp=-5.0, model="hrdps",
         ))
         store.merge(TimestepData(
-            time=_ts(12), temp=-3.0, model="gdps",
+            time=_ts(12), temp=-3.0, model="rdps",
         ))
 
         entry = store.get(_ts(12))
         assert entry.temp == -5.0  # HRDPS preserved
         assert entry.model == "hrdps"
 
-    def test_gdps_enriches_null_fields_of_hrdps(self):
-        """GDPS can fill in null fields of an existing HRDPS entry."""
+    def test_rdps_enriches_null_fields_of_hrdps(self):
+        """RDPS can fill in null fields of an existing HRDPS entry."""
         store = _make_store()
         store.merge(TimestepData(
             time=_ts(12), temp=-5.0, model="hrdps",
         ))
         store.merge(TimestepData(
-            time=_ts(12), pop=40, model="gdps",
+            time=_ts(12), pop=40, model="rdps",
         ))
 
         entry = store.get(_ts(12))
         assert entry.temp == -5.0  # HRDPS preserved
-        assert entry.pop == 40  # GDPS filled the gap
+        assert entry.pop == 40  # RDPS filled the gap
         assert entry.model == "hrdps"  # model stays as preferred
 
     def test_merge_multiple_timesteps(self):
@@ -405,15 +405,15 @@ class TestHourlyProjection:
         assert entry["ice_pellet_cm"] == 0.3
 
     def test_hourly_only_hrdps(self):
-        """Hourly projection includes only HRDPS entries (1h resolution)."""
+        """Hourly projection includes only HRDPS entries (far-day models excluded)."""
         store = _make_store()
         store.merge(TimestepData(time=_ts(12), temp=-3.0, model="hrdps"))
-        store.merge(TimestepData(time=_ts(15), temp=-5.0, model="gdps"))
+        store.merge(TimestepData(time=_ts(15), temp=-5.0, model="rdps"))
 
         hourly = store.project_hourly()
 
         assert _ts(12) in hourly
-        assert _ts(15) not in hourly  # GDPS excluded from hourly
+        assert _ts(15) not in hourly  # RDPS excluded from hourly
 
 
 # ---------------------------------------------------------------------------

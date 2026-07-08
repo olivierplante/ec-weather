@@ -23,6 +23,7 @@ Settings → Integrations → EC Weather → Configure.
 | AQHI station ID | Closest air quality station |
 | Polling mode | Controls background polling vs on-demand refresh. See [Polling & API usage](polling.md) |
 | Refresh intervals | Per-data-type cadence (weather, AQHI, forecast detail) |
+| Extended 14-day forecast | Off by default. Adds 7 dimmed outlook days past the official EC forecast. The extra days are less precise estimates from longer-range models. |
 
 The integration reloads itself when you save.
 

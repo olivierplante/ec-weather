@@ -363,3 +363,337 @@ describe("sun cell — day/night loop", () => {
     expect(html).not.toContain("below the horizon");
   });
 });
+
+// ── Extended forecast (Phase D): outlook rows + summary popups ─────────────
+
+// The first 7 official days plus GEPS outlook rows appended after them. The
+// wet outlook day carries an amount band and a full sentence; the dry one has
+// a temperature-only sentence (dominant_pop null); the third has a pop but no
+// amount band (chance band, no ">= 50" amount line).
+const EXT_FORECAST = [
+  { period: "Today", date: "2026-07-04", icon_code: 12, icon_code_night: 33, temp_high: 24, temp_low: 17, precip_prob_day: 70, rain_mm_day: 8 },
+  { period: "Sunday", date: "2026-07-05", icon_code: 0, icon_code_night: 30, temp_high: 29, temp_low: 16, precip_prob_day: 0 },
+  { period: "Monday", date: "2026-07-06", icon_code: 2, icon_code_night: 33, temp_high: 30, temp_low: 17, precip_prob_day: 20 },
+  { period: "Tuesday", date: "2026-07-07", icon_code: 12, icon_code_night: 12, temp_high: 22, temp_low: 15, precip_prob_day: 80, rain_mm_day: 12 },
+  { period: "Wednesday", date: "2026-07-08", icon_code: 1, icon_code_night: 30, temp_high: 26, temp_low: 13, precip_prob_day: 0 },
+  { period: "Thursday", date: "2026-07-09", icon_code: 0, icon_code_night: 30, temp_high: 28, temp_low: 14, precip_prob_day: 0 },
+  { period: "Friday", date: "2026-07-10", icon_code: 2, icon_code_night: 33, temp_high: 27, temp_low: 15, precip_prob_day: 30 },
+  // Outlook day 8 — wet, amount band, full sentence, feels-like on the day half.
+  {
+    period: "2026-07-11", date: "2026-07-11", source: "outlook", timesteps_state: "outlook",
+    temp_low: 12, temp_high: 22, temp_range: { low: 10, high: 24 },
+    pop_day: 55, pop_night: 20, pop_day_display: 55, pop_night_display: null,
+    icon_day: 12, icon_night: 30, feels_like_day: 26, feels_like_night: null,
+    amount_band: { low: 4, high: 9 },
+    sentence: { range_low: 10, range_high: 24, dominant_pop: 55, amount_band: { low: 4, high: 9 } },
+  },
+  // Outlook day 9 — dry, POP hidden both halves, temperature-only sentence.
+  {
+    period: "2026-07-12", date: "2026-07-12", source: "outlook", timesteps_state: "outlook",
+    temp_low: 13, temp_high: 23, temp_range: { low: 11, high: 25 },
+    pop_day: 20, pop_night: 10, pop_day_display: null, pop_night_display: null,
+    icon_day: 1, icon_night: 30, feels_like_day: null, feels_like_night: null,
+    amount_band: null,
+    sentence: { range_low: 11, range_high: 25, dominant_pop: null, amount_band: null },
+  },
+  // Outlook day 10 — chance band (pop 40, shown), no amount band and no
+  // ">= 50" amount line.
+  {
+    period: "2026-07-13", date: "2026-07-13", source: "outlook", timesteps_state: "outlook",
+    temp_low: 14, temp_high: 24, temp_range: { low: 12, high: 26 },
+    pop_day: 40, pop_night: 15, pop_day_display: 40, pop_night_display: null,
+    icon_day: 2, icon_night: 33, feels_like_day: null, feels_like_night: null,
+    amount_band: null,
+    sentence: { range_low: 12, range_high: 26, dominant_pop: 40, amount_band: null },
+  },
+];
+
+const renderExt = () => {
+  const card = document.createElement("ec-weather-card");
+  card.setConfig({ section: "daily" });
+  const hass = buildHass();
+  hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast: EXT_FORECAST });
+  card.hass = hass;
+  return card;
+};
+
+describe("extended forecast — outlook daily rows", () => {
+  it("appends muted outlook rows after the official seven", () => {
+    const rows = renderExt().shadowRoot.querySelectorAll(".drow");
+    expect(rows).toHaveLength(10);
+    // The first 7 are official (no outlook class), the last 3 are outlook.
+    for (let i = 0; i < 7; i++) expect(rows[i].classList.contains("drow-outlook")).toBe(false);
+    for (let i = 7; i < 10; i++) expect(rows[i].classList.contains("drow-outlook")).toBe(true);
+  });
+
+  it("renders no caption between official and outlook rows (removed by user decision)", () => {
+    const root = renderExt().shadowRoot;
+    expect(root.querySelectorAll(".doutlook-sep")).toHaveLength(0);
+    expect(root.innerHTML).not.toContain("Model outlook");
+  });
+
+  it("labels outlook rows by weekday derived from the date, not the ISO period", () => {
+    const rows = renderExt().shadowRoot.querySelectorAll(".drow");
+    // 2026-07-11 is a Saturday.
+    expect(rows[7].querySelector(".dday").textContent).toBe("Sat");
+    expect(rows[7].querySelector(".dday").textContent).not.toContain("2026");
+  });
+
+  it("draws outlook icons from icon_day/icon_night (not icon_code)", () => {
+    const rows = renderExt().shadowRoot.querySelectorAll(".drow");
+    // icon_day 12 → rainy, icon_night 30 → night.
+    const icons = rows[7].querySelectorAll(".dicons ha-icon");
+    expect(icons[0].getAttribute("icon")).toBe("mdi:weather-rainy");
+    expect(icons[1].getAttribute("icon")).toBe("mdi:weather-night");
+  });
+
+  it("shows POP only from *_display (max of the two), no amounts in the row", () => {
+    const rows = renderExt().shadowRoot.querySelectorAll(".drow");
+    // Day 8: pop_day_display 55, night hidden → 55%.
+    expect(rows[7].querySelector(".dprecip").textContent).toContain("55%");
+    // No mm/cm amounts in the outlook row even though a band exists.
+    expect(rows[7].textContent).not.toContain("mm");
+    // Day 9: both displays null → empty precip column.
+    expect(rows[8].querySelector(".dprecip").textContent).toBe("");
+  });
+
+  it("outlook temps join the same week min/max scale (bars still render)", () => {
+    const rows = renderExt().shadowRoot.querySelectorAll(".drow");
+    expect(rows[7].querySelector(".dspan")).not.toBeNull();
+    expect(rows[7].querySelector(".dhigh").textContent).toBe("22°");
+    expect(rows[7].querySelector(".dlow").textContent).toBe("12°");
+  });
+
+  it("the section header becomes a dynamic outlook label when outlook rows exist", () => {
+    const root = renderExt().shadowRoot;
+    expect(root.querySelector(".seclbl").textContent).toBe("10-day");
+  });
+
+  it("the official-only header stays '7-day'", () => {
+    const root = renderSection("daily");
+    expect(root.querySelector(".seclbl").textContent).toBe("7-day");
+  });
+});
+
+describe("extended forecast — outlook summary popup", () => {
+  const popups = () => renderExt()._dailyPopups;
+
+  it("renders a summary view: badge, sentence, day/night boxes, footnote — no timeline", () => {
+    const wet = popups()[7].content;
+    expect(wet).toContain("ecp-badge");
+    expect(wet).toContain("Outlook");
+    // Full sentence with pop + amount clause.
+    expect(wet).toContain("Likely 10-24°");
+    expect(wet).toContain("around 55% chance of rain");
+    expect(wet).toContain("4-9 mm possible");
+    // Slimmed Day/Night boxes present.
+    expect(wet).toContain("ecp-periods");
+    // Footnote about model ensembles.
+    expect(wet).toContain("model ensembles");
+    // No timeline / no placeholder / no chart. (ecp-noh lives in the shared
+    // popup CSS, so assert the placeholder ELEMENT is absent, not the class.)
+    expect(wet).not.toContain('class="ecp-noh"');
+    expect(wet).not.toContain("<svg");
+    expect(wet).not.toContain("Timeline");
+  });
+
+  it("Day box carries the high median + feels-like; POP always shown", () => {
+    const wet = popups()[7].content;
+    // Day median high 22°, feels-like 26° (differs → shown).
+    expect(wet).toContain("22°");
+    expect(wet).toContain("Feels like 26°");
+    // Raw per-half POP shown even when the row hid the night POP.
+    expect(wet).toContain("55%");
+    expect(wet).toContain("20%");
+  });
+
+  it("amount band line only appears for a half with pop >= 50", () => {
+    const wet = popups()[7].content;
+    // Day pop 55 → amount band line; the compact chip form.
+    expect(wet).toContain("4-9mm");
+  });
+
+  it("dry outlook day → temperature-only sentence, no pop/amount clause", () => {
+    const dry = popups()[8].content;
+    expect(dry).toContain("Likely 11-25°");
+    expect(dry).not.toContain("chance of rain");
+    expect(dry).not.toContain("possible");
+  });
+
+  it("chance-band outlook day → pop clause but no amount clause", () => {
+    const chance = popups()[9].content;
+    expect(chance).toContain("around 40% chance of rain");
+    expect(chance).not.toContain("possible");
+    // pop 40 < 50 → no amount band line even if one existed.
+    expect(chance).not.toContain("mm possible");
+  });
+
+  it("outlook popup title is the weekday, with a localized date line", () => {
+    const wet = popups()[7].content;
+    // 2026-07-11 is a Saturday.
+    expect(wet).toContain("Saturday");
+    expect(wet).toContain("Jul 11");
+  });
+});
+
+// ── Refinement 1 — skeleton outlook rows on enable ─────────────────────────
+
+// Two official days plus two SKELETON outlook rows (source outlook + pending,
+// no temps/icons/sentence) — what the projection emits right after enabling,
+// before the outlook fetch lands.
+const SKELETON_FORECAST = [
+  { period: "Today", date: "2026-07-04", icon_code: 12, icon_code_night: 33, temp_high: 24, temp_low: 17 },
+  { period: "Sunday", date: "2026-07-05", icon_code: 0, icon_code_night: 30, temp_high: 29, temp_low: 16 },
+  { date: "2026-07-11", source: "outlook", pending: true },  // Saturday
+  { date: "2026-07-12", source: "outlook", pending: true },  // Sunday
+];
+
+const renderSkeleton = () => {
+  const card = document.createElement("ec-weather-card");
+  card.setConfig({ section: "daily" });
+  const hass = buildHass();
+  hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast: SKELETON_FORECAST });
+  card.hass = hass;
+  return card;
+};
+
+describe("extended forecast — skeleton outlook rows", () => {
+  it("renders skeleton rows muted with a weekday label", () => {
+    const rows = renderSkeleton().shadowRoot.querySelectorAll(".drow");
+    expect(rows).toHaveLength(4);
+    // Both skeletons carry the muted outlook class.
+    expect(rows[2].classList.contains("drow-outlook")).toBe(true);
+    expect(rows[3].classList.contains("drow-outlook")).toBe(true);
+    // Weekday derived from the ISO date (2026-07-11 is a Saturday).
+    expect(rows[2].querySelector(".dday").textContent).toBe("Sat");
+    expect(rows[2].querySelector(".dday").textContent).not.toContain("2026");
+  });
+
+  it("skeleton rows show no icons (not even the missing-icon glyph)", () => {
+    const skel = renderSkeleton().shadowRoot.querySelectorAll(".drow")[2];
+    // The icon cell exists but is empty — no ha-icon, no missing-icon SVG/glyph.
+    expect(skel.querySelectorAll(".dicons ha-icon")).toHaveLength(0);
+    expect(skel.querySelector(".dicons").innerHTML.trim()).toBe("");
+  });
+
+  it("skeleton rows show no temps, no POP, just the empty bar track", () => {
+    const skel = renderSkeleton().shadowRoot.querySelectorAll(".drow")[2];
+    expect(skel.querySelector(".dlow").textContent).toBe("");
+    expect(skel.querySelector(".dhigh").textContent).toBe("");
+    expect(skel.querySelector(".dprecip").textContent).toBe("");
+    // Empty range-bar track (no span/dot mark) so the row reads as "loading".
+    expect(skel.querySelector(".dbar")).not.toBeNull();
+    expect(skel.querySelector(".dspan")).toBeNull();
+    expect(skel.querySelector(".ddot")).toBeNull();
+  });
+
+  it("skeleton rows have no popup wiring (no popup built for them)", () => {
+    const popups = renderSkeleton()._dailyPopups;
+    // Real day 0 has a popup; skeleton rows do not.
+    expect(popups[0]).toBeTruthy();
+    expect(popups[2]).toBeNull();
+    expect(popups[3]).toBeNull();
+  });
+});
+
+// ── Refinement 2 — day-7 overnight-low backfill renders normally ───────────
+
+describe("extended forecast — backfilled last official day", () => {
+  it("a last official day whose overnight low was backfilled renders a normal row", () => {
+    // merge_weong_into_daily has already filled temp_low from the GEPS trough;
+    // the card just renders the row like any other (no card change needed).
+    const forecast = [
+      { period: "Today", date: "2026-07-04", icon_code: 12, icon_code_night: 33, temp_high: 24, temp_low: 17 },
+      // Last official day: high published, low BACKFILLED to 11, night POP 40.
+      { period: "Friday", date: "2026-07-10", icon_code: 2, icon_code_night: 33, temp_high: 27, temp_low: 11, precip_prob_night: 40 },
+    ];
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "daily" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast });
+    card.hass = hass;
+    const rows = card.shadowRoot.querySelectorAll(".drow");
+    // The backfilled low renders like any official low; a real range bar spans.
+    expect(rows[1].querySelector(".dlow").textContent).toBe("11°");
+    expect(rows[1].querySelector(".dhigh").textContent).toBe("27°");
+    expect(rows[1].querySelector(".dspan")).not.toBeNull();
+    // Not an outlook row — it stays a normal official row (popup built).
+    expect(rows[1].classList.contains("drow-outlook")).toBe(false);
+    expect(card._dailyPopups[1]).toBeTruthy();
+  });
+});
+
+describe("extended forecast — GEPS far-day (4-6) popup timeline", () => {
+  // A day with 3h GEPS timesteps (amounts null) + precip_windows: the popup
+  // timeline shows the window-spanning amount vessels and stepwise POP.
+  const GEPS_FORECAST = [
+    { period: "Today", date: "2026-07-04", icon_code: 12, icon_code_night: 33, temp_high: 24, temp_low: 17 },
+    {
+      period: "Thursday", date: "2026-07-09", icon_code: 12, icon_code_night: 33,
+      temp_high: 23, temp_low: 15, timesteps_state: "loaded",
+      timesteps_day: [
+        { time: "2026-07-09T12:00:00Z", temp: 22, icon_code: 12, precipitation_probability: 60, rain_mm: null, snow_cm: null },
+        { time: "2026-07-09T15:00:00Z", temp: 23, icon_code: 12, precipitation_probability: 60, rain_mm: null, snow_cm: null },
+        { time: "2026-07-09T18:00:00Z", temp: 21, icon_code: 6, precipitation_probability: 50, rain_mm: null, snow_cm: null },
+        { time: "2026-07-09T21:00:00Z", temp: 19, icon_code: 30, precipitation_probability: 20, rain_mm: null, snow_cm: null },
+      ],
+      timesteps_night: [],
+      precip_windows: [
+        { start: "2026-07-09T12:00:00Z", end: "2026-07-10T00:00:00Z", pop: 60, amount_p25: 4.0, amount_p75: 9.0 },
+      ],
+    },
+  ];
+
+  const gepsPopups = () => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "daily" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast: GEPS_FORECAST });
+    card.hass = hass;
+    return card._dailyPopups;
+  };
+
+  it("renders the spanning amount vessel and the stepwise POP in the popup", () => {
+    const content = gepsPopups()[1].content;
+    // Spanning window vessel with the amount band label.
+    expect(content).toContain("ecs-wfillzone");
+    expect(content).toContain("ecs-wvessel");
+    expect(content).toContain("4-9mm");
+    // Stepwise per-timestep POP still renders in the cluster (60% present).
+    expect(content).toContain("60%");
+    // The timeline chart is still present (it's a real timeline day).
+    expect(content).toContain("<svg");
+    // No per-column water-fill vessels (amounts are null on GEPS days).
+    // (ecs-fillcol lives in STRIP_CSS, so assert the ELEMENT is absent.)
+    expect(content).not.toContain('class="ecs-fillcol"');
+  });
+});
+
+describe("popup timeline day/night bands (halves mode)", () => {
+  // Every non-empty day-label in a strip, in order.
+  const bandLabels = (html) =>
+    [...html.matchAll(/<div class="ecs-daylbl"[^>]*>([^<]*)<\/div>/g)]
+      .map((m) => m[1])
+      .filter(Boolean);
+
+  // The popup segments its timeline at the 6/18 boundaries (mirroring the
+  // Day/Night boxes) rather than at midnight — so it carries DAY / NIGHT
+  // titles, never a calendar date label (user feedback 2026-07-09).
+  it("popup timeline renders day/night bands with a DAY title, not a midnight date", () => {
+    const card = renderCard("daily");
+    const popup = card._dailyPopups[5];
+    expect(popup?.content).toBeTruthy();
+    expect(popup.content).toContain("ecs-tints");
+    expect(popup.content).toContain("ecs-labels");
+    // Popup 5's timesteps are both daytime hours → a single DAY segment.
+    expect(bandLabels(popup.content)).toEqual(["DAY"]);
+    // No calendar date label (e.g. "THU 9") leaks into the strip.
+    expect(bandLabels(popup.content).some((label) => /\d/.test(label))).toBe(false);
+  });
+
+  it("main hourly section still carries its calendar (weekday + date) labels", () => {
+    const root = renderSection("hourly");
+    // The card's rolling-days strip keeps the calendar labels unchanged.
+    expect(bandLabels(root.innerHTML)).toContain("SAT 4");
+  });
+});

@@ -14,8 +14,23 @@ Environment Canada's APIs are free and open, paid for with public money. The int
 
 After the first load, queries are served from cache until EC publishes a new model run:
 
-- HRDPS (high-resolution, 2.5 km): every 6 hours
-- GDPS (global, 15 km): every 12 hours
+- HRDPS-WEonG (high-resolution, 2.5 km, to 48h): every 6 hours
+- RDPS-WEonG (regional, 10 km, to 84h): every 6 hours
+- GEPS ensemble (extended days 4-6, 3-hour popup steps): every 12 hours (00Z and 12Z runs, ~5-6 hour publish lag)
+
+The GEPS extended wave runs beside the WEonG sweep and fills the day 4-6 popup timelines that the deterministic 84-hour horizon cannot reach. Its 12-hour cache means one extended fetch per GEPS run, not one per WEonG refresh, so it adds no extra load on Minimal or Efficient. GEPS days are also fetched on demand when you open a day 4-6 popup.
+
+## Outlook query counts (forecast range)
+
+When the forecast range is set past 7 days, each GEPS run also fetches the outlook days (the muted rows beyond day 7). GEPS runs twice a day (00Z and 12Z), and the 12-hour cache means these counts are per run, not per refresh.
+
+| Forecast range | Extra GEPS outlook queries per run |
+|---|---|
+| 7 days (default) | none |
+| 10 days | ~30-54 (3 outlook days) |
+| 14 days | ~70+ (7 outlook days) |
+
+Each outlook day costs about ten queries (temperature medians and the warm/cold band, humidex, cloud, and two 12-hour POP windows), plus a few more for the amount band and precip type when a half-day is wet. The counts only apply to the users who opt into 10 or 14 days.
 
 ## Polling modes
 
