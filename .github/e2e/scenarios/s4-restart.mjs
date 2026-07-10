@@ -32,6 +32,71 @@ const RESTORE_LOG_MARKER = "restored forecast cache";
 // store file exists, one debounce-sized beat lets the final write settle.
 const STORAGE_SAVE_DELAY_MS = 5000;
 
+// ---------------------------------------------------------------------------
+// Failure diagnostics. async_restore (coordinator/weong.py ~931-1011) has FOUR
+// outcomes:
+//   (a) "persisted forecast cache unreadable"    INFO — read/parse failure
+//   (b) "persisted forecast cache schema X != Y" INFO — schema mismatch
+//   (c) SILENT return — payload falsy (no file / empty)
+//   (d) "restored forecast cache"                INFO — success (asserted)
+// The assertion greps only for (d); when it fails, dump every relevant log
+// line plus a marker summary so the CI run shows WHICH path executed —
+// (a)/(b), the silent (c), or a failed integration setup — instead of guessing.
+// ---------------------------------------------------------------------------
+
+const DIAGNOSTIC_LINE_PATTERN =
+  /ec_weather|EC WEonG|Error setting up|ConfigEntryNotReady|Traceback/i;
+const DIAGNOSTIC_MAX_LINES = 300;
+
+// name -> exact substring. First three from coordinator/weong.py; the last is
+// HA core's component-setup INFO line (homeassistant.setup "Setting up %s").
+const KNOWN_MARKERS = [
+  ["unreadable(a)", "persisted forecast cache unreadable"],
+  ["schema-mismatch(b)", "persisted forecast cache schema"],
+  ["restored(d)", RESTORE_LOG_MARKER],
+  ["component-setup", "Setting up ec_weather"],
+];
+
+/**
+ * Print a clearly-delimited diagnostic dump: relevant container log lines
+ * (capped, tail-biased — post-restart output is at the end), a one-line
+ * summary of which known markers WERE found, and the .storage listing (names
+ * only) so the store file's post-restart state is visible. Diagnostics only —
+ * never throws, never changes assertion outcomes.
+ */
+async function dumpRestartDiagnostics(ctx, label) {
+  const { log } = ctx;
+  log(`========== S4 DIAGNOSTICS: ${label} ==========`);
+  let logs = "";
+  try {
+    logs = await containerLogs(ctx.container.name);
+  } catch (error) {
+    log(`diagnostics: could not read container logs (${error.message})`);
+  }
+
+  const matchingLines = logs
+    .split("\n")
+    .filter((line) => DIAGNOSTIC_LINE_PATTERN.test(line));
+  const shown = matchingLines.slice(-DIAGNOSTIC_MAX_LINES);
+  if (matchingLines.length > shown.length) {
+    log(
+      `diagnostics: ${matchingLines.length - shown.length} earlier matching `
+      + `line(s) omitted (cap ${DIAGNOSTIC_MAX_LINES})`,
+    );
+  }
+  for (const line of shown) log(`| ${line}`);
+
+  const summary = KNOWN_MARKERS
+    .map(([name, marker]) => `${name}=${logs.includes(marker) ? "FOUND" : "absent"}`)
+    .join("  ");
+  log(`marker summary: ${summary}`);
+
+  const storageEntries = await readdir(join(ctx.configDir, ".storage"))
+    .catch((error) => [`<unreadable: ${error.message}>`]);
+  log(`.storage listing: ${storageEntries.join(", ") || "<empty>"}`);
+  log("========== END S4 DIAGNOSTICS ==========");
+}
+
 /**
  * Pure: true when a .storage entry is the integration's persistent forecast
  * cache. coordinator/weong.py: Store(hass, STORAGE_VERSION,
@@ -135,6 +200,9 @@ export async function run(ctx) {
     (logs) => typeof logs === "string" && logs.includes(RESTORE_LOG_MARKER),
     { timeoutMs: 90000, intervalMs: 3000 },
   );
+  if (!restoreLogged.ok) {
+    await dumpRestartDiagnostics(ctx, "restore-marker poll timed out (90s)");
+  }
   assert(
     restoreLogged.ok,
     `S4: cache-restore log line ("${RESTORE_LOG_MARKER}") not found within 90s of restart`,
@@ -145,6 +213,9 @@ export async function run(ctx) {
   // waitForForecast already polls generously (120s, tolerating the entity
   // being absent until setup finishes), so it rides out integration startup.
   const afterBoot = await waitForForecast(client, dailyId, 120000);
+  if (!afterBoot.ok) {
+    await dumpRestartDiagnostics(ctx, "forecast did not repopulate (120s)");
+  }
   assert(afterBoot.ok, "S4: daily forecast did not repopulate after restart");
 
   const tempResult = await pollUntil(
