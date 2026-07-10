@@ -36,7 +36,7 @@ from .coordinator import (
     ECWEonGCoordinator,
     WEonGListenerMixin,
 )
-from .models import ECWeatherData, build_device_info
+from .models import ECWeatherData, build_device_info, migrate_short_entity_ids
 from .transforms import (
     build_unified_hourly,
     extract_today_pop,
@@ -255,6 +255,10 @@ class ECCurrentSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{description.key}_{city_code}"
+        # Pin the entity_id to the short form the card reads. Without this,
+        # has_entity_name prefixes the device slug, producing
+        # sensor.ec_weather_<city>_... which the card can't find.
+        self.entity_id = f"sensor.{description.key}"
         self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
@@ -302,6 +306,9 @@ class ECHourlyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoor
     ) -> None:
         super().__init__(weather_coordinator)
         self._attr_unique_id = f"ec_hourly_forecast_{city_code}"
+        # Pin the entity_id to the short form the card reads (avoids the
+        # device-prefixed default from has_entity_name).
+        self.entity_id = "sensor.ec_hourly_forecast"
         self._weong_coordinator = weong_coordinator
         self._attr_device_info = build_device_info(city_code, city_name)
         self._language = language
@@ -366,6 +373,9 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
     ) -> None:
         super().__init__(weather_coordinator)
         self._attr_unique_id = f"ec_daily_forecast_{city_code}"
+        # Pin the entity_id to the short form the card reads (avoids the
+        # device-prefixed default from has_entity_name).
+        self.entity_id = "sensor.ec_daily_forecast"
         self._weong_coordinator = weong_coordinator
         self._attr_device_info = build_device_info(city_code, city_name)
         self._language = language
@@ -508,6 +518,9 @@ class ECAQHISensor(CoordinatorEntity[ECAQHICoordinator], SensorEntity):
     def __init__(self, coordinator: ECAQHICoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_aqhi_{city_code}"
+        # Pin the entity_id to the short form the card reads (avoids the
+        # device-prefixed default from has_entity_name).
+        self.entity_id = "sensor.ec_air_quality"
         self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
@@ -610,6 +623,9 @@ class ECAlertsSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
     def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_alerts_{city_code}"
+        # Pin the entity_id to the short form the card reads (avoids the
+        # device-prefixed default from has_entity_name).
+        self.entity_id = "sensor.ec_alerts"
         self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
@@ -773,10 +789,10 @@ async def async_setup_entry(
                 ECYesterdayPrecipSensor(data.climate, key, city_code, city_name)
             )
 
-    # Migrate any device-prefixed precip/pop entity_ids from earlier builds to
-    # the short ids the card reads, then remove sensors orphaned by a
-    # station-type change or opt-out (HA doesn't auto-remove those).
-    _migrate_precip_entity_ids(hass, city_code)
+    # Migrate any device-prefixed entity_ids from earlier builds to the short
+    # ids the card reads, then remove sensors orphaned by a station-type change
+    # or opt-out (HA doesn't auto-remove those).
+    migrate_short_entity_ids(hass, "sensor", _short_entity_id_map(city_code))
     _remove_stale_precip_entities(hass, station_type, city_code)
 
     async_add_entities(entities)
@@ -796,33 +812,22 @@ def _remove_stale_precip_entities(
             _LOGGER.debug("Removed stale precip entity %s", entity_id)
 
 
-# unique_id slug -> desired short entity_id, for entities the card reads by a
-# fixed id. Earlier builds registered these with a device-prefixed entity_id
+# unique_id slug -> desired short entity_id, for every sensor the card reads by
+# a fixed id. Earlier builds registered these with a device-prefixed entity_id
 # (sensor.ec_weather_<city>_...), which the card can't find; migrate them.
 def _short_entity_id_map(city_code: str) -> dict[str, str]:
-    keys = {
-        "ec_precip_probability_today": "sensor.ec_precip_probability_today",
-        "ec_yesterday_rain": "sensor.ec_yesterday_rain",
-        "ec_yesterday_snow": "sensor.ec_yesterday_snow",
-        "ec_yesterday_precipitation": "sensor.ec_yesterday_precipitation",
-    }
+    slugs = [description.key for description in CURRENT_SENSOR_DESCRIPTIONS]
+    keys = {slug: f"sensor.{slug}" for slug in slugs}
+    keys.update(
+        {
+            "ec_hourly_forecast": "sensor.ec_hourly_forecast",
+            "ec_daily_forecast": "sensor.ec_daily_forecast",
+            "ec_aqhi": "sensor.ec_air_quality",
+            "ec_alerts": "sensor.ec_alerts",
+            "ec_precip_probability_today": "sensor.ec_precip_probability_today",
+            "ec_yesterday_rain": "sensor.ec_yesterday_rain",
+            "ec_yesterday_snow": "sensor.ec_yesterday_snow",
+            "ec_yesterday_precipitation": "sensor.ec_yesterday_precipitation",
+        }
+    )
     return {f"{slug}_{city_code}": eid for slug, eid in keys.items()}
-
-
-def _migrate_precip_entity_ids(hass: HomeAssistant, city_code: str) -> None:
-    """Rename registry entities stuck on device-prefixed ids to the short form.
-
-    entity_id is only honoured at first registration, so entities created by
-    an earlier build keep their old id. Rename them to the id the card reads.
-    """
-    from homeassistant.helpers import entity_registry as er
-
-    registry = er.async_get(hass)
-    for unique_id, desired in _short_entity_id_map(city_code).items():
-        current = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
-        if not current or current == desired:
-            continue
-        # Only rename if the target id is free, to avoid collisions.
-        if registry.async_get(desired) is None:
-            registry.async_update_entity(current, new_entity_id=desired)
-            _LOGGER.debug("Migrated %s -> %s", current, desired)

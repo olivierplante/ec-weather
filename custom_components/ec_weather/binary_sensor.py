@@ -10,7 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_CITY_CODE, CONF_CITY_NAME, DOMAIN
 from .coordinator import ECAlertCoordinator
-from .models import ECWeatherData, build_device_info
+from .models import ECWeatherData, build_device_info, migrate_short_entity_ids
 
 
 class ECAlertActiveSensor(CoordinatorEntity[ECAlertCoordinator], BinarySensorEntity):
@@ -27,6 +27,10 @@ class ECAlertActiveSensor(CoordinatorEntity[ECAlertCoordinator], BinarySensorEnt
     def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"ec_alert_active_{city_code}"
+        # Pin the entity_id to the short form the card reads. Without this,
+        # has_entity_name prefixes the device slug, producing
+        # binary_sensor.ec_weather_<city>_... which the card can't find.
+        self.entity_id = "binary_sensor.ec_alert_active"
         self._attr_device_info = build_device_info(city_code, city_name)
 
     @property
@@ -45,4 +49,11 @@ async def async_setup_entry(
     data: ECWeatherData = hass.data[DOMAIN][entry.entry_id]
     city_code = entry.data[CONF_CITY_CODE]
     city_name = entry.data.get(CONF_CITY_NAME, city_code)
+    # Migrate any device-prefixed entity_id from earlier builds to the short
+    # id the card reads.
+    migrate_short_entity_ids(
+        hass,
+        "binary_sensor",
+        {f"ec_alert_active_{city_code}": "binary_sensor.ec_alert_active"},
+    )
     async_add_entities([ECAlertActiveSensor(data.alerts, city_code, city_name)])

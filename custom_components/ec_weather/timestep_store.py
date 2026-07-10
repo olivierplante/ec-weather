@@ -89,6 +89,25 @@ class TimestepData:
             "precipitation_probability": self.pop,
         }
 
+    def to_storage_dict(self) -> dict:
+        """Serialize every field (including internal model/model_run/sky_state).
+
+        Distinct from ``to_dict``: that one strips internals for card output;
+        this one round-trips the full dataclass through JSON for the persistent
+        cache. All fields are str/float/int/None, so the result is JSON-safe.
+        """
+        return {field.name: getattr(self, field.name) for field in fields(self)}
+
+    @classmethod
+    def from_storage_dict(cls, data: dict) -> "TimestepData":
+        """Rebuild a TimestepData from ``to_storage_dict`` output.
+
+        Unknown keys (a future schema minor add) are ignored so an older reader
+        does not crash; ``time`` is required and always present.
+        """
+        known = {field.name for field in fields(cls)}
+        return cls(**{key: value for key, value in data.items() if key in known})
+
 
 # Model preference: HRDPS > RDPS > GEPS. Finer, nearer-term sources win where
 # they overlap the extended GEPS ensemble, so progressive refinement is
@@ -179,6 +198,20 @@ class TimestepStore:
         stale_keys = [k for k in self._entries if k < cutoff]
         for key in stale_keys:
             del self._entries[key]
+
+    def to_storage_list(self) -> list[dict]:
+        """Serialize all entries for the persistent cache (unordered)."""
+        return [entry.to_storage_dict() for entry in self._entries.values()]
+
+    def load_storage_list(self, items: list[dict]) -> None:
+        """Restore entries from ``to_storage_list`` output.
+
+        Keys are unique per timestamp, so entries are inserted directly. Called
+        on an empty store at restore time.
+        """
+        for item in items:
+            entry = TimestepData.from_storage_dict(item)
+            self._entries[entry.time] = entry
 
     def project_periods(
         self,

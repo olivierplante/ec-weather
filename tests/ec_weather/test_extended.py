@@ -738,6 +738,73 @@ class TestCoordinatorFetchOutlook:
         assert coord._outlook == {}
         assert captured == []  # no GEPS queries at all in mode 7
 
+    @freeze_time("2026-07-07T12:00:00Z")
+    async def test_half_built_outlook_day_keeps_skeleton(self, hass: HomeAssistant):
+        """An outlook day missing a temp median after its fetch must NOT become a
+        data row — it stays absent from _outlook so the projection re-emits the
+        pending skeleton and the next wave retries it (F3)."""
+        coord = ECWEonGCoordinator(
+            hass, MOCK_CONFIG_DATA["geomet_bbox"], forecast_days=10,
+        )
+
+        def _mock_missing_high(captured: list):
+            # Every layer answers EXCEPT the day-rep TT p50 (the high median),
+            # so build_outlook_entry yields temp_high=None -> half-built.
+            layer_values = {
+                GEPS_POP_12H: 55,
+                GEPS_TEMPERATURE_P25: 11.0,
+                GEPS_TEMPERATURE_P50: 20.0,
+                GEPS_TEMPERATURE_P75: 27.0,
+                GEPS_HUMIDEX_P50: 26.0,
+                GEPS_CLOUD_P50: 70.0,
+            }
+
+            async def _execute(queries, now_ts, session, semaphore):
+                results = []
+                for layer, ts, key in queries:
+                    value = layer_values.get(layer)
+                    # Drop the daytime-high median for every outlook day.
+                    if layer == GEPS_TEMPERATURE_P50 and ts.hour in (18, 19, 20):
+                        value = None
+                    results.append((layer, ts, key, value))
+                return results, 0, len(results)
+
+            return _execute
+
+        coord._execute_queries = _mock_missing_high([])
+        await coord._fetch_outlook(TODAY, 0.0, None, None, ET)
+
+        # No half-built rows landed; projection re-emits pending skeletons.
+        output = coord._project_output(DAY5_PERIODS)
+        outlook_by_date = {e["date"]: e for e in output["outlook"]}
+        for date_str in ("2026-07-14", "2026-07-15", "2026-07-16"):
+            entry = outlook_by_date[date_str]
+            assert entry.get("pending") is True
+            assert "temp_high" not in entry
+
+    async def test_day7_backfill_absent_when_queries_fail(self, hass: HomeAssistant):
+        """When the two backfill queries return nothing, the payload carries None
+        temps/POP and the merge fills nothing (F3: absent, never a fake value)."""
+        coord = ECWEonGCoordinator(
+            hass, MOCK_CONFIG_DATA["geomet_bbox"], forecast_days=10,
+        )
+
+        async def _all_none(queries, now_ts, session, semaphore):
+            return [(l, ts, key, None) for l, ts, key in queries], 0, len(queries)
+
+        coord._execute_queries = _all_none
+        await coord._fetch_day7_backfill(TODAY, 0.0, None, None, ET)
+
+        backfill = coord._day7_backfill
+        assert backfill["temp_low"] is None
+        assert backfill["pop_night"] is None
+
+        dates = [f"2026-07-{7 + offset:02d}" for offset in range(7)]
+        daily = [_daily_stub(d) for d in dates]
+        daily[-1]["temp_low"] = None
+        merged = merge_weong_into_daily(daily, {}, outlook_backfill=backfill)
+        assert merged[-1]["temp_low"] is None  # nothing filled from a failed fetch
+
     async def test_legacy_intermediate_value_tolerated(self, hass: HomeAssistant):
         # "10" was removed from the selector (no confidence boundary behind it
         # after the single-source GEPS decision) but a stored legacy value must
