@@ -126,15 +126,24 @@ export async function run(ctx) {
   client = await connect(baseUrl, token);
   ctx.client = client;
 
-  // Cache-restore log line present.
-  const logs = await containerLogs(ctx.container.name);
+  // Cache-restore log line present. Boot race: waitForHttp returns when HA's
+  // API answers, but integrations set up AFTER that — the restore line is
+  // emitted during ec_weather's async_setup_entry, which can lag the API by
+  // tens of seconds. Poll the logs instead of reading them once.
+  const restoreLogged = await pollUntil(
+    () => containerLogs(ctx.container.name),
+    (logs) => typeof logs === "string" && logs.includes(RESTORE_LOG_MARKER),
+    { timeoutMs: 90000, intervalMs: 3000 },
+  );
   assert(
-    logs.includes(RESTORE_LOG_MARKER),
-    `S4: cache-restore log line ("${RESTORE_LOG_MARKER}") not found after restart`,
+    restoreLogged.ok,
+    `S4: cache-restore log line ("${RESTORE_LOG_MARKER}") not found within 90s of restart`,
   );
   log("S4: cache-restore log line present");
 
-  // Forecast attributes repopulate shortly after boot.
+  // Forecast attributes repopulate shortly after boot. Same boot race applies;
+  // waitForForecast already polls generously (120s, tolerating the entity
+  // being absent until setup finishes), so it rides out integration startup.
   const afterBoot = await waitForForecast(client, dailyId, 120000);
   assert(afterBoot.ok, "S4: daily forecast did not repopulate after restart");
 

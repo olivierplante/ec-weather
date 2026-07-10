@@ -126,8 +126,9 @@ export async function run(ctx) {
     await waitForHttp(container.baseUrl);
     client = await connect(container.baseUrl, accessToken);
 
-    // Entry loads with no setup errors.
-    const entries = await client.listConfigEntries("ec_weather");
+    // Entry loads with no setup errors. Boot race: integrations set up AFTER
+    // the API answers waitForHttp, so post-restart checks must poll — no
+    // single-shot reads. loaded.ok implies the entry exists AND is 'loaded'.
     const loaded = await pollUntil(
       async () => {
         const current = await client.listConfigEntries("ec_weather");
@@ -138,12 +139,21 @@ export async function run(ctx) {
       { timeoutMs: 90000, intervalMs: 3000 },
     );
     assert(loaded.ok, `S5: entry did not reach 'loaded' after upgrade (last: ${loaded.state})`);
-    assert(entries.length >= 1, "S5: no ec_weather config entry after upgrade");
 
-    // Roles resolve.
-    const payload = await client.getEcEntities();
-    const entry = (payload.entries || [])[0];
-    assert(entry && entry.roles, "S5: no resolved roles after upgrade");
+    // Roles resolve. Polled too: the entry reports 'loaded' when
+    // async_setup_entry returns, but the role resolver skips entries that are
+    // not fully settled — one more generous poll costs nothing.
+    const rolesResult = await pollUntil(
+      async () => {
+        const payload = await client.getEcEntities();
+        const found = (payload.entries || [])[0];
+        return found && found.roles && Object.keys(found.roles).length ? found : null;
+      },
+      (value) => value !== null,
+      { timeoutMs: 60000, intervalMs: 3000 },
+    );
+    assert(rolesResult.ok, "S5: no resolved roles after upgrade");
+    const entry = rolesResult.state;
     const coverage = rolesCoverRequired(entry.roles, requiredRoles, OPTIONAL_ROLES);
     assert(coverage.ok, `S5: roles missing after upgrade: ${coverage.missing.join(", ")}`);
     log(`S5: ${Object.keys(entry.roles).length} roles resolved after upgrade`);
