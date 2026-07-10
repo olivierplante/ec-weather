@@ -11,17 +11,29 @@ from datetime import date, datetime, timedelta, timezone
 import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from ..const import (
     CACHE_TTL_GEPS,
     DOMAIN,
     GEOMET_REQUEST_TIMEOUT,
+    STORAGE_SAVE_DELAY,
+    STORAGE_SCHEMA_VERSION,
+    STORAGE_VERSION,
+    WEONG_BACKOFF_FIRST_SECONDS,
+    WEONG_BACKOFF_SECOND_SECONDS,
     WEONG_CACHE_TTL_HRDPS,
     WEONG_CACHE_TTL_RDPS,
+    WEONG_CHUNK_DELAY_SECONDS,
+    WEONG_DAY_COMPLETE_MIN_RATIO,
     WEONG_SEMAPHORE_LIMIT,
 )
-from ..api_client import TransientGeoMetError, query_geomet_feature_info
+from ..api_client import (
+    RateLimitedError,
+    TransientGeoMetError,
+    query_geomet_feature_info,
+)
 from ..timestep_store import TimestepData, TimestepStore
 from .base import OnDemandCoordinator
 from .extended_helpers import GEPS_POP_12H, GEPS_TEMPERATURE_P50, geps_window_for
@@ -148,6 +160,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         geomet_bbox: str,
         polling: bool = False,
         forecast_days: int = 7,
+        entry_id: str | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -157,12 +170,28 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             polling=polling,
         )
         self.geomet_bbox = geomet_bbox
+        # Persistent forecast cache. One Store per config entry (key
+        # "ec_weather.<entry_id>"). None disables persistence — the coordinator
+        # still works fully in memory, which keeps unit tests that construct it
+        # without an entry_id unaffected.
+        self._entry_id = entry_id
+        self._persist_store: Store | None = (
+            Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
+            if entry_id is not None
+            else None
+        )
         # Extended-forecast scope (phase C): 7 official days (default), or
         # 10/14 to append GEPS outlook rows for the calendar days beyond EC's
         # 7-day list. Read once at setup; the options flow reloads the entry on
         # change, so a new coordinator picks up the new value.
         self._forecast_days = forecast_days
         self._had_transient_errors: bool = False
+        # Set when a wave leaves any day below the completeness threshold, so
+        # the skip-guard and polling scheduler know to retry soon (F2).
+        self._had_incomplete_days: bool = False
+        # Count of HTTP 429s seen during the current wave — drives the two-step
+        # backoff. Reset at the start of each _do_update (F4).
+        self._rate_limit_hits: int = 0
         # Cache: (layer, time_str) -> (value, fetched_timestamp)
         # Model data doesn't change between runs (HRDPS and RDPS both every 6h),
         # so we cache results and only re-query when the TTL expires.
@@ -246,27 +275,157 @@ class ECWEonGCoordinator(OnDemandCoordinator):
 
         fetched: list[tuple[str, datetime, tuple[str, str], float | None]] = []
         if uncached:
-            async def _throttled(layer: str, timestep: datetime) -> float | None:
+            async def _throttled(layer: str, timestep: datetime):
                 async with semaphore:
                     return await self._query_feature_info(session, layer, timestep)
 
-            results = await asyncio.gather(
-                *[_throttled(layer, ts) for layer, ts, _ in uncached]
-            )
-            # Cache successful results and "no data" (None).
-            # Do NOT cache transient errors — they should be retried next cycle.
-            for (layer, timestep, period_key), value in zip(uncached, results):
-                if value is self._TRANSIENT_ERROR:
-                    # Treat as None for aggregation, but don't cache.
-                    # Flag so staleness check forces re-fetch next time.
-                    self._had_transient_errors = True
-                    fetched.append((layer, timestep, period_key, None))
-                    continue
-                time_str = timestep.strftime("%Y-%m-%dT%H:%M:%SZ")
-                self._cache[(layer, time_str)] = (value, now_ts)
-                fetched.append((layer, timestep, period_key, value))
+            # Cold-start pacing (F4b): run the uncached queries in
+            # semaphore-sized chunks with a short delay between chunks, so a
+            # reboot does not spike hundreds of near-concurrent requests into a
+            # possibly-degraded server.
+            chunk_size = WEONG_SEMAPHORE_LIMIT
+            for chunk_start in range(0, len(uncached), chunk_size):
+                chunk = uncached[chunk_start:chunk_start + chunk_size]
+                chunk_results = await asyncio.gather(
+                    *[_throttled(layer, ts) for layer, ts, _ in chunk]
+                )
+
+                # Honor 429 (F4a): if this chunk was rate-limited, pause the
+                # wave briefly before continuing.
+                if any(value is self._RATE_LIMITED for value in chunk_results):
+                    await self._apply_rate_limit_backoff()
+
+                # Cache successful results and "no data" (None). Do NOT cache
+                # failures — transient errors and 429s must be retried (F1).
+                for (layer, timestep, period_key), value in zip(chunk, chunk_results):
+                    if value is self._TRANSIENT_ERROR or value is self._RATE_LIMITED:
+                        # Treat as None for aggregation, but never cache.
+                        # Flag so the staleness check forces a re-fetch.
+                        self._had_transient_errors = True
+                        fetched.append((layer, timestep, period_key, None))
+                        continue
+                    time_str = timestep.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    self._cache[(layer, time_str)] = (value, now_ts)
+                    fetched.append((layer, timestep, period_key, value))
+
+                # Pace before the next chunk (never after the last one).
+                if chunk_start + chunk_size < len(uncached):
+                    await asyncio.sleep(WEONG_CHUNK_DELAY_SECONDS)
 
         return cached_results + fetched, len(cached_results), len(uncached)
+
+    async def _apply_rate_limit_backoff(self) -> None:
+        """Pause the wave briefly after a 429 (F4a): short on the first hit,
+        longer on the second or later. Simple two-step backoff — no framework.
+        """
+        self._rate_limit_hits += 1
+        delay = (
+            WEONG_BACKOFF_FIRST_SECONDS
+            if self._rate_limit_hits <= 1
+            else WEONG_BACKOFF_SECOND_SECONDS
+        )
+        _LOGGER.info(
+            "EC WEonG: GeoMet returned HTTP 429; pausing %ds before continuing "
+            "(rate-limit hit #%d)", delay, self._rate_limit_hits,
+        )
+        await asyncio.sleep(delay)
+
+    def _weong_base_completeness(
+        self,
+        results: list[tuple[str, datetime, tuple[str, str], float | None]],
+    ) -> tuple[int, int]:
+        """Return (succeeded, total) for a day's base POP+AirTemp queries.
+
+        The "base" is the always-run POP and AirTemp layers — one of each per
+        timestep. A failed query surfaces as a None value (never cached), so
+        counting non-None base values measures how much of the day arrived.
+        POP=0 is a real value (a dry timestep), so it counts as a success.
+        """
+        pop_suffix = _LAYER_SUFFIXES["precip_prob"]
+        temp_suffix = _LAYER_SUFFIXES["air_temp"]
+        total = 0
+        succeeded = 0
+        for layer, _ts, _pk, value in results:
+            if _bare_layer_name(layer) in (pop_suffix, temp_suffix):
+                total += 1
+                if value is not None:
+                    succeeded += 1
+        return succeeded, total
+
+    def _is_day_complete(
+        self,
+        base_succeeded: int,
+        base_total: int,
+        geps_entries: list[TimestepData],
+    ) -> bool:
+        """Decide whether a day's fetch counts as complete (F2).
+
+        A day is complete when it either had nothing to fetch (no base timesteps
+        and no GEPS entries — legitimately empty past the 84h horizon) or enough
+        of its base queries returned data. Below WEONG_DAY_COMPLETE_MIN_RATIO the
+        day stays "pending" so the existing 15-minute retry refetches it instead
+        of caching the holes.
+        """
+        geps_total = len(geps_entries)
+        geps_succeeded = sum(1 for entry in geps_entries if entry.temp is not None)
+        total = base_total + geps_total
+        if total == 0:
+            return True  # nothing to fetch — a legitimate empty answer
+        succeeded = base_succeeded + geps_succeeded
+        return succeeded / total >= WEONG_DAY_COMPLETE_MIN_RATIO
+
+    async def _process_day(
+        self,
+        date_str: str,
+        day_periods: list,
+        today: date,
+        now_ts: float,
+        session: aiohttp.ClientSession,
+        semaphore: asyncio.Semaphore,
+        all_periods: list,
+    ) -> None:
+        """Fetch one day (WEonG + extended GEPS) and merge progressively.
+
+        Whatever data arrived always merges into the store (partial display is
+        fine). The day is only marked done (_completed_days) when its base
+        queries cleared the completeness threshold; a partial day stays out of
+        the set so it reads as "pending" and the 15-minute retry refetches it
+        rather than the holes being cached and served until the next model run.
+        """
+        day_results = await self._fetch_day(
+            day_periods, today, now_ts, session, semaphore,
+        )
+        geps_entries, geps_windows = await self._fetch_geps_day(
+            date_str, day_periods, today, now_ts, session, semaphore,
+        )
+        async with self._merge_lock:
+            self._results_to_store(day_results)
+            # GEPS entries are already synthesized TimestepData; merge them
+            # straight in. Store priority keeps RDPS ahead of GEPS on overlap.
+            for entry in geps_entries:
+                self._store.merge(entry)
+            if geps_windows is not None:
+                self._precip_windows[date_str] = geps_windows
+
+            # Completeness gate (F2). Zero base queries (past the 84h horizon,
+            # not a GEPS day) counts as complete — attempted-and-empty is a real
+            # answer, not a pending state. A day that fetched but landed below
+            # the threshold stays pending for the retry.
+            base_succeeded, base_total = self._weong_base_completeness(day_results)
+            if self._is_day_complete(base_succeeded, base_total, geps_entries):
+                self._completed_days.add(date_str)
+            else:
+                self._had_incomplete_days = True
+                self._completed_days.discard(date_str)
+
+            try:
+                merged = self._project_output(all_periods)
+                self.async_set_updated_data(merged)
+            except (KeyError, TypeError, ValueError):
+                _LOGGER.debug(
+                    "EC WEonG: partial projection failed "
+                    "(expected during progressive load)"
+                )
 
     def _build_timestep_info(
         self,
@@ -523,7 +682,15 @@ class ECWEonGCoordinator(OnDemandCoordinator):
 
         values = index_results(base_results)
         values.update(index_results(wet_results))
-        return build_outlook_entry(date_str, points, pop_by_window_end, values)
+        entry = build_outlook_entry(date_str, points, pop_by_window_end, values)
+
+        # No half-built outlook rows (F3): a day missing either temp median (its
+        # low or high) is not a usable row. Return None so this date stays out of
+        # self._outlook and the projection re-emits its pending skeleton, exactly
+        # like an unfetched day — the next wave retries it.
+        if entry.get("temp_low") is None or entry.get("temp_high") is None:
+            return None
+        return entry
 
     async def _fetch_day7_backfill(
         self,
@@ -695,6 +862,154 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         expected = _expected_hrdps_model_run(now_utc)
         return self._last_model_run == expected
 
+    # ── Persistent forecast cache ────────────────────────────────────────────
+    # A reboot does not make forecast data stale; only a new model run does. So
+    # the coordinator persists its fetched state and, on startup, restores it
+    # and lets the existing model-run-aware scheduler decide whether anything
+    # needs fetching. See specs/ec_weather/persistent-forecast-cache.md.
+
+    def _persist_cutoff(self) -> tuple[str, str]:
+        """Return (store timestep cutoff, calendar-day cutoff) for pruning.
+
+        The store keeps timesteps within the last hour (matching _do_update's
+        prune); the day-keyed structures keep today and later.
+        """
+        now = datetime.now(timezone.utc)
+        ts_cutoff = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        day_cutoff = dt_util.now().date().isoformat()
+        return ts_cutoff, day_cutoff
+
+    def _build_persist_payload(self) -> dict:
+        """Build the JSON-serializable snapshot written to the store.
+
+        Prunes past dates so the file never grows unbounded. Only fetched,
+        successful state is persisted; failures were never merged into the
+        store or cached, so they cannot leak in here.
+        """
+        ts_cutoff, day_cutoff = self._persist_cutoff()
+        self._store.prune_before(ts_cutoff)
+        return {
+            "schema_version": STORAGE_SCHEMA_VERSION,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "forecast_days": self._forecast_days,
+            "last_model_run": self._last_model_run,
+            "last_fetch_ts": self._last_fetch_ts,
+            "completed_days": sorted(
+                d for d in self._completed_days if d >= day_cutoff
+            ),
+            "timesteps": self._store.to_storage_list(),
+            "precip_windows": {
+                d: windows for d, windows in self._precip_windows.items()
+                if d >= day_cutoff
+            },
+            "outlook": {
+                d: entry for d, entry in self._outlook.items()
+                if d >= day_cutoff
+            },
+            "day7_backfill": self._day7_backfill,
+        }
+
+    def _schedule_persist(self) -> None:
+        """Debounced save after a successful wave / on-demand fetch.
+
+        async_delay_save calls the builder at flush time, so the payload always
+        reflects the latest merged state. A lost last-seconds save costs one
+        wave, not correctness (HA flushes pending delayed saves on shutdown).
+        """
+        if self._persist_store is None:
+            return
+        self._persist_store.async_delay_save(
+            self._build_persist_payload, STORAGE_SAVE_DELAY,
+        )
+
+    async def _async_persist_now(self) -> None:
+        """Write the snapshot immediately (used by tests; production debounces)."""
+        if self._persist_store is None:
+            return
+        await self._persist_store.async_save(self._build_persist_payload())
+
+    async def async_restore(self) -> None:
+        """Restore persisted forecast state before the first refresh.
+
+        Runs in async_setup_entry before the coordinator's background refresh so
+        the first _do_update sees the restored model-run stamp and the existing
+        skip logic naturally avoids refetching a still-current run. Seeds
+        self.data so the daily/hourly sensors show data immediately after boot.
+
+        Restore-or-discard: a corrupt file or a payload schema mismatch is
+        discarded (never migrated by guess) and the normal full fetch runs.
+        """
+        if self._persist_store is None:
+            return
+        try:
+            payload = await self._persist_store.async_load()
+        except Exception:  # noqa: BLE001 — any read/parse failure -> discard
+            _LOGGER.info(
+                "EC WEonG: persisted forecast cache unreadable, "
+                "starting with a fresh fetch",
+            )
+            return
+        if not payload:
+            return  # first install — no file
+        if payload.get("schema_version") != STORAGE_SCHEMA_VERSION:
+            _LOGGER.info(
+                "EC WEonG: persisted forecast cache schema %s != %s, "
+                "discarding and refetching",
+                payload.get("schema_version"), STORAGE_SCHEMA_VERSION,
+            )
+            return
+        self._restore_from_payload(payload)
+
+    def _restore_from_payload(self, payload: dict) -> None:
+        """Seed coordinator state from a validated payload, pruning past dates.
+
+        Honors the current config: a restored partial day stays pending (only
+        the persisted _completed_days are trusted), and if extended is now off
+        the persisted outlook / day-7 backfill are dropped.
+        """
+        ts_cutoff, day_cutoff = self._persist_cutoff()
+
+        self._store.load_storage_list(payload.get("timesteps", []))
+        self._store.prune_before(ts_cutoff)
+
+        self._last_model_run = payload.get("last_model_run")
+        self._last_fetch_ts = payload.get("last_fetch_ts")
+        self._completed_days = {
+            d for d in payload.get("completed_days", []) if d >= day_cutoff
+        }
+        self._precip_windows = {
+            d: windows for d, windows in payload.get("precip_windows", {}).items()
+            if d >= day_cutoff
+        }
+
+        # Restore honors the current forecast range: outlook rows and the day-7
+        # backfill only exist when extended is on. If it is now off, drop them.
+        if self._forecast_days > 7:
+            self._outlook = {
+                d: entry for d, entry in payload.get("outlook", {}).items()
+                if d >= day_cutoff
+            }
+            self._day7_backfill = payload.get("day7_backfill")
+        else:
+            self._outlook = {}
+            self._day7_backfill = None
+
+        # Project once so the sensors render restored data immediately.
+        now = datetime.now(timezone.utc)
+        today = dt_util.now().date()
+        local_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+        try:
+            projected = self._project_output(build_periods(today, now, local_tz))
+            self.async_set_updated_data(projected)
+        except (KeyError, TypeError, ValueError):
+            _LOGGER.debug("EC WEonG: could not project restored cache")
+
+        _LOGGER.info(
+            "EC WEonG: restored forecast cache — %d timesteps, %d completed days, "
+            "model run %s",
+            len(self._store), len(self._completed_days), self._last_model_run,
+        )
+
     async def _do_update(self) -> dict:
         """Orchestrate per-day parallel fetch with progressive publishing.
 
@@ -703,18 +1018,26 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         No snapshot/carry-forward workarounds needed.
         """
 
-        # Skip if data is still current and no transient errors from last fetch.
-        # The mixin calls needs_refresh() before triggering, but _do_update
-        # can also be called directly (e.g. polling mode), so guard here too.
-        if not self._had_transient_errors and not self.needs_refresh():
+        # Skip if data is still current and last fetch had no failures or
+        # incomplete days. The mixin calls needs_refresh() before triggering,
+        # but _do_update can also be called directly (polling mode), so a prior
+        # degraded fetch (transient errors or partial days) must force a re-fetch
+        # here too instead of skipping and leaving the holes in place.
+        if (
+            not self._had_transient_errors
+            and not self._had_incomplete_days
+            and not self.needs_refresh()
+        ):
             _LOGGER.debug(
                 "EC WEonG: skipping update — model run %s is current",
                 self._last_model_run,
             )
             return self.data
 
-        # Reset transient error flag — will be set during fetch if errors occur
+        # Reset per-wave flags — set again during this fetch if they recur.
         self._had_transient_errors = False
+        self._had_incomplete_days = False
+        self._rate_limit_hits = 0
         _LOGGER.debug("EC WEonG: starting update")
         now = datetime.now(timezone.utc)
         now_ts = now.timestamp()
@@ -740,37 +1063,12 @@ class ECWEonGCoordinator(OnDemandCoordinator):
 
         all_periods: list = list(periods)
 
-        async def _process_day(date_str: str, day_periods: list) -> None:
-            """Fetch one day (WEonG + extended GEPS) and merge progressively."""
-            day_results = await self._fetch_day(
-                day_periods, today, now_ts, session, semaphore,
-            )
-            geps_entries, geps_windows = await self._fetch_geps_day(
-                date_str, day_periods, today, now_ts, session, semaphore,
-            )
-            async with self._merge_lock:
-                self._results_to_store(day_results)
-                # GEPS entries are already synthesized TimestepData; merge them
-                # straight in. Store priority keeps RDPS ahead of GEPS on overlap.
-                for entry in geps_entries:
-                    self._store.merge(entry)
-                if geps_windows is not None:
-                    self._precip_windows[date_str] = geps_windows
-                # Mark the day fetched even on zero results — attempted-and-empty
-                # (past the RDPS 84h horizon) is a real answer, not a pending state.
-                self._completed_days.add(date_str)
-                try:
-                    merged = self._project_output(all_periods)
-                    self.async_set_updated_data(merged)
-                except (KeyError, TypeError, ValueError):
-                    _LOGGER.debug(
-                        "EC WEonG: partial projection failed "
-                        "(expected during progressive load)"
-                    )
-
         # Launch all days in parallel
         await asyncio.gather(*[
-            _process_day(date_str, day_periods)
+            self._process_day(
+                date_str, day_periods, today, now_ts, session, semaphore,
+                all_periods,
+            )
             for date_str, day_periods in sorted(periods_by_date.items())
         ])
 
@@ -817,12 +1115,17 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         if self._polling:
             now_utc = datetime.now(timezone.utc)
             expected = _expected_hrdps_model_run(now_utc)
-            if self._last_model_run != expected:
-                # Fetched data still has old model run — retry shortly
+            if (
+                self._had_transient_errors
+                or self._had_incomplete_days
+                or self._last_model_run != expected
+            ):
+                # Old model run, transient failures, or a partial day — retry
+                # shortly instead of waiting for the next model run (F2/F4).
                 self.update_interval = self._RETRY_INTERVAL
                 _LOGGER.debug(
-                    "EC WEonG: model run %s not yet available, retry in %s",
-                    expected, self._RETRY_INTERVAL,
+                    "EC WEonG: incomplete/degraded fetch (model run %s), "
+                    "retry in %s", expected, self._RETRY_INTERVAL,
                 )
             else:
                 # Got current data — schedule for next model run
@@ -834,6 +1137,11 @@ class ECWEonGCoordinator(OnDemandCoordinator):
                     "EC WEonG: next model run at %s, polling in %s",
                     next_avail, self.update_interval,
                 )
+
+        # Persist the fetched state (debounced) so a reboot restores it instead
+        # of refetching. Only successful, merged data is in the store — failures
+        # were never cached, so they cannot leak into the file.
+        self._schedule_persist()
 
         return result
 
@@ -919,18 +1227,30 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             self._store.merge(entry)
         if geps_windows is not None:
             self._precip_windows[date_str] = geps_windows
-        self._completed_days.add(date_str)
 
-        # Re-project and publish updated data
+        # Completeness gate (F1 + F2): only mark the day done and write the
+        # per-date cache marker when the fetch cleared the threshold. A mostly
+        # failed fetch must NOT be cached, or a re-open would serve the same
+        # holes without asking EC again. Its base here is the SkyState queries
+        # (POP/AirTemp are already in the store) plus any GEPS entries. Decide
+        # before projecting so days_fetched reflects the decision.
+        sky_succeeded = sum(1 for _l, _t, _p, v in sky_results if v is not None)
+        if self._is_day_complete(sky_succeeded, len(sky_results), geps_entries):
+            self._completed_days.add(date_str)
+            self._timestep_cache[date_str] = ({}, now_mono)
+            # Evict stale cache entries — keep only dates within forecast range.
+            if len(self._timestep_cache) > 7:
+                oldest_key = min(
+                    self._timestep_cache, key=lambda k: self._timestep_cache[k][1],
+                )
+                del self._timestep_cache[oldest_key]
+
+        # Re-project and publish updated data — whatever arrived shows now.
         updated = self._project_output(all_periods)
         self.async_set_updated_data(updated)
 
-        self._timestep_cache[date_str] = ({}, now_mono)
-
-        # Evict stale cache entries — keep only dates within forecast range (7 days)
-        if len(self._timestep_cache) > 7:
-            oldest_key = min(self._timestep_cache, key=lambda k: self._timestep_cache[k][1])
-            del self._timestep_cache[oldest_key]
+        # Persist the on-demand day fetch (debounced) alongside background waves.
+        self._schedule_persist()
 
         fetched_count = sum(1 for _, _, _, v in sky_results if v is not None)
         _LOGGER.debug(
@@ -939,9 +1259,11 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         )
 
 
-    # Sentinel returned by _query_feature_info on transient errors.
-    # Distinct from None (which means "GeoMet returned no data for this timestep").
+    # Sentinels returned by _query_feature_info on failures. Both are distinct
+    # from None (which means "GeoMet returned no data for this timestep") and
+    # neither is ever cached. _RATE_LIMITED additionally drives the wave backoff.
     _TRANSIENT_ERROR = object()
+    _RATE_LIMITED = object()
 
     async def _query_feature_info(
         self, session: aiohttp.ClientSession, layer: str, timestep: datetime,
@@ -949,16 +1271,17 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         """Query a single WEonG layer at one UTC timestep.
 
         Delegates to the standalone query_geomet_feature_info() in api_client.
-        Translates TransientGeoMetError into the _TRANSIENT_ERROR sentinel
-        that the coordinator's caching logic expects.
+        Translates the failure exceptions into sentinels that the coordinator's
+        caching logic expects (never cached).
 
         Also captures reference_datetime from the response to track the
         current model run for freshness checks.
 
         Returns:
           float -- the value from GeoMet
-          None -- GeoMet responded but had no data for this timestep
-          _TRANSIENT_ERROR -- network/DNS error, should NOT be cached
+          None -- GeoMet responded but had no data for this timestep (cacheable)
+          _RATE_LIMITED -- HTTP 429, must NOT be cached; triggers backoff
+          _TRANSIENT_ERROR -- other network/HTTP/parse failure, must NOT be cached
         """
         try:
             value, ref_dt = await query_geomet_feature_info(
@@ -972,5 +1295,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             if ref_dt is not None:
                 self._last_model_run = ref_dt
             return value
+        except RateLimitedError:
+            return self._RATE_LIMITED
         except TransientGeoMetError:
             return self._TRANSIENT_ERROR

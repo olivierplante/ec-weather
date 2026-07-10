@@ -85,6 +85,7 @@ def _mock_coordinator():
     mock = MagicMock()
     mock.async_config_entry_first_refresh = AsyncMock()
     mock.async_refresh = AsyncMock()
+    mock.async_restore = AsyncMock()
     return mock
 
 

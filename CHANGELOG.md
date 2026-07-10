@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.2.0
+
+Fewer queries to Environment Canada, and a fix for fresh installs.
+
+### What's new
+
+- The forecast now survives restarts: hourly data is saved to disk and restored on boot, so the card renders within seconds and the integration sends zero new queries when the forecast data is still current. A restart never made the forecast stale; now it doesn't cost a refetch either
+
+### Fixed
+
+- Fresh installs showed "Weather data unavailable" even though the integration was fetching fine: Home Assistant generated entity IDs on new installs that did not match the ones the card reads (reported in issue #12). Affected installs are repaired automatically on update; entity history carries over. If you built automations or dashboards on the old device-prefixed IDs (sensor.ec_weather_yourcity_...), update them to the short form (sensor.ec_temperature and so on). Entities you renamed yourself are left untouched
+- During Environment Canada API slowdowns, a restart could lock in half-loaded days for hours: failed queries are no longer cached, partially loaded days keep retrying every 15 minutes, and queries pace themselves and back off when the API rate-limits
+
 ## 2.1.0
 
 The forecast now reaches as far as the data honestly allows.

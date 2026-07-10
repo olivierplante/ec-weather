@@ -206,7 +206,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     forecast_days = EXTENDED_FORECAST_DAYS if extended else DEFAULT_FORECAST_DAYS
     weong_coordinator = ECWEonGCoordinator(
         hass, geomet_bbox, polling=weong_polls, forecast_days=forecast_days,
+        entry_id=entry.entry_id,
     )
+
+    # Restore the persisted forecast cache BEFORE the first WEonG refresh, so
+    # the first _do_update sees the restored model-run stamp and the existing
+    # skip logic avoids refetching a still-current run. This also seeds the
+    # coordinator data so the daily/hourly sensors render immediately on boot.
+    await weong_coordinator.async_restore()
 
     # Yesterday's precipitation — only when a station was discovered/opted in.
     precip_station_id = entry.data.get(CONF_PRECIP_STATION_ID)

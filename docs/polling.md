@@ -20,6 +20,14 @@ After the first load, queries are served from cache until EC publishes a new mod
 
 The GEPS extended wave runs beside the WEonG sweep and fills the day 4-6 popup timelines that the deterministic 84-hour horizon cannot reach. Its 12-hour cache means one extended fetch per GEPS run, not one per WEonG refresh, so it adds no extra load on Minimal or Efficient. GEPS days are also fetched on demand when you open a day 4-6 popup.
 
+## Reboots do not refetch
+
+A restart does not make forecast data stale; only a new model run does. The integration persists its fetched forecast state (the timestep store, outlook rows, precip windows, completed days, and model-run stamps) to a small per-entry file and restores it on startup, so the dashboard shows data within seconds of boot. It then lets the normal model-run schedule decide: if the stored run is still current no GeoMet queries are issued, and if a new run is due the ordinary refresh fires exactly as it would have without the reboot. A first install has no file and does a full fetch as before, and a stored file that is corrupt or from an incompatible version is discarded rather than guessed at.
+
+## When GeoMet is degraded
+
+When GeoMet degrades with timeouts, HTTP 429 rate-limiting, or high latency, the wave fails safe: a query that times out, errors, returns a non-200 (including 429), or returns an unparseable body is never cached, so only real answers are stored and a genuine "no data here" stays distinct from a failure; a day that arrives only partially is left pending for the 15-minute retry instead of caching the gaps until the next model run, an outlook row missing a temperature keeps its placeholder, and on a cold start the wave paces its queries in small chunks and pauses briefly on a 429 so a reboot during an outage does not pile onto a struggling server.
+
 ## Outlook query counts (forecast range)
 
 When the forecast range is set past 7 days, each GEPS run also fetches the outlook days (the muted rows beyond day 7). GEPS runs twice a day (00Z and 12Z), and the 12-hour cache means these counts are per run, not per refresh.

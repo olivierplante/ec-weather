@@ -91,6 +91,28 @@ SERVICE_FETCH_DAY_TIMESTEPS = "fetch_day_timesteps"
 # WEonG concurrency
 WEONG_SEMAPHORE_LIMIT = 20
 
+# ---------------------------------------------------------------------------
+# WEonG degraded-API resilience
+#
+# EC's GeoMet API degrades sometimes (timeouts, HTTP 429, high latency). These
+# constants keep a degradation episode from caching failure holes with the
+# normal TTL and from spiking a cold-start burst into a struggling server.
+# ---------------------------------------------------------------------------
+# A day's timeline is only marked complete (cached, no retry) when at least this
+# fraction of its base POP+AirTemp queries returned a value. Below it the day
+# stays "pending" so the existing 15-minute retry refetches it instead of
+# caching the holes and serving them until the next model run.
+WEONG_DAY_COMPLETE_MIN_RATIO = 0.6
+# Cold-start pacing: the wave runs its GeoMet queries in semaphore-sized chunks
+# with this delay (seconds) between chunks, so a reboot does not spike hundreds
+# of near-concurrent requests into a possibly-degraded server.
+WEONG_CHUNK_DELAY_SECONDS = 0.3
+# HTTP 429 two-step backoff (seconds): the first 429 in a wave pauses the short
+# amount, a second or later 429 pauses the longer amount. No retry framework —
+# just a brief breather so the wave stops hammering a rate-limiting server.
+WEONG_BACKOFF_FIRST_SECONDS = 3
+WEONG_BACKOFF_SECOND_SECONDS = 8
+
 # GeoMet WMS configuration (WEonG precipitation probability)
 GEOMET_BASE_URL = "https://geo.weather.gc.ca/geomet"
 GEOMET_CRS = "EPSG:4326"
@@ -102,6 +124,14 @@ WEONG_CACHE_TTL_RDPS = 6 * 3600    # seconds — RDPS runs every 6h (00/06/12/18
 # GEPS ensemble (extended forecast, days 4+) runs twice a day at 00Z/12Z, so a
 # 12h TTL keeps the extended wave to one fetch per model run.
 CACHE_TTL_GEPS = 12 * 3600         # seconds — GEPS runs every 12h (00/12Z)
+
+# Persistent forecast cache (reboots restore state instead of refetching).
+# STORAGE_VERSION is the HA Store file version; STORAGE_SCHEMA_VERSION guards
+# the payload shape (a mismatch discards the file and refetches, never
+# migrate-by-guess). STORAGE_SAVE_DELAY debounces writes after a wave.
+STORAGE_VERSION = 1
+STORAGE_SCHEMA_VERSION = 1
+STORAGE_SAVE_DELAY = 5  # seconds — async_delay_save debounce window
 
 # Coordinator storage keys
 COORDINATOR_WEATHER = "weather"

@@ -51,6 +51,15 @@ class TransientGeoMetError(Exception):
     """
 
 
+class RateLimitedError(TransientGeoMetError):
+    """Raised when GeoMet answers HTTP 429 (Too Many Requests).
+
+    A subclass of TransientGeoMetError so every ``except TransientGeoMetError``
+    still refuses to cache it; the dedicated type lets the coordinator pace the
+    wave with a short backoff on top of the never-cache behaviour.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Generic JSON fetch with retry
 # ---------------------------------------------------------------------------
@@ -130,13 +139,20 @@ async def query_geomet_feature_info(
 ) -> tuple[float | None, str | None]:
     """Query a single WEonG layer at one UTC timestep via GeoMet WMS.
 
-    Returns:
-      (value, reference_datetime) where:
-      - value: float or None (GeoMet responded but had no data)
-      - reference_datetime: model run time string or None
+    Failure vs. no-data are two distinct channels, so the coordinator can cache
+    a genuine "no data here" answer while never caching a failure:
 
-    Raises:
-      TransientGeoMetError — on network/DNS/timeout errors (should NOT be cached)
+    Returns:
+      (value, reference_datetime) — the request SUCCEEDED and the body parsed:
+      - value: float, or None when GeoMet answered but has no data for this
+        point/time (e.g. a beyond-horizon timestep). None here is a valid,
+        cacheable answer.
+      - reference_datetime: model run time string or None.
+
+    Raises (the request FAILED — the caller must NOT cache anything):
+      RateLimitedError — HTTP 429 (rate limited); also drives the wave backoff.
+      TransientGeoMetError — timeout, connection/DNS error, any other non-200,
+        or an unparseable body.
     """
     time_str = timestep.strftime("%Y-%m-%dT%H:%M:%SZ")
     url = (
@@ -154,6 +170,19 @@ async def query_geomet_feature_info(
                 resp.raise_for_status()
                 # GeoMet returns Content-Type: text/html even for JSON
                 data = await resp.json(content_type=None)
+    except aiohttp.ClientResponseError as err:
+        # Non-200 status (raised by raise_for_status). 429 gets its own type so
+        # the wave can back off; both are failures and are never cached.
+        _LOGGER.debug(
+            "EC WEonG: HTTP %s querying %s at %s", err.status, layer, time_str,
+        )
+        if err.status == 429:
+            raise RateLimitedError(
+                f"Rate limited querying {layer} at {time_str}"
+            ) from err
+        raise TransientGeoMetError(
+            f"HTTP {err.status} querying {layer} at {time_str}"
+        ) from err
     except (asyncio.TimeoutError, aiohttp.ClientError, ValueError) as err:
         _LOGGER.debug(
             "EC WEonG: failed to query %s at %s: %s", layer, time_str, err,

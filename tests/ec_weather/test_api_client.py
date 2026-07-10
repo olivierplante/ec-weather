@@ -387,6 +387,76 @@ class TestQueryGeometFeatureInfo:
         assert "TIME=2026-03-22T12:00:00Z" in captured_url
         assert "CRS=EPSG:4326" in captured_url
 
+    async def test_raises_rate_limited_on_429(self):
+        """A HTTP 429 must surface as RateLimitedError (a TransientGeoMetError
+        subclass) so callers both refuse to cache it and can pace the wave."""
+        from ec_weather.api_client import RateLimitedError
+
+        class _RateLimitedResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            def raise_for_status(self):
+                raise aiohttp.ClientResponseError(
+                    request_info=None, history=(),
+                    status=429, message="Too Many Requests",
+                )
+
+            async def json(self, **kw):
+                return {}
+
+        class MockSession:
+            def get(self, url, **kw):
+                return _RateLimitedResponse()
+
+        with pytest.raises(RateLimitedError):
+            await query_geomet_feature_info(
+                session=MockSession(),
+                geomet_bbox="44.420,-76.700,46.420,-74.700",
+                layer="HRDPS-WEonG_2.5km_Precip-Prob",
+                timestep=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+                timeout=10,
+            )
+        # A RateLimitedError is still a TransientGeoMetError (never cached).
+        assert issubclass(RateLimitedError, TransientGeoMetError)
+
+    async def test_non_429_http_error_raises_transient(self):
+        """A non-429 HTTP error stays a plain TransientGeoMetError (no backoff)."""
+        from ec_weather.api_client import RateLimitedError
+
+        class _ServerErrorResponse:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            def raise_for_status(self):
+                raise aiohttp.ClientResponseError(
+                    request_info=None, history=(),
+                    status=503, message="Service Unavailable",
+                )
+
+            async def json(self, **kw):
+                return {}
+
+        class MockSession:
+            def get(self, url, **kw):
+                return _ServerErrorResponse()
+
+        with pytest.raises(TransientGeoMetError) as exc_info:
+            await query_geomet_feature_info(
+                session=MockSession(),
+                geomet_bbox="44.420,-76.700,46.420,-74.700",
+                layer="HRDPS-WEonG_2.5km_Precip-Prob",
+                timestep=datetime(2026, 3, 22, 12, 0, tzinfo=timezone.utc),
+                timeout=10,
+            )
+        assert not isinstance(exc_info.value, RateLimitedError)
+
 
 # ---------------------------------------------------------------------------
 # parse_ec_city_features tests
