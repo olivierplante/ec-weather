@@ -7,7 +7,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { cp, mkdtemp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -26,10 +26,38 @@ export function imageRef(haVersion) {
   return `${IMAGE_REPO}:${haVersion}`;
 }
 
-/** Create a fresh temp config directory with an empty custom_components dir. */
+/**
+ * Pure: the configuration.yaml the harness seeds into every fresh config dir.
+ *
+ * The fresh HA container logs WARNING-and-above only, so the integration's
+ * INFO lines (e.g. the S4-asserted "restored forecast cache") never reach
+ * docker logs. Seeding this file BEFORE the first boot (the container respects
+ * an existing configuration.yaml and won't overwrite it) raises just
+ * custom_components.ec_weather to INFO while `default: warning` keeps the rest
+ * of the log — and the S4 diagnostics dump — quiet.
+ */
+export function buildConfigurationYaml() {
+  return [
+    "default_config:",
+    "",
+    "logger:",
+    "  default: warning",
+    "  logs:",
+    "    custom_components.ec_weather: info",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Create a fresh temp config directory with an empty custom_components dir
+ * and the seeded configuration.yaml (uniform for ALL scenarios: S1-S3/S5
+ * don't assert on log absence, so the INFO raise is additive for them and
+ * gives S4 both boots at INFO for the component).
+ */
 export async function makeConfigDir() {
   const dir = await mkdtemp(join(tmpdir(), "ec-e2e-config-"));
   await mkdir(join(dir, "custom_components"), { recursive: true });
+  await writeFile(join(dir, "configuration.yaml"), buildConfigurationYaml(), "utf-8");
   return dir;
 }
 
