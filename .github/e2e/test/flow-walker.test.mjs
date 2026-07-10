@@ -9,7 +9,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { extractOptions, isBooleanField, fillStep } from "../lib/flow-walker.mjs";
+import {
+  extractOptions,
+  isBooleanField,
+  fillStep,
+  isAlreadyConfiguredAbort,
+} from "../lib/flow-walker.mjs";
 
 test("extractOptions normalizes [value,label] pairs", () => {
   const field = { name: "language", options: [["en", "English"], ["fr", "Français"]] };
@@ -127,4 +132,32 @@ test("fillStep throws with a dump on an unfillable required field", () => {
       return true;
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Abort classification (idempotent-setup path: a retry re-running setup on the
+// same container hits the single-instance already_configured abort)
+// ---------------------------------------------------------------------------
+
+function abortError(reason) {
+  const error = new Error(`flow-walker: flow aborted (${reason})`);
+  error.flowAborted = true;
+  error.abortReason = reason;
+  return error;
+}
+
+test("isAlreadyConfiguredAbort matches an already_configured flow abort", () => {
+  assert.equal(isAlreadyConfiguredAbort(abortError("already_configured")), true);
+});
+
+test("isAlreadyConfiguredAbort rejects other abort reasons", () => {
+  assert.equal(isAlreadyConfiguredAbort(abortError("no_city_found")), false);
+  assert.equal(isAlreadyConfiguredAbort(abortError("api_error")), false);
+});
+
+test("isAlreadyConfiguredAbort rejects non-abort errors", () => {
+  assert.equal(isAlreadyConfiguredAbort(new Error("already_configured")), false);
+  assert.equal(isAlreadyConfiguredAbort(new Error("HTTP 500")), false);
+  assert.equal(isAlreadyConfiguredAbort(null), false);
+  assert.equal(isAlreadyConfiguredAbort(undefined), false);
 });

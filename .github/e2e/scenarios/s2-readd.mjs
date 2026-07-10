@@ -11,7 +11,8 @@
  */
 
 import { assert, pollUntil, rolesCoverRequired, isKnownState } from "../lib/asserts.mjs";
-import { walkConfigFlow } from "../lib/flow-walker.mjs";
+import { ensureConfigEntry } from "../lib/flow-walker.mjs";
+import { deleteConfigEntry, filterEntriesByDomain, listConfigEntries } from "../lib/rest.mjs";
 import { OPTIONAL_ROLES } from "./s1-fresh-install.mjs";
 
 async function waitForLoadedEntry(client, timeoutMs = 90000) {
@@ -33,36 +34,41 @@ export const id = "s2";
 export async function run(ctx) {
   const { client, baseUrl, token, requiredRoles, log } = ctx;
 
-  // Find the current entry (from S1, or discover it fresh).
-  let entryId = ctx.entryId;
-  if (!entryId) {
-    const payload = await client.getEcEntities();
-    entryId = payload.entries && payload.entries[0] && payload.entries[0].entry_id;
-  }
-  assert(entryId, "S2: no existing config entry to remove");
-
-  log(`S2: removing config entry ${entryId}`);
-  await client.removeConfigEntry(entryId);
-
-  // Confirm it is gone before re-adding.
-  const removed = await pollUntil(
-    async () => {
-      const payload = await client.getEcEntities();
-      return (payload.entries || []).length;
-    },
-    (count) => count === 0,
-    { timeoutMs: 30000, intervalMs: 2000 },
+  // Discover the current entries over REST (idempotent: a retry re-running S2
+  // after the previous attempt already removed the entry finds none and just
+  // proceeds to the re-add).
+  const existingEntries = filterEntriesByDomain(
+    await listConfigEntries(baseUrl, token),
+    "ec_weather",
   );
-  assert(removed.ok, "S2: config entry did not disappear after removal");
+  if (existingEntries.length) {
+    for (const entry of existingEntries) {
+      log(`S2: removing config entry ${entry.entry_id} (REST)`);
+      const deleted = await deleteConfigEntry(baseUrl, token, entry.entry_id);
+      if (!deleted) log(`S2: entry ${entry.entry_id} was already gone`);
+    }
+    // Confirm removal is visible before re-adding.
+    const removed = await pollUntil(
+      async () => {
+        const payload = await client.getEcEntities();
+        return (payload.entries || []).length;
+      },
+      (count) => count === 0,
+      { timeoutMs: 30000, intervalMs: 2000 },
+    );
+    assert(removed.ok, "S2: config entry did not disappear after removal");
+  } else {
+    log("S2: no existing entry (removed by a previous attempt) — re-adding");
+  }
 
   log("S2: re-adding the integration (no restart)");
-  const created = await walkConfigFlow(baseUrl, token, {
+  const created = await ensureConfigEntry(baseUrl, token, {
     handler: "ec_weather",
     known: { city_query: "Newmarket", language: "en" },
     preferOptionLabel: { city_id: "Newmarket", city_query: "Newmarket" },
   });
-  assert(created.type === "create_entry", `expected create_entry, got ${created.type}`);
-  ctx.entryId = created.result && (created.result.entry_id || created.result);
+  ctx.entryId = created.entryId;
+  log(created.created ? "S2: entry re-created" : "S2: entry already present (retry)");
 
   const entry = await waitForLoadedEntry(client);
   const coverage = rolesCoverRequired(entry.roles, requiredRoles, OPTIONAL_ROLES);

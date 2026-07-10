@@ -7,9 +7,12 @@
  * first option for unknown required selects — looping until create_entry (or
  * failing loudly with the full step dump on an unfillable required field).
  *
- * The field-filling logic (`fillStep`, `extractOptions`) is pure and unit-
- * tested; only `walkConfigFlow` touches the network.
+ * The field-filling logic (`fillStep`, `extractOptions`) and the abort
+ * classification (`isAlreadyConfiguredAbort`) are pure and unit-tested; only
+ * `walkConfigFlow` / `ensureConfigEntry` touch the network.
  */
+
+import { filterEntriesByDomain, listConfigEntries } from "./rest.mjs";
 
 /**
  * Normalize a serialized schema field's selectable options to
@@ -156,7 +159,10 @@ export async function walkConfigFlow(
   for (let iteration = 0; iteration < maxSteps; iteration += 1) {
     if (step.type === "create_entry") return step;
     if (step.type === "abort") {
-      throw new Error(`flow-walker: flow aborted (${step.reason})`);
+      const error = new Error(`flow-walker: flow aborted (${step.reason})`);
+      error.flowAborted = true;
+      error.abortReason = step.reason;
+      throw error;
     }
     if (step.type === "menu") {
       // Pick the first menu option and continue.
@@ -179,4 +185,41 @@ export async function walkConfigFlow(
     throw new Error(`flow-walker: unexpected step type ${JSON.stringify(step.type)}`);
   }
   throw new Error(`flow-walker: flow did not complete within ${maxSteps} steps`);
+}
+
+/**
+ * Pure: true when an error is a flow abort caused by the integration already
+ * being configured (the single-instance guard). The retry wrapper re-runs a
+ * scenario against the same container, so setup must treat this as benign.
+ */
+export function isAlreadyConfiguredAbort(error) {
+  return Boolean(error && error.flowAborted && error.abortReason === "already_configured");
+}
+
+/**
+ * Idempotent setup: walk the config flow, but when it aborts with
+ * already_configured (a retry re-running setup on the same container), look up
+ * the existing entry over REST and continue with it.
+ *
+ * @returns {{ created: boolean, entryId: string }}
+ */
+export async function ensureConfigEntry(baseUrl, token, options) {
+  try {
+    const created = await walkConfigFlow(baseUrl, token, options);
+    const entryId = created.result && (created.result.entry_id || created.result);
+    return { created: true, entryId };
+  } catch (error) {
+    if (!isAlreadyConfiguredAbort(error)) throw error;
+    const existing = filterEntriesByDomain(
+      await listConfigEntries(baseUrl, token),
+      options.handler,
+    );
+    if (!existing.length) {
+      throw new Error(
+        "flow-walker: flow aborted with already_configured but no "
+        + `${options.handler} entry exists`,
+      );
+    }
+    return { created: false, entryId: existing[0].entry_id };
+  }
 }

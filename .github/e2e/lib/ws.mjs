@@ -113,12 +113,9 @@ export async function connect(baseUrl, token, { timeoutMs = 30000 } = {}) {
     /** Set the instance's location and units (Newmarket in S1). */
     updateCoreConfig: (config) => call({ type: "config/core/update", ...config }),
 
-    /** Loaded config entries for a domain. */
+    /** Config entries for a domain. NOTE: entry REMOVAL is not a websocket
+     *  command in HA — use lib/rest.mjs deleteConfigEntry (REST) for that. */
     listConfigEntries: (domain) => call({ type: "config_entries/get", domain }),
-
-    /** Remove a config entry (S2 delete-and-re-add). */
-    removeConfigEntry: (entryId) =>
-      call({ type: "config_entries/remove", entry_id: entryId }),
 
     /** The integration's role resolver — the card's contract. */
     getEcEntities: () => call({ type: "ec_weather/entities" }),

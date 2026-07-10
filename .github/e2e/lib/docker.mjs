@@ -34,13 +34,35 @@ export async function makeConfigDir() {
 }
 
 /**
- * Install (or replace) the ec_weather component into a config dir from a source
- * custom_components/ec_weather tree (the PR checkout or a downloaded release).
+ * Install the ec_weather component into a HOST config dir from a source
+ * custom_components/ec_weather tree. Only safe BEFORE the container has run:
+ * once HA (running as root) has imported the component, the bind mount holds
+ * root-owned __pycache__ files the runner user cannot delete — swap through
+ * docker instead (replaceComponentViaDocker).
  */
 export async function installComponent(configDir, sourceComponentDir) {
   const target = join(configDir, "custom_components", "ec_weather");
   await rm(target, { recursive: true, force: true });
   await cp(sourceComponentDir, target, { recursive: true });
+}
+
+/**
+ * Replace the installed component INSIDE a running container (S5 upgrade
+ * swap). The container runs as root and litters the bind mount with root-owned
+ * __pycache__; host-side rm would EACCES, so the removal and the copy both go
+ * through docker (`exec rm -rf` + `docker cp`).
+ */
+export async function replaceComponentViaDocker(containerName, sourceComponentDir) {
+  await docker([
+    "exec", containerName,
+    "rm", "-rf", "/config/custom_components/ec_weather",
+  ]);
+  // docker cp SRC_DIR NAME:DEST — DEST does not exist after the rm, so the
+  // source directory is copied AS /config/custom_components/ec_weather.
+  await docker([
+    "cp", sourceComponentDir,
+    `${containerName}:/config/custom_components/ec_weather`,
+  ]);
 }
 
 /**

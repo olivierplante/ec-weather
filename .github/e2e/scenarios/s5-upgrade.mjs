@@ -17,14 +17,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { assert, pollUntil, rolesCoverRequired, sleep } from "../lib/asserts.mjs";
-import { walkConfigFlow } from "../lib/flow-walker.mjs";
+import { assert, pollUntil, rolesCoverRequired } from "../lib/asserts.mjs";
+import { ensureConfigEntry } from "../lib/flow-walker.mjs";
 import { connect } from "../lib/ws.mjs";
 import { onboard } from "../lib/onboarding.mjs";
 import {
   installComponent,
   makeConfigDir,
   removeContainer,
+  replaceComponentViaDocker,
   restartContainer,
   startContainer,
   waitForHttp,
@@ -97,12 +98,14 @@ export async function run(ctx) {
     }
 
     log("S5: full setup on the previous release");
-    const created = await walkConfigFlow(container.baseUrl, accessToken, {
+    // Idempotent: a retry re-running S5 setup on the same container hits the
+    // single-instance already_configured abort and continues with the entry.
+    const created = await ensureConfigEntry(container.baseUrl, accessToken, {
       handler: "ec_weather",
       known: { city_query: "Newmarket", language: "en" },
       preferOptionLabel: { city_id: "Newmarket", city_query: "Newmarket" },
     });
-    assert(created.type === "create_entry", `S5: setup failed on old release (${created.type})`);
+    log(created.created ? "S5: entry created on old release" : "S5: entry already present (retry)");
 
     await pollUntil(
       async () => {
@@ -114,9 +117,11 @@ export async function run(ctx) {
       { timeoutMs: 90000, intervalMs: 3000 },
     );
 
-    log("S5: swapping in the candidate build and restarting");
+    log("S5: swapping in the candidate build (through docker) and restarting");
     client.close();
-    await installComponent(configDir, componentSource);
+    // The old release ran as root and littered the bind mount with root-owned
+    // __pycache__ — host-side rm would EACCES, so the swap goes through docker.
+    await replaceComponentViaDocker(container.name, componentSource);
     await restartContainer(container.name);
     await waitForHttp(container.baseUrl);
     client = await connect(container.baseUrl, accessToken);
@@ -163,6 +168,8 @@ export async function run(ctx) {
     client.close();
   } finally {
     await removeContainer(container.name).catch(() => {});
+    // Best-effort: the container wrote root-owned files (__pycache__,
+    // .storage) into the bind mount; EACCES here must not fail the scenario.
     await rm(configDir, { recursive: true, force: true }).catch(() => {});
   }
 }

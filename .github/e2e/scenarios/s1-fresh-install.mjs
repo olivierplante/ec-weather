@@ -12,7 +12,7 @@
  */
 
 import { assert, pollUntil, rolesCoverRequired, isKnownState, retryOnce } from "../lib/asserts.mjs";
-import { walkConfigFlow } from "../lib/flow-walker.mjs";
+import { ensureConfigEntry } from "../lib/flow-walker.mjs";
 
 // Precip / yesterday roles only exist when a nearby climate station is
 // configured, so they are allowed to be absent on a lenient fresh install.
@@ -54,14 +54,19 @@ export async function run(ctx) {
   const { client, baseUrl, token, requiredRoles, log } = ctx;
 
   log("S1: walking the config flow (Newmarket)");
-  const created = await walkConfigFlow(baseUrl, token, {
+  // Idempotent: a retry re-running S1 on the same container hits the
+  // single-instance already_configured abort and continues with the entry.
+  const created = await ensureConfigEntry(baseUrl, token, {
     handler: "ec_weather",
     known: { city_query: "Newmarket", language: "en" },
     preferOptionLabel: { city_id: "Newmarket", city_query: "Newmarket" },
   });
-  assert(created.type === "create_entry", `expected create_entry, got ${created.type}`);
-  ctx.entryId = created.result && (created.result.entry_id || created.result);
-  log(`S1: config flow created entry ${ctx.entryId}`);
+  ctx.entryId = created.entryId;
+  log(
+    created.created
+      ? `S1: config flow created entry ${ctx.entryId}`
+      : `S1: entry ${ctx.entryId} already present (retry)`,
+  );
 
   const entry = await waitForLoadedEntry(client);
   const roles = entry.roles;
