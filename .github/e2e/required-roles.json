@@ -1,0 +1,78 @@
+{
+  "temperature": {
+    "domain": "sensor",
+    "slug": "ec_temperature"
+  },
+  "feels_like": {
+    "domain": "sensor",
+    "slug": "ec_feels_like"
+  },
+  "humidity": {
+    "domain": "sensor",
+    "slug": "ec_humidity"
+  },
+  "wind_speed": {
+    "domain": "sensor",
+    "slug": "ec_wind_speed"
+  },
+  "wind_gust": {
+    "domain": "sensor",
+    "slug": "ec_wind_gust"
+  },
+  "wind_direction": {
+    "domain": "sensor",
+    "slug": "ec_wind_direction"
+  },
+  "condition": {
+    "domain": "sensor",
+    "slug": "ec_condition"
+  },
+  "icon_code": {
+    "domain": "sensor",
+    "slug": "ec_icon_code"
+  },
+  "sunrise": {
+    "domain": "sensor",
+    "slug": "ec_sunrise"
+  },
+  "sunset": {
+    "domain": "sensor",
+    "slug": "ec_sunset"
+  },
+  "hourly_forecast": {
+    "domain": "sensor",
+    "slug": "ec_hourly_forecast"
+  },
+  "daily_forecast": {
+    "domain": "sensor",
+    "slug": "ec_daily_forecast"
+  },
+  "air_quality": {
+    "domain": "sensor",
+    "slug": "ec_aqhi"
+  },
+  "alerts": {
+    "domain": "sensor",
+    "slug": "ec_alerts"
+  },
+  "alert_active": {
+    "domain": "binary_sensor",
+    "slug": "ec_alert_active"
+  },
+  "precip_probability_today": {
+    "domain": "sensor",
+    "slug": "ec_precip_probability_today"
+  },
+  "yesterday_rain": {
+    "domain": "sensor",
+    "slug": "ec_yesterday_rain"
+  },
+  "yesterday_snow": {
+    "domain": "sensor",
+    "slug": "ec_yesterday_snow"
+  },
+  "yesterday_precipitation": {
+    "domain": "sensor",
+    "slug": "ec_yesterday_precipitation"
+  }
+}
