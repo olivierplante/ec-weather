@@ -30,7 +30,7 @@ class ECWeather(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], Wea
     """Weather entity backed by the EC Weather custom integration."""
 
     _attr_has_entity_name = True
-    _attr_name = "Weather"
+    _attr_translation_key = "ec_weather"
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_wind_speed_unit = UnitOfSpeed.KILOMETERS_PER_HOUR
     _attr_supported_features = (

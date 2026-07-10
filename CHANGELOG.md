@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.3.0
+
+The card now finds its entities by itself.
+
+### What's new
+
+- The card no longer depends on fixed entity IDs. It asks the integration directly which entities to read, so fresh installs, reinstalls, and renamed entities all just work. This permanently ends the "Weather data unavailable" problem reported in issue #12
+- You can rename any EC Weather entity freely and the card keeps working. This release never changes your existing entity IDs
+- Entity names are now translated: French installs get French names (Température, Ressenti, and so on) and English names lose the redundant "EC" prefix, since entities already sit under the EC Weather device. Names you customized yourself are untouched
+
+### Fixed
+
+- The air quality sensor could sit at "unknown" forever when Environment Canada retired the configured AQHI station. The integration now detects this and switches to the nearest reporting station automatically, at a cost of at most one extra query per day
+
 ## 2.2.0
 
 Fewer queries to Environment Canada, and a fix for fresh installs.

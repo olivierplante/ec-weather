@@ -49,10 +49,12 @@ class TestPanelStructure:
 
 class TestYesterdayBranches:
     def test_reads_yesterday_sensors(self):
+        # Entity ids are resolved by role now (see LEGACY_ENTITY_IDS + the
+        # ec_weather/entities command); the panel reads the yesterday_* roles.
         section = _current_section()
-        assert "sensor.ec_yesterday_precipitation" in section
-        assert "sensor.ec_yesterday_rain" in section
-        assert "sensor.ec_yesterday_snow" in section
+        assert "entityIdFor('yesterday_precipitation')" in section
+        assert "entityIdFor('yesterday_rain')" in section
+        assert "entityIdFor('yesterday_snow')" in section
 
     def test_opted_out_row_omitted(self):
         """No sensor → no yesterday row at all (not a dash, not 'None')."""

@@ -84,7 +84,9 @@ class TestTodayPopCard:
         source = CARD_JS.read_text()
         start = source.find("_renderCurrent() {")
         section = source[start:source.find("_renderHourly() {", start)]
-        assert "sensor.ec_daily_forecast" in section
+        # Entity ids are resolved by role now (see LEGACY_ENTITY_IDS + the
+        # ec_weather/entities command); the Today row reads 'daily_forecast'.
+        assert "entityIdFor('daily_forecast')" in section
         assert "dailyPrecip(" in section
         # Compact units (design audit): "3mm"/"5cm", no space.
         assert "fmtAmtUnit(" in section
