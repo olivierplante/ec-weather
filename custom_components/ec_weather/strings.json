@@ -68,6 +68,11 @@
         "name": "Yesterday's Precipitation"
       }
     },
+    "binary_sensor": {
+      "ec_alert_active": {
+        "name": "Alert Active"
+      }
+    },
     "weather": {
       "ec_weather": {
         "name": "Weather"

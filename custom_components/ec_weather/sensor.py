@@ -36,7 +36,7 @@ from .coordinator import (
     ECWEonGCoordinator,
     WEonGListenerMixin,
 )
-from .models import ECWeatherData, build_device_info, migrate_short_entity_ids
+from .models import ECWeatherData, build_device_info
 from .transforms import (
     build_unified_hourly,
     extract_today_pop,
@@ -71,7 +71,7 @@ class ECGaugeSensorDescription(SensorEntityDescription):
 CURRENT_SENSOR_DESCRIPTIONS: tuple[ECCurrentSensorDescription, ...] = (
     ECCurrentSensorDescription(
         key="ec_temperature",
-        name="EC Temperature",
+        translation_key="ec_temperature",
         data_key="temp",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -79,7 +79,7 @@ CURRENT_SENSOR_DESCRIPTIONS: tuple[ECCurrentSensorDescription, ...] = (
     ),
     ECCurrentSensorDescription(
         key="ec_feels_like",
-        name="EC Feels Like",
+        translation_key="ec_feels_like",
         data_key="feels_like",
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -87,7 +87,7 @@ CURRENT_SENSOR_DESCRIPTIONS: tuple[ECCurrentSensorDescription, ...] = (
     ),
     ECCurrentSensorDescription(
         key="ec_humidity",
-        name="EC Humidity",
+        translation_key="ec_humidity",
         data_key="humidity",
         native_unit_of_measurement=PERCENTAGE,
         device_class=SensorDeviceClass.HUMIDITY,
@@ -95,43 +95,43 @@ CURRENT_SENSOR_DESCRIPTIONS: tuple[ECCurrentSensorDescription, ...] = (
     ),
     ECCurrentSensorDescription(
         key="ec_wind_speed",
-        name="EC Wind Speed",
+        translation_key="ec_wind_speed",
         data_key="wind_speed",
         native_unit_of_measurement=UnitOfSpeed.KILOMETERS_PER_HOUR,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     ECCurrentSensorDescription(
         key="ec_wind_gust",
-        name="EC Wind Gust",
+        translation_key="ec_wind_gust",
         data_key="wind_gust",
         native_unit_of_measurement=UnitOfSpeed.KILOMETERS_PER_HOUR,
         state_class=SensorStateClass.MEASUREMENT,
     ),
     ECCurrentSensorDescription(
         key="ec_wind_direction",
-        name="EC Wind Direction",
+        translation_key="ec_wind_direction",
         data_key="wind_direction",
     ),
     ECCurrentSensorDescription(
         key="ec_condition",
-        name="EC Condition",
+        translation_key="ec_condition",
         data_key="condition",
     ),
     ECCurrentSensorDescription(
         key="ec_icon_code",
-        name="EC Icon Code",
+        translation_key="ec_icon_code",
         data_key="icon_code",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     ECCurrentSensorDescription(
         key="ec_sunrise",
-        name="EC Sunrise",
+        translation_key="ec_sunrise",
         data_key="sunrise",
         top_level=True,
     ),
     ECCurrentSensorDescription(
         key="ec_sunset",
-        name="EC Sunset",
+        translation_key="ec_sunset",
         data_key="sunset",
         top_level=True,
     ),
@@ -141,14 +141,14 @@ CURRENT_SENSOR_DESCRIPTIONS: tuple[ECCurrentSensorDescription, ...] = (
 GAUGE_SENSOR_DESCRIPTIONS: tuple[ECGaugeSensorDescription, ...] = (
     ECGaugeSensorDescription(
         key="ec_temp_gauge",
-        name="EC Temperature Gauge",
+        translation_key="ec_temp_gauge",
         current_key="temp",
         high_key="temp_high",
         low_key="temp_low",
     ),
     ECGaugeSensorDescription(
         key="ec_feels_gauge",
-        name="EC Feels Like Gauge",
+        translation_key="ec_feels_gauge",
         current_key="feels_like",
         high_key="feels_like_high",
         low_key="feels_like_low",
@@ -293,7 +293,7 @@ class ECHourlyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoor
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Hourly Forecast"
+    _attr_translation_key = "ec_hourly_forecast"
     _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(
@@ -360,7 +360,7 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Daily Forecast"
+    _attr_translation_key = "ec_daily_forecast"
     _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(
@@ -455,7 +455,7 @@ class ECTodayPopSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinato
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Precipitation Probability Today"
+    _attr_translation_key = "ec_precip_probability_today"
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
 
@@ -512,7 +512,7 @@ class ECAQHISensor(CoordinatorEntity[ECAQHICoordinator], SensorEntity):
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Air Quality"
+    _attr_translation_key = "ec_air_quality"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coordinator: ECAQHICoordinator, city_code: str, city_name: str) -> None:
@@ -548,7 +548,7 @@ class ECWeatherSummarySensor(CoordinatorEntity[ECWeatherCoordinator], SensorEnti
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_name = "Weather Summary"
+    _attr_translation_key = "ec_weather_summary"
 
     def __init__(
         self,
@@ -594,7 +594,7 @@ class ECAlertCountSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
 
     _attr_has_entity_name = True
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_name = "Alert Count"
+    _attr_translation_key = "ec_alert_count"
 
     def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
         super().__init__(coordinator)
@@ -617,7 +617,7 @@ class ECAlertsSensor(CoordinatorEntity[ECAlertCoordinator], SensorEntity):
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Alerts"
+    _attr_translation_key = "ec_alerts"
     _unrecorded_attributes = frozenset({MATCH_ALL})
 
     def __init__(self, coordinator: ECAlertCoordinator, city_code: str, city_name: str) -> None:
@@ -700,11 +700,6 @@ class ECYesterdayPrecipSensor(CoordinatorEntity[ECClimateCoordinator], SensorEnt
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_device_class = SensorDeviceClass.PRECIPITATION
 
-    _KEY_NAMES = {
-        "yesterday_rain": "Yesterday's Rain",
-        "yesterday_snow": "Yesterday's Snow",
-        "yesterday_precipitation": "Yesterday's Precipitation",
-    }
     _KEY_UNITS = {
         "yesterday_rain": UnitOfPrecipitationDepth.MILLIMETERS,
         "yesterday_snow": UnitOfPrecipitationDepth.CENTIMETERS,
@@ -720,7 +715,7 @@ class ECYesterdayPrecipSensor(CoordinatorEntity[ECClimateCoordinator], SensorEnt
     ) -> None:
         super().__init__(coordinator)
         self._key = key
-        self._attr_name = self._KEY_NAMES[key]
+        self._attr_translation_key = f"ec_{key}"
         self._attr_native_unit_of_measurement = self._KEY_UNITS[key]
         self._attr_unique_id = f"ec_{key}_{city_code}"
         # Pin the entity_id to the short form the card reads (e.g.
@@ -789,10 +784,9 @@ async def async_setup_entry(
                 ECYesterdayPrecipSensor(data.climate, key, city_code, city_name)
             )
 
-    # Migrate any device-prefixed entity_ids from earlier builds to the short
-    # ids the card reads, then remove sensors orphaned by a station-type change
-    # or opt-out (HA doesn't auto-remove those).
-    migrate_short_entity_ids(hass, "sensor", _short_entity_id_map(city_code))
+    # Remove sensors orphaned by a station-type change or opt-out (HA doesn't
+    # auto-remove those). Card-read entity_ids are resolved at runtime by the
+    # ec_weather/entities websocket command, so no id migration is needed.
     _remove_stale_precip_entities(hass, station_type, city_code)
 
     async_add_entities(entities)
@@ -810,24 +804,3 @@ def _remove_stale_precip_entities(
         if entity_id:
             registry.async_remove(entity_id)
             _LOGGER.debug("Removed stale precip entity %s", entity_id)
-
-
-# unique_id slug -> desired short entity_id, for every sensor the card reads by
-# a fixed id. Earlier builds registered these with a device-prefixed entity_id
-# (sensor.ec_weather_<city>_...), which the card can't find; migrate them.
-def _short_entity_id_map(city_code: str) -> dict[str, str]:
-    slugs = [description.key for description in CURRENT_SENSOR_DESCRIPTIONS]
-    keys = {slug: f"sensor.{slug}" for slug in slugs}
-    keys.update(
-        {
-            "ec_hourly_forecast": "sensor.ec_hourly_forecast",
-            "ec_daily_forecast": "sensor.ec_daily_forecast",
-            "ec_aqhi": "sensor.ec_air_quality",
-            "ec_alerts": "sensor.ec_alerts",
-            "ec_precip_probability_today": "sensor.ec_precip_probability_today",
-            "ec_yesterday_rain": "sensor.ec_yesterday_rain",
-            "ec_yesterday_snow": "sensor.ec_yesterday_snow",
-            "ec_yesterday_precipitation": "sensor.ec_yesterday_precipitation",
-        }
-    )
-    return {f"{slug}_{city_code}": eid for slug, eid in keys.items()}

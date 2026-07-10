@@ -46,6 +46,7 @@ from .const import (
 from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator
 from .coordinator import ECWEonGCoordinator, ECClimateCoordinator
 from .models import ECWeatherData
+from .websocket import async_register_websocket_commands
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -81,6 +82,9 @@ CARD_VERSIONED_URL = f"{CARD_RESOURCE_URL}?v={CARD_VERSION}"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Register the ec-weather-card Lovelace resource."""
+
+    # Register the card's entity-discovery websocket command (once, globally).
+    async_register_websocket_commands(hass)
 
     # Serve the JS file from inside the component directory. The screenshots
     # dir is served too when present (docs rendered inside HA reference it),
@@ -191,6 +195,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     aqhi_coordinator = ECAQHICoordinator(
         hass, aqhi_location_id,
         interval_minutes=aqhi_interval, polling=aqhi_polls,
+        entry=entry,
     )
     weong_polls = polling_mode == POLLING_MODE_FULL
     # The extended-forecast checkbox gates the outlook days (legacy phase-C

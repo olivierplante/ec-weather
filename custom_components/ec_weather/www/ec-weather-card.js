@@ -1036,49 +1036,268 @@ export function t(hass, key) {
 
 const VALID_SECTIONS = ['alerts', 'current', 'hourly', 'daily'];
 
-// Entity IDs consumed by each section
-const SECTION_ENTITIES = {
+// Roles a section REQUIRES: every one must resolve to an available state or the
+// section renders its unavailable/loading placeholder.
+const SECTION_ROLES = {
   alerts: [
-    'binary_sensor.ec_alert_active',
-    'sensor.ec_alerts',
+    'alert_active',
+    'alerts',
   ],
   current: [
-    'sensor.ec_temperature',
-    'sensor.ec_feels_like',
-    'sensor.ec_wind_speed',
-    'sensor.ec_wind_direction',
-    'sensor.ec_condition',
-    'sensor.ec_icon_code',
-    // sensor.ec_sunrise / ec_sunset are optional — their absence renders the
-    // polar day/night sun states, so they must not block availability.
-    // sensor.ec_humidity, ec_wind_gust, ec_air_quality and the
-    // sensor.ec_yesterday_* family are optional — read but don't block.
+    'temperature',
+    'feels_like',
+    'wind_speed',
+    'wind_direction',
+    'condition',
+    'icon_code',
+    // sunrise / sunset are optional — their absence renders the polar
+    // day/night sun states, so they must not block availability.
+    // humidity, wind_gust, air_quality and the yesterday_* family are
+    // optional — read but don't block (see SECTION_WATCH_ROLES).
   ],
   hourly: [
-    'sensor.ec_hourly_forecast',
+    'hourly_forecast',
   ],
   daily: [
-    'sensor.ec_daily_forecast',
+    'daily_forecast',
   ],
 };
 
-// Entities a section reads for display but must NOT gate availability on —
-// they still need to trigger a re-render when they change. Without this,
-// e.g. the precip panel keeps saying 'None expected' from before the daily
-// forecast populated, until an unrelated current sensor happens to change.
-const SECTION_WATCH = {
+// Roles a section reads for display but must NOT gate availability on — they
+// still need to trigger a re-render when they change. Without this, e.g. the
+// precip panel keeps saying 'None expected' from before the daily forecast
+// populated, until an unrelated current sensor happens to change.
+const SECTION_WATCH_ROLES = {
   current: [
-    'sensor.ec_daily_forecast',
-    'sensor.ec_sunrise',
-    'sensor.ec_sunset',
-    'sensor.ec_humidity',
-    'sensor.ec_wind_gust',
-    'sensor.ec_air_quality',
-    'sensor.ec_yesterday_precipitation',
-    'sensor.ec_yesterday_rain',
-    'sensor.ec_yesterday_snow',
+    'daily_forecast',
+    'sunrise',
+    'sunset',
+    'humidity',
+    'wind_gust',
+    'air_quality',
+    'yesterday_precipitation',
+    'yesterday_rain',
+    'yesterday_snow',
   ],
 };
+
+// ─── Card Entity Discovery ───────────────────────────────────────────────────
+//
+// The card resolves its entities by a stable machine-readable ROLE from the
+// ec_weather/entities websocket command (owned by the integration). entity_ids
+// stop mattering: a user rename of the display id no longer breaks the card
+// (issue #12).
+//
+// One module-level resolution is shared by every card instance on the page (the
+// dashboard runs four section cards); they share a single cached promise, so
+// one websocket call per page load. The resolver re-runs on
+// entity_registry_updated events and on websocket reconnect; a resolution
+// change re-renders every registered card. Reading stays fully out of the hot
+// `set hass` path, which only consults the already-resolved role map.
+
+// LEGACY fallback map — the ONLY place literal entity_ids may live (enforced by
+// a source-text test). Used when the websocket command is unavailable
+// (transient old-integration/new-card skew across an HA restart) or errors, so
+// every install that works today keeps working through the transition.
+// ── LEGACY_ENTITY_IDS:START ──
+// Covers every role in the integration's CARD_ROLES contract. (air_quality's
+// display id keeps the ec_air_quality name even though its unique_id slug is
+// ec_aqhi — the display id is what reads today.)
+export const LEGACY_ENTITY_IDS = {
+  temperature: 'sensor.ec_temperature',
+  feels_like: 'sensor.ec_feels_like',
+  humidity: 'sensor.ec_humidity',
+  wind_speed: 'sensor.ec_wind_speed',
+  wind_gust: 'sensor.ec_wind_gust',
+  wind_direction: 'sensor.ec_wind_direction',
+  condition: 'sensor.ec_condition',
+  icon_code: 'sensor.ec_icon_code',
+  sunrise: 'sensor.ec_sunrise',
+  sunset: 'sensor.ec_sunset',
+  hourly_forecast: 'sensor.ec_hourly_forecast',
+  daily_forecast: 'sensor.ec_daily_forecast',
+  air_quality: 'sensor.ec_air_quality',
+  alerts: 'sensor.ec_alerts',
+  alert_active: 'binary_sensor.ec_alert_active',
+  precip_probability_today: 'sensor.ec_precip_probability_today',
+  yesterday_rain: 'sensor.ec_yesterday_rain',
+  yesterday_snow: 'sensor.ec_yesterday_snow',
+  yesterday_precipitation: 'sensor.ec_yesterday_precipitation',
+};
+// ── LEGACY_ENTITY_IDS:END ──
+
+// Shared resolution state for every card instance on the page.
+//   promise      — the in-flight/settled resolution (shared, so one call/page)
+//   entries      — the command payload: [{entry_id, device_id, city_name, roles}]
+//   activeRoles  — the fallback role map in use while source === 'fallback'
+//   source       — null (pending) | 'command' | 'fallback'
+const _resolver = {
+  promise: null,
+  entries: null,
+  activeRoles: null,
+  source: null,
+  subscribed: false,
+  hintLogged: false,
+  hass: null,
+  listeners: new Set(),
+};
+
+/** Reset shared resolver state — test-only seam for isolation between cases. */
+export function resetResolver() {
+  _resolver.promise = null;
+  _resolver.entries = null;
+  _resolver.activeRoles = null;
+  _resolver.source = null;
+  _resolver.subscribed = false;
+  _resolver.hintLogged = false;
+  _resolver.hass = null;
+  _resolver.listeners = new Set();
+}
+
+/** Read-only handle on the shared resolver state (used by tests). */
+export function getResolverState() {
+  return _resolver;
+}
+
+function _setCommandResolution(entries) {
+  _resolver.source = 'command';
+  _resolver.entries = entries;
+  _resolver.activeRoles = null;
+}
+
+function _setFallbackResolution() {
+  _resolver.source = 'fallback';
+  _resolver.entries = null;
+  _resolver.activeRoles = LEGACY_ENTITY_IDS;
+}
+
+function _notifyResolutionListeners() {
+  _resolver.listeners.forEach((listener) => {
+    try {
+      listener();
+    } catch (err) {
+      // A single card's re-render failure must not stop the rest.
+      console.error('ec-weather-card: resolution listener failed', err);
+    }
+  });
+}
+
+/**
+ * Resolve card roles for every card instance. First call issues the shared
+ * websocket command and caches its promise; later calls return the same
+ * promise. On success stores the entries; on error or empty payload falls back
+ * to LEGACY_ENTITY_IDS. Never rejects outward. With no websocket connection
+ * (early boot or the test harness) it falls back SYNCHRONOUSLY so the first
+ * render already has ids.
+ */
+export function resolveEntities(hass) {
+  if (_resolver.promise) return _resolver.promise;
+
+  const connection = hass && hass.connection;
+  if (!connection || typeof connection.sendMessagePromise !== 'function') {
+    _setFallbackResolution();
+    _resolver.promise = Promise.resolve();
+    return _resolver.promise;
+  }
+
+  _resolver.promise = connection
+    .sendMessagePromise({ type: 'ec_weather/entities' })
+    .then((result) => {
+      const entries = result && result.entries;
+      if (!entries || entries.length === 0) {
+        _setFallbackResolution();
+      } else {
+        _setCommandResolution(entries);
+      }
+      _notifyResolutionListeners();
+    })
+    .catch(() => {
+      _setFallbackResolution();
+      _notifyResolutionListeners();
+    });
+  return _resolver.promise;
+}
+
+/**
+ * Re-issue the command after a registry change or reconnect. Only re-renders
+ * (notifies listeners) when the resolved payload actually changed (JSON
+ * compare), so unrelated registry churn stays free.
+ */
+function reresolveEntities(hass) {
+  const connection = hass && hass.connection;
+  if (!connection || typeof connection.sendMessagePromise !== 'function') return;
+
+  connection
+    .sendMessagePromise({ type: 'ec_weather/entities' })
+    .then((result) => {
+      const entries = result && result.entries;
+      const hasEntries = Array.isArray(entries) && entries.length > 0;
+      const nextSource = hasEntries ? 'command' : 'fallback';
+      const nextEntries = hasEntries ? entries : null;
+      const unchanged = nextSource === _resolver.source
+        && JSON.stringify(nextEntries) === JSON.stringify(_resolver.entries);
+      if (unchanged) return;
+      if (hasEntries) _setCommandResolution(entries);
+      else _setFallbackResolution();
+      _notifyResolutionListeners();
+    })
+    .catch(() => {
+      // A failed re-resolution keeps the last good resolution in place.
+    });
+}
+
+/**
+ * Subscribe ONCE (module-level) to the registry-updated core event (debounced)
+ * and to websocket reconnect, both re-issuing the command. Guarded so repeated
+ * card mounts register the subscriptions only once.
+ */
+function ensureResolutionSubscriptions(hass) {
+  _resolver.hass = hass;
+  if (_resolver.subscribed) return;
+  const connection = hass && hass.connection;
+  if (!connection) return;
+  _resolver.subscribed = true;
+
+  let debounceTimer = null;
+  const scheduleReresolve = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => reresolveEntities(_resolver.hass), 500);
+  };
+
+  if (typeof connection.subscribeEvents === 'function') {
+    connection.subscribeEvents(scheduleReresolve, 'entity_registry_updated');
+  }
+  if (typeof connection.addEventListener === 'function') {
+    connection.addEventListener('ready', () => reresolveEntities(_resolver.hass));
+  }
+}
+
+/**
+ * Choose the config entry this card reads. If the card config names a `device`,
+ * match it against city_name (case-insensitive), device_id or entry_id. With a
+ * single entry, use it. Otherwise pick deterministically by city_name
+ * (alphabetical). Pure — the multi-device console hint lives in the caller so it
+ * fires at most once per page.
+ */
+export function selectEntry(entries, config) {
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+
+  const device = config && config.device;
+  if (device) {
+    const wanted = String(device).toLowerCase();
+    const match = entries.find((entry) =>
+      (entry.city_name && entry.city_name.toLowerCase() === wanted)
+      || entry.device_id === device
+      || entry.entry_id === device);
+    if (match) return match;
+  }
+
+  if (entries.length === 1) return entries[0];
+
+  return entries
+    .slice()
+    .sort((a, b) => String(a.city_name || '').localeCompare(String(b.city_name || '')))[0];
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1397,6 +1616,19 @@ export class ECWeatherCard extends HTMLElement {
     this._config = null;
     this._rendered = false;
     this._expandedAlerts = new Set();
+    this._activeRoles = null;
+    // Re-render when the shared resolution changes (registry rename, reconnect).
+    this._onResolutionChange = () => {
+      if (this._hass) this._applyHass(null);
+    };
+  }
+
+  connectedCallback() {
+    _resolver.listeners.add(this._onResolutionChange);
+  }
+
+  disconnectedCallback() {
+    _resolver.listeners.delete(this._onResolutionChange);
   }
 
   setConfig(config) {
@@ -1408,6 +1640,7 @@ export class ECWeatherCard extends HTMLElement {
     }
     this._config = config;
     this._rendered = false;
+    this._activeRoles = null;
   }
 
   set hass(hass) {
@@ -1416,10 +1649,69 @@ export class ECWeatherCard extends HTMLElement {
 
     if (!hass) return;
 
+    // Resolution is fully out-of-band: kick off (or share) the websocket
+    // resolution and register the registry/reconnect subscriptions once, then
+    // apply the current hass against the already-resolved role map.
+    _resolver.listeners.add(this._onResolutionChange);
+    ensureResolutionSubscriptions(hass);
+    resolveEntities(hass);
+
+    this._applyHass(oldHass);
+  }
+
+  /**
+   * Resolve this card's role → entity_id map for the current resolution. In
+   * command mode it selects this card's config entry; in fallback mode (or
+   * before the command answers) it uses the legacy map. Recomputed per hass
+   * update — the selection is cheap and the hot path stays read-only.
+   */
+  _refreshRoleMap() {
+    const entries = _resolver.entries;
+    if (_resolver.source === 'command' && Array.isArray(entries) && entries.length > 0) {
+      const entry = selectEntry(entries, this._config);
+      this._activeRoles = entry ? entry.roles : {};
+      // Multiple devices with no explicit `device` option → deterministic pick
+      // plus a one-line hint, logged at most once per page.
+      if (entries.length > 1 && !(this._config && this._config.device) && !_resolver.hintLogged) {
+        _resolver.hintLogged = true;
+        const shown = entry ? (entry.city_name || entry.entry_id) : '';
+        console.info(
+          `ec-weather-card: multiple EC Weather devices found; showing "${shown}". `
+          + 'Set the card\'s `device` option to choose one explicitly.'
+        );
+      }
+    } else {
+      this._activeRoles = LEGACY_ENTITY_IDS;
+    }
+  }
+
+  /** Resolve a role to its live entity_id for this card (may be undefined). */
+  entityIdFor(role) {
+    return (this._activeRoles || LEGACY_ENTITY_IDS)[role];
+  }
+
+  /**
+   * Apply the current hass against the resolved role map. Called from `set hass`
+   * and from the shared resolution listener (with oldHass === null to force a
+   * re-render). Adds no per-state-change work beyond synchronous map reads.
+   */
+  _applyHass(oldHass) {
+    const hass = this._hass;
+    if (!hass) return;
+
+    // Resolution round-trip not finished → quiet loading state, never the
+    // unavailable/error state (which would flash on every page load).
+    if (_resolver.source === null) {
+      this._renderPending();
+      return;
+    }
+
+    this._refreshRoleMap();
+
     // On-demand refresh: trigger update_entity if data might be stale.
     // Only the 'current' section triggers refresh (avoids 4 sections all firing).
     if (this._config.section === 'current' && !this._refreshTriggered) {
-      const tempState = hass.states['sensor.ec_temperature'];
+      const tempState = hass.states[this.entityIdFor('temperature')];
       if (tempState && tempState.state !== 'unavailable') {
         const lastUpdated = new Date(tempState.last_updated);
         const ageMinutes = (Date.now() - lastUpdated.getTime()) / 60000;
@@ -1427,19 +1719,21 @@ export class ECWeatherCard extends HTMLElement {
           this._refreshTriggered = true;
           hass.callService('homeassistant', 'update_entity', {
             entity_id: [
-              'sensor.ec_temperature',
-              'sensor.ec_hourly_forecast',
-              'sensor.ec_daily_forecast',
-            ],
+              this.entityIdFor('temperature'),
+              this.entityIdFor('hourly_forecast'),
+              this.entityIdFor('daily_forecast'),
+            ].filter(Boolean),
           });
         }
       }
     }
 
-    // Check if required entities are available
-    const entities = SECTION_ENTITIES[this._config.section] || [];
-    const allAvailable = entities.every(e => {
-      const state = hass.states[e];
+    // Check if required roles resolve to available states. A required role that
+    // resolves to no id (missing entity) reads as unavailable, same as today.
+    const roles = SECTION_ROLES[this._config.section] || [];
+    const allAvailable = roles.every((role) => {
+      const id = this.entityIdFor(role);
+      const state = id ? hass.states[id] : null;
       return state && state.state !== 'unavailable';
     });
 
@@ -1448,21 +1742,23 @@ export class ECWeatherCard extends HTMLElement {
       return;
     }
 
-    // Change detection covers required + watched entities (SECTION_WATCH):
+    // Change detection covers required + watched roles (SECTION_WATCH_ROLES):
     // optional data sources must re-render too, they just don't gate
     // availability above.
-    const watched = entities.concat(SECTION_WATCH[this._config.section] || []);
+    const watchRoles = roles.concat(SECTION_WATCH_ROLES[this._config.section] || []);
+    const anyChanged = (base) => watchRoles.some((role) => {
+      const id = this.entityIdFor(role);
+      return base.states[id] !== hass.states[id];
+    });
 
-    // Reset refresh trigger when entities actually change
+    // Reset refresh trigger when watched entities actually change.
     if (oldHass && this._refreshTriggered) {
-      const changed = watched.some(e => oldHass.states[e] !== hass.states[e]);
-      if (changed) this._refreshTriggered = false;
+      if (anyChanged(oldHass)) this._refreshTriggered = false;
     }
 
-    // Only re-render if relevant entities changed
+    // Only re-render if relevant entities changed.
     if (oldHass) {
-      const changed = watched.some(e => oldHass.states[e] !== hass.states[e]);
-      if (!changed) return;
+      if (!anyChanged(oldHass)) return;
     }
 
     this._updateDisplay();
@@ -1522,7 +1818,7 @@ export class ECWeatherCard extends HTMLElement {
     // coordinator is down too, it's a real outage — hide entirely (the
     // current section carries the single unavailable state).
     if (this._config.section === 'hourly' || this._config.section === 'daily') {
-      const tempState = h?.states?.['sensor.ec_temperature'];
+      const tempState = h?.states?.[this.entityIdFor('temperature')];
       const weatherUp = tempState && tempState.state !== 'unavailable';
       if (weatherUp) {
         const title = this._config.section === 'hourly' ? t(h, 'hourly') : t(h, 'week');
@@ -1544,7 +1840,7 @@ export class ECWeatherCard extends HTMLElement {
 
     // Single "Weather unavailable" state: quiet icon + title + explanation +
     // retry + last-updated time. No fake zeros.
-    const tempState = h?.states?.['sensor.ec_temperature'];
+    const tempState = h?.states?.[this.entityIdFor('temperature')];
     let updatedMeta = '';
     if (tempState && tempState.last_updated) {
       const updDate = new Date(tempState.last_updated);
@@ -1575,7 +1871,7 @@ export class ECWeatherCard extends HTMLElement {
     this.shadowRoot.getElementById('retry').addEventListener('click', () => {
       if (!this._hass) return;
       this._hass.callService('homeassistant', 'update_entity', {
-        entity_id: 'sensor.ec_temperature',
+        entity_id: this.entityIdFor('temperature'),
       });
     });
   }
@@ -1590,12 +1886,55 @@ export class ECWeatherCard extends HTMLElement {
     }
   }
 
+  /**
+   * Transient loading state shown for the one round-trip while the shared
+   * entity resolution is pending. Reuses the quiet spinner (never the
+   * unavailable/error state — that would flash on every page load). Alerts stay
+   * hidden, exactly as they do when there are no alerts.
+   */
+  _renderPending() {
+    const h = this._hass;
+    if (this._config.section === 'alerts') {
+      this.shadowRoot.innerHTML = '';
+      return;
+    }
+    const titleKey = this._config.section === 'hourly' ? 'hourly'
+      : this._config.section === 'daily' ? 'week' : null;
+    const titleHtml = titleKey ? `<div class="seclbl">${t(h, titleKey)}</div>` : '';
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: block; contain: inline-size; }
+        ${TOKEN_CSS}
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .seclbl {
+          font-size: 11.5px; font-weight: 600; letter-spacing: 0.11em;
+          color: var(--ecw-muted); text-transform: uppercase;
+          margin-top: 24px; margin-bottom: 12px;
+        }
+        .ustate {
+          display: flex; flex-direction: column; align-items: center;
+          justify-content: center; gap: 12px; padding: 20px;
+          min-height: 90px; text-align: center;
+        }
+        .uicon { --mdc-icon-size: 26px; color: var(--ecw-muted); }
+        .umsg { font-size: 13.5px; color: var(--ecw-text2); }
+      </style>
+      <div class="${themeClass(h)}">
+        ${titleHtml}
+        <div class="ustate">
+          <ha-icon icon="mdi:loading" class="uicon" style="animation:spin 1s linear infinite"></ha-icon>
+          <div class="umsg">${t(h, 'loading')}</div>
+        </div>
+      </div>
+    `;
+  }
+
   // ─── Section Renderers (to be implemented per phase) ─────────────────────
 
   _renderAlerts() {
     const h = this._hass;
-    const active = entityVal(h, 'binary_sensor.ec_alert_active');
-    const alertsSensor = h.states['sensor.ec_alerts'];
+    const active = entityVal(h, this.entityIdFor('alert_active'));
+    const alertsSensor = h.states[this.entityIdFor('alerts')];
     const alerts = alertsSensor?.attributes?.alerts;
 
     // Hide entirely when no alerts
@@ -1717,14 +2056,14 @@ export class ECWeatherCard extends HTMLElement {
     const lang = (h && h.language) || 'en';
 
     // ── Hero: temperature + condition + feels-like ─────────────────────────
-    const temp = entityNum(h, 'sensor.ec_temperature');
-    const feelsRaw = entityNum(h, 'sensor.ec_feels_like');
+    const temp = entityNum(h, this.entityIdFor('temperature'));
+    const feelsRaw = entityNum(h, this.entityIdFor('feels_like'));
     const tVal = temp !== null ? Math.round(temp) : null;
     const feels = feelsRaw !== null ? Math.round(feelsRaw) : null;
     // Feels-like is dropped when absent OR equal to the temperature.
     const showFeels = feels !== null && tVal !== null && feels !== tVal;
-    const condition = entityVal(h, 'sensor.ec_condition');
-    const iconCode = entityNum(h, 'sensor.ec_icon_code');
+    const condition = entityVal(h, this.entityIdFor('condition'));
+    const iconCode = entityNum(h, this.entityIdFor('icon_code'));
     const heroIconHtml = iconCode !== null
       ? '<ha-icon icon="' + ecIcon(iconCode) + '" class="heroicon"></ha-icon>'
       : missingIconHtml(52);
@@ -1738,7 +2077,7 @@ export class ECWeatherCard extends HTMLElement {
     // Today's row shares dailyPrecip() with the daily column so they never
     // diverge. A dry today collapses its row; the header shows "None expected"
     // where the chance % normally sits.
-    const todayEntry = (h.states['sensor.ec_daily_forecast']
+    const todayEntry = (h.states[this.entityIdFor('daily_forecast')]
       ?.attributes?.forecast || [])[0];
     const todayPrecip = todayEntry ? dailyPrecip(todayEntry) : null;
     const todayRain = todayPrecip ? todayPrecip.rainAmt : 0;
@@ -1751,16 +2090,16 @@ export class ECWeatherCard extends HTMLElement {
     // rendered as water only, with the explanatory tooltip.
     let yday = null;
     let ydayTooltip = '';
-    const ydayState = h.states['sensor.ec_yesterday_precipitation'];
+    const ydayState = h.states[this.entityIdFor('yesterday_precipitation')];
     if (ydayState) {
       const ydayAttrs = ydayState.attributes || {};
-      const ydayTotal = entityNum(h, 'sensor.ec_yesterday_precipitation');
+      const ydayTotal = entityNum(h, this.entityIdFor('yesterday_precipitation'));
       if (!ydayAttrs.published || ydayTotal === null) {
         yday = 'pending';
       } else if (ydayAttrs.data_type === 'split') {
         yday = {
-          rain: entityNum(h, 'sensor.ec_yesterday_rain') || 0,
-          snow: entityNum(h, 'sensor.ec_yesterday_snow') || 0,
+          rain: entityNum(h, this.entityIdFor('yesterday_rain')) || 0,
+          snow: entityNum(h, this.entityIdFor('yesterday_snow')) || 0,
         };
       } else {
         yday = { rain: ydayTotal, snow: 0 };
@@ -1827,10 +2166,10 @@ export class ECWeatherCard extends HTMLElement {
 
     // ── Metric bar: humidity · wind · AQHI · UV · sun ───────────────────────
     // Cells with no data are not rendered; the rest reflow evenly (flex).
-    const humidity = entityNum(h, 'sensor.ec_humidity');
-    const windSpeed = entityNum(h, 'sensor.ec_wind_speed');
-    const windGust = entityNum(h, 'sensor.ec_wind_gust');
-    const windDir = entityVal(h, 'sensor.ec_wind_direction');
+    const humidity = entityNum(h, this.entityIdFor('humidity'));
+    const windSpeed = entityNum(h, this.entityIdFor('wind_speed'));
+    const windGust = entityNum(h, this.entityIdFor('wind_gust'));
+    const windDir = entityVal(h, this.entityIdFor('wind_direction'));
     const windState = windCellState(windSpeed);
     // Headline is speed + unit ("12 km/h") so it survives the narrow-tile wrap
     // unambiguously; the secondary line carries direction and gusts joined by a
@@ -1845,7 +2184,7 @@ export class ECWeatherCard extends HTMLElement {
       gustText = subParts.join(' · ');
     }
 
-    const aqhi = entityNum(h, 'sensor.ec_air_quality');
+    const aqhi = entityNum(h, this.entityIdFor('air_quality'));
     const aqhiCol = aqhiColor(aqhi);
     const uvIndex = todayEntry && todayEntry.uv_index != null ? todayEntry.uv_index : null;
     const uvCol = uvColor(uvIndex);
@@ -1873,8 +2212,8 @@ export class ECWeatherCard extends HTMLElement {
     // ── Sun cell: arc with the dot placed by time of day; polar day/night
     // only at polar latitudes (sunCellMode) — transient rise/set outages
     // hide the cell instead of claiming 'Polar night' at 45°N ──
-    const sunrise = entityVal(h, 'sensor.ec_sunrise');
-    const sunset = entityVal(h, 'sensor.ec_sunset');
+    const sunrise = entityVal(h, this.entityIdFor('sunrise'));
+    const sunset = entityVal(h, this.entityIdFor('sunset'));
     const latitude = h.config != null ? h.config.latitude : null;
     const sunMode = sunCellMode(sunrise, sunset, latitude, h.states['sun.sun']?.state);
     const toMinutes = (hhmm) => {
@@ -1968,7 +2307,7 @@ export class ECWeatherCard extends HTMLElement {
     // ── Stale but present: slim neutral banner + dimmed body, keep the last
     // reading visible. staleInfo() measures the fetch heartbeat — 2 h without
     // a SUCCESSFUL fetch, not 2 h without a value change. ──
-    const stale = staleInfo(h.states['sensor.ec_temperature'], Date.now());
+    const stale = staleInfo(h.states[this.entityIdFor('temperature')], Date.now());
     let staleBannerHtml = '';
     let bodyOpacity = 1;
     if (stale) {
@@ -2085,17 +2424,17 @@ export class ECWeatherCard extends HTMLElement {
       if (!this._hass) return;
       this._hass.callService('homeassistant', 'update_entity', {
         entity_id: [
-          'sensor.ec_temperature',
-          'sensor.ec_hourly_forecast',
-          'sensor.ec_daily_forecast',
-        ],
+          this.entityIdFor('temperature'),
+          this.entityIdFor('hourly_forecast'),
+          this.entityIdFor('daily_forecast'),
+        ].filter(Boolean),
       });
     });
   }
 
   _renderHourly() {
     const h = this._hass;
-    const sensor = h.states['sensor.ec_hourly_forecast'];
+    const sensor = h.states[this.entityIdFor('hourly_forecast')];
     const rawForecast = sensor?.attributes?.forecast;
 
     // Store rows mid-load can have temp, icon and POP all null — skip them
@@ -2139,7 +2478,7 @@ export class ECWeatherCard extends HTMLElement {
 
   _renderDaily() {
     const h = this._hass;
-    const sensor = h.states['sensor.ec_daily_forecast'];
+    const sensor = h.states[this.entityIdFor('daily_forecast')];
     const forecast = sensor?.attributes?.forecast;
 
     if (!forecast || forecast.length === 0) {

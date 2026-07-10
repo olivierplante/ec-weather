@@ -68,6 +68,11 @@
         "name": "Précipitations d'hier"
       }
     },
+    "binary_sensor": {
+      "ec_alert_active": {
+        "name": "Alerte active"
+      }
+    },
     "weather": {
       "ec_weather": {
         "name": "Météo"

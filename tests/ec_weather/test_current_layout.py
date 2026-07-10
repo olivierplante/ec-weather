@@ -73,7 +73,9 @@ class TestMetricBar:
     def test_humidity_cell_conditional(self):
         """Humidity null → cell not rendered → flex reflow."""
         section = _current_section()
-        assert "sensor.ec_humidity" in section
+        # Entity ids are resolved by role now (see LEGACY_ENTITY_IDS + the
+        # ec_weather/entities command); the section reads the 'humidity' role.
+        assert "entityIdFor('humidity')" in section
         assert "humidity !== null" in section or "humidity != null" in section
 
     def test_wind_calm(self):
@@ -122,21 +124,22 @@ class TestMetricBar:
 
 class TestRenderGating:
     def test_watch_list_exists(self):
-        """Entities the section displays but must not gate availability on
-        still need to trigger re-renders when they change."""
+        """Roles the section displays but must not gate availability on still
+        need to trigger re-renders when they change. The watch list is a role
+        list now (resolved to ids via the entity-discovery command)."""
         source = CARD_JS.read_text()
-        assert "SECTION_WATCH" in source
-        watch_start = source.find("const SECTION_WATCH")
+        assert "SECTION_WATCH_ROLES" in source
+        watch_start = source.find("const SECTION_WATCH_ROLES")
         watch_block = source[watch_start:source.find("};", watch_start)]
-        assert "sensor.ec_daily_forecast" in watch_block
-        assert "sensor.ec_sunrise" in watch_block
-        assert "sensor.ec_air_quality" in watch_block
+        assert "'daily_forecast'" in watch_block
+        assert "'sunrise'" in watch_block
+        assert "'air_quality'" in watch_block
 
     def test_change_detection_uses_watch_list(self):
         source = CARD_JS.read_text()
         start = source.find("set hass(")
         section = source[start:source.find("getCardSize(", start)]
-        assert "SECTION_WATCH" in section
+        assert "SECTION_WATCH_ROLES" in section
 
 
 class TestNarrowReflow:
