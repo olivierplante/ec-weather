@@ -47,6 +47,59 @@
 </head>
 <body>
 <div class="demo-card" id="stack"></div>
+<!-- Error collector (assertion mode): window.onerror + unhandledrejection +
+     a console.error hook feed a hidden <pre id="ERRORS"> holding a JSON array
+     of collected messages. assert.sh reads it and fails the view if it is not
+     "[]". Runs as a CLASSIC script BEFORE the module below so it captures
+     errors thrown while the module and the card load. Purely observational —
+     the node is display:none and nothing here touches layout. -->
+<script>
+(function () {
+  var collected = [];
+  var errorNode = null;
+  function render() {
+    if (!errorNode) {
+      if (!document.body) return;  // node created once body exists
+      errorNode = document.createElement('pre');
+      errorNode.id = 'ERRORS';
+      errorNode.style.display = 'none';
+      document.body.appendChild(errorNode);
+    }
+    errorNode.textContent = JSON.stringify(collected);
+  }
+  function record(message) {
+    collected.push(String(message));
+    render();
+  }
+  window.addEventListener('error', function (event) {
+    // Resource load failures (e.g. a font) surface as error events with no
+    // .error/.message — record the offending target so they are not silent.
+    var detail = event.message
+      || (event.error && (event.error.stack || event.error.message))
+      || (event.target && event.target.src)
+      || 'unknown error event';
+    record('onerror: ' + detail);
+  }, true);
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event.reason;
+    var detail = (reason && (reason.stack || reason.message)) || reason;
+    record('unhandledrejection: ' + detail);
+  });
+  var originalConsoleError = console.error.bind(console);
+  console.error = function () {
+    record('console.error: ' + Array.prototype.map.call(arguments, function (arg) {
+      if (arg instanceof Error) return arg.stack || arg.message;
+      if (typeof arg === 'object') { try { return JSON.stringify(arg); } catch (e) { return String(arg); } }
+      return String(arg);
+    }).join(' '));
+    return originalConsoleError.apply(console, arguments);
+  };
+  // Materialize an empty node up front so assert.sh can tell "no errors"
+  // (present and "[]") from "page never ran" (node absent).
+  if (document.body) render();
+  else document.addEventListener('DOMContentLoaded', render);
+})();
+</script>
 <script type="module">
 // ha-icon shim: HA's frontend provides this element on real dashboards.
 // Renders the SVG path from @mdi/js — the same mechanism as the real ha-icon,

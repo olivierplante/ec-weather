@@ -1,0 +1,94 @@
+name: E2E
+
+# T2 render smoke + T3 pinned-HA end-to-end scenarios. Runs on PRs to main and
+# on demand. See specs/ec_weather/test-strategy.md.
+#
+# ============================ BLOCKING ==============================
+# Shadow mode is OVER. The pinned-HA jobs e2e-a / e2e-b / e2e-c are now
+# BLOCKING: a red run fails the PR. They were proven green during the PR #15
+# shakedown (5 iterations), so their failures are trustworthy signal. The T2
+# render-smoke job is likewise blocking. Only e2e-stable stays informational
+# (continue-on-error) forever; it tracks HA's moving :stable image and must
+# never gate a release on upstream drift.
+# ====================================================================
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  render-smoke:
+    name: T2 render smoke
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Install pnpm
+        run: npm install -g pnpm@9.12.0
+      - name: Install card dev deps (@mdi/js for the ha-icon shim)
+        working-directory: custom_components/ec_weather/www
+        run: pnpm install --frozen-lockfile
+      - name: Run render-smoke assertions (all views × themes × viewports)
+        working-directory: custom_components/ec_weather/www/screenshot-tool
+        env:
+          SCREENSHOT_BROWSER: "google-chrome"
+        run: ./assert.sh
+      - name: Upload failing DOM dumps
+        if: failure()
+        uses: "actions/upload-artifact@v4"
+        with:
+          name: render-smoke-dumps
+          path: custom_components/ec_weather/www/screenshot-tool/dump/
+          if-no-files-found: ignore
+
+  e2e-a:
+    name: T3 S1-S3 (pinned HA)
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S1 -> S2 -> S3 (chained, one container)
+        run: node .github/e2e/run.mjs s1 s2 s3
+
+  e2e-b:
+    name: T3 S4 restart (pinned HA)
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S4 (restart persistence)
+        run: node .github/e2e/run.mjs s4
+
+  e2e-c:
+    name: T3 S5 upgrade (pinned HA)
+    runs-on: "ubuntu-latest"
+    env:
+      EC_WEATHER_REPO: "${{ github.repository }}"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S5 (previous release -> candidate upgrade)
+        run: node .github/e2e/run.mjs s5
+
+  e2e-stable:
+    name: T3 S1-S3 (:stable, informational)
+    runs-on: "ubuntu-latest"
+    continue-on-error: true  # informational forever — never blocks
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S1 -> S2 -> S3 on the :stable image
+        run: node .github/e2e/run.mjs s1 s2 s3 --ha-version stable
