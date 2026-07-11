@@ -1,0 +1,84 @@
+name: E2E
+
+# T2 render smoke + T3 end-to-end scenarios. Runs on PRs to main and on demand.
+# See specs/ec_weather/test-strategy.md.
+#
+# ======================= LATEST STABLE ONLY =========================
+# The integration is tested against the latest stable HA image and nothing
+# else — no support floor, by deliberate owner decision (July 12, 2026; solo
+# free-time OSS project). There is no stored HA version to bump. HA releases
+# landing BETWEEN our releases are covered by the daily ha-drift workflow.
+#
+# Diagnostics: a red run shortly after an HA release most likely means
+# UPSTREAM drift, not a regression in this PR — check open `ha-drift` issues
+# first before digging into the diff. All jobs below are BLOCKING.
+# ====================================================================
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  render-smoke:
+    name: T2 render smoke
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Install pnpm
+        run: npm install -g pnpm@9.12.0
+      - name: Install card dev deps (@mdi/js for the ha-icon shim)
+        working-directory: custom_components/ec_weather/www
+        run: pnpm install --frozen-lockfile
+      - name: Run render-smoke assertions (all views × themes × viewports)
+        working-directory: custom_components/ec_weather/www/screenshot-tool
+        env:
+          SCREENSHOT_BROWSER: "google-chrome"
+        run: ./assert.sh
+      - name: Upload failing DOM dumps
+        if: failure()
+        uses: "actions/upload-artifact@v4"
+        with:
+          name: render-smoke-dumps
+          path: custom_components/ec_weather/www/screenshot-tool/dump/
+          if-no-files-found: ignore
+
+  e2e-a:
+    name: T3 S1-S3
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S1 -> S2 -> S3 (chained, one container)
+        run: node .github/e2e/run.mjs s1 s2 s3 --ha-version stable
+
+  e2e-b:
+    name: T3 S4 restart
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S4 (restart persistence)
+        run: node .github/e2e/run.mjs s4 --ha-version stable
+
+  e2e-c:
+    name: T3 S5 upgrade
+    runs-on: "ubuntu-latest"
+    env:
+      EC_WEATHER_REPO: "${{ github.repository }}"
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+      - name: Run S5 (previous release -> candidate upgrade)
+        run: node .github/e2e/run.mjs s5 --ha-version stable
