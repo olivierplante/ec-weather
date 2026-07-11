@@ -12,6 +12,12 @@ name: HA drift
 # breaks S1-S3, this opens an issue and nothing else changes. The e2e.yml PR
 # jobs run :stable too and will surface the same drift on the next release PR.
 #
+# Baseline vs drift: the FIRST run (no recorded version) is a BASELINE — no HA
+# version change was observed, so a failure there may not be HA-related (EC
+# transient, runner issue, harness bug; see run 29145482481) and gets a
+# distinct issue title. Only a true drift (recorded X -> new Y) may blame the
+# HA version. A later green run auto-closes any open ha-drift issues.
+#
 # State lives in ha-e2e-version.txt on the repo's `ci-state` branch (created
 # on first success) — that file records the last VALIDATED HA version for the
 # minor-change comparison; it is drift-detection state, not a supported-version
@@ -47,6 +53,7 @@ jobs:
             --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | tr -d '[:space:]' || true)
           RESULT=$(node .github/e2e/lib/version.mjs "$OLD" "$NEW")
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "old=$OLD" >> "$GITHUB_OUTPUT"
           echo "result=$RESULT" >> "$GITHUB_OUTPUT"
           echo "HA latest=$NEW  recorded=${OLD:-<none>}  ->  $RESULT"
 
@@ -75,19 +82,40 @@ jobs:
           git commit -m "ci: HA e2e validated on $NEW" || { echo "no change"; exit 0; }
           git push origin ci-state
 
+      - name: Close resolved drift issues
+        if: steps.versions.outputs.result == 'changed' && steps.e2e.outcome == 'success'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          for NUM in $(gh issue list --label ha-drift --state open --json number --jq '.[].number'); do
+            gh issue close "$NUM" --comment "A later run passed; closing."
+          done
+
       - name: Open or update drift issue
         if: steps.versions.outputs.result == 'changed' && steps.e2e.outcome == 'failure'
         env:
           GH_TOKEN: "${{ github.token }}"
           NEW: "${{ steps.versions.outputs.new }}"
+          OLD: "${{ steps.versions.outputs.old }}"
           RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         run: |
-          BODY="HA \`$NEW\` breaks the fresh-install e2e (S1-S3 on the :stable image). Run: $RUN_URL"
+          # Baseline vs drift: with no recorded version this run only ESTABLISHES
+          # a baseline — no HA change was observed, so the failure may not be
+          # HA-related. Only a true drift (recorded X -> new Y) blames HA.
+          if [ -z "$OLD" ]; then
+            TITLE="e2e baseline run failed (HA $NEW)"
+            BODY="The first e2e baseline run failed on HA \`$NEW\`. No HA version change was observed"
+            BODY="$BODY (no previously recorded version), so this failure may not be HA-related —"
+            BODY="$BODY possible causes include an EC transient, a runner/network issue, or a harness bug. Run: $RUN_URL"
+          else
+            TITLE="HA $NEW breaks fresh install e2e"
+            BODY="HA \`$NEW\` breaks the fresh-install e2e (S1-S3 on the :stable image). Previously validated: \`$OLD\`. Run: $RUN_URL"
+          fi
           OPEN=$(gh issue list --label ha-drift --state open --json number --jq 'length')
           if [ "$OPEN" -gt 0 ]; then
             NUM=$(gh issue list --label ha-drift --state open --json number --jq '.[0].number')
             gh issue comment "$NUM" --body "$BODY"
           else
             gh label create ha-drift --color B60205 --description "HA version drift broke the e2e" 2>/dev/null || true
-            gh issue create --label ha-drift --title "HA $NEW breaks fresh install e2e" --body "$BODY"
+            gh issue create --label ha-drift --title "$TITLE" --body "$BODY"
           fi

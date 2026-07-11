@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { assert, pollUntil, rolesCoverRequired } from "../lib/asserts.mjs";
+import { dumpContainerDiagnostics } from "../lib/diagnostics.mjs";
 import { ensureConfigEntry } from "../lib/flow-walker.mjs";
 import { connect } from "../lib/ws.mjs";
 import { onboard } from "../lib/onboarding.mjs";
@@ -176,6 +177,16 @@ export async function run(ctx) {
     log("S5: rename still maps the role after upgrade");
 
     client.close();
+  } catch (error) {
+    // Dump BEFORE the finally removes the container — run.mjs's generic dump
+    // would only find an already-deleted container for self-booting s5.
+    await dumpContainerDiagnostics({
+      log,
+      containerName: container.name,
+      configDir,
+      label: `s5 failed: ${error.message}`,
+    }).catch(() => {});
+    throw error;
   } finally {
     await removeContainer(container.name).catch(() => {});
     // Best-effort: the container wrote root-owned files (__pycache__,
