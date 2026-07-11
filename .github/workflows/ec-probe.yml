@@ -1,0 +1,99 @@
+name: EC contract probe
+
+# T4 upstream-drift probe. Weekly shape checks against every EC endpoint the
+# integration depends on, so a retired station / removed model layer (the
+# GDPS-WEonG and AQHI-15026 incidents) surfaces as a filed issue instead of
+# silent dead queries in production. Probe city: Ottawa (on-118), public coords.
+# On any failure: open (or comment on) an `ec-api` issue. Never blocks.
+# See specs/ec_weather/test-strategy.md.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  probe:
+    name: Probe EC endpoints
+    runs-on: "ubuntu-latest"
+    permissions:
+      issues: write
+    steps:
+      - name: Shape checks
+        id: probe
+        run: |
+          set +e
+          EC="https://api.weather.gc.ca"
+          GEOMET="https://geo.weather.gc.ca/geomet"
+          # WMS 1.3.0 CRS EPSG:4326 axis order is lat,lon; OGC features bbox is lon,lat.
+          GEO_BBOX="44.42,-76.70,46.42,-74.70"
+          FEAT_BBOX="-76.70,44.42,-74.70,46.42"
+          FAILS=()
+
+          json_ok() {  # $1=label $2=url $3=jq-filter
+            local body
+            body=$(curl -sS --max-time 30 "$2")
+            if ! printf '%s' "$body" | jq -e "$3" >/dev/null 2>&1; then
+              FAILS+=("$1")
+              echo "FAIL  $1"
+            else
+              echo "ok    $1"
+            fi
+          }
+
+          geomet_layer_ok() {  # $1=label $2=layer
+            local url
+            url="$GEOMET?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetFeatureInfo"
+            url="$url&LAYERS=$2&QUERY_LAYERS=$2&CRS=EPSG:4326&BBOX=$GEO_BBOX"
+            url="$url&WIDTH=100&HEIGHT=100&I=50&J=50&INFO_FORMAT=application/json"
+            json_ok "$1" "$url" '.features'
+          }
+
+          # 1. City page weather item for the probe city exists.
+          json_ok "citypageweather on-118" \
+            "$EC/collections/citypageweather-realtime/items/on-118?f=json&lang=en" \
+            '.properties'
+
+          # 2. One GetFeatureInfo per WEonG model family currently queried
+          #    (layer names mirror coordinator/weong_helpers.py + extended_helpers.py).
+          geomet_layer_ok "HRDPS-WEonG Precip-Prob" "HRDPS-WEonG_2.5km_Precip-Prob"
+          geomet_layer_ok "RDPS-WEonG Precip-Prob"  "RDPS-WEonG_10km_Precip-Prob"
+          geomet_layer_ok "GEPS PRMM POP"           "GEPS.DIAG.12_PRMM.ERGE1"
+
+          # 3. AQHI forecasts near the probe city return at least one feature.
+          json_ok "aqhi-forecasts bbox" \
+            "$EC/collections/aqhi-forecasts-realtime/items?f=json&bbox=$FEAT_BBOX&limit=10" \
+            '.features | length >= 1'
+
+          # 4. Climate-daily archive responds with a feature collection.
+          json_ok "climate-daily" \
+            "$EC/collections/climate-daily/items?f=json&limit=1" \
+            '.features'
+
+          if [ ${#FAILS[@]} -gt 0 ]; then
+            printf '%s\n' "${FAILS[@]}" > probe-failures.txt
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "Probe failures: ${FAILS[*]}"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+            echo "All EC probes passed."
+          fi
+
+      - name: Open or update EC contract issue
+        if: steps.probe.outputs.failed == 'true'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          LIST=$(cat probe-failures.txt | sed 's/^/- /')
+          BODY=$(printf 'EC contract probe failed for:\n%s\n\nRun: %s' "$LIST" "$RUN_URL")
+          OPEN=$(gh issue list --label ec-api --state open --json number --jq 'length')
+          if [ "$OPEN" -gt 0 ]; then
+            NUM=$(gh issue list --label ec-api --state open --json number --jq '.[0].number')
+            gh issue comment "$NUM" --body "$BODY"
+          else
+            gh label create ec-api --color D93F0B --description "EC upstream API contract drift" 2>/dev/null || true
+            gh issue create --label ec-api --title "EC contract probe failure" --body "$BODY"
+          fi

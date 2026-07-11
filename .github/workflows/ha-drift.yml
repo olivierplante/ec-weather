@@ -1,0 +1,93 @@
+name: HA drift
+
+# Daily cheap check (one GitHub API call) for a NEW Home Assistant MINOR
+# version. HA ships breaking changes in minors (YYYY.M); patches are bug fixes.
+# When the minor changed since the last validated run, launch the full S1-S3
+# fresh-install e2e against the :stable image. On success, record the new
+# version; on failure, open (or comment on) a `ha-drift` issue.
+#
+# Role: EARLY WARNING between our releases, nothing more. The integration
+# targets latest stable HA only (no version pinning, no support floor — owner
+# decision, July 12, 2026), so there is no pin to bump here: if a new HA minor
+# breaks S1-S3, this opens an issue and nothing else changes. The e2e.yml PR
+# jobs run :stable too and will surface the same drift on the next release PR.
+#
+# State lives in ha-e2e-version.txt on the repo's `ci-state` branch (created
+# on first success) — that file records the last VALIDATED HA version for the
+# minor-change comparison; it is drift-detection state, not a supported-version
+# declaration. See specs/ec_weather/test-strategy.md.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  drift:
+    name: Detect HA minor drift
+    runs-on: "ubuntu-latest"
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: "actions/checkout@v6"
+      - uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+
+      - name: Compare latest HA release against recorded version
+        id: versions
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        run: |
+          NEW=$(gh api repos/home-assistant/core/releases/latest --jq '.tag_name')
+          OLD=$(gh api "repos/${{ github.repository }}/contents/ha-e2e-version.txt?ref=ci-state" \
+            --jq '.content' 2>/dev/null | base64 -d 2>/dev/null | tr -d '[:space:]' || true)
+          RESULT=$(node .github/e2e/lib/version.mjs "$OLD" "$NEW")
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
+          echo "HA latest=$NEW  recorded=${OLD:-<none>}  ->  $RESULT"
+
+      - name: Run S1-S3 on :stable
+        id: e2e
+        if: steps.versions.outputs.result == 'changed'
+        continue-on-error: true
+        run: node .github/e2e/run.mjs s1 s2 s3 --ha-version stable
+
+      - name: Record validated HA version
+        if: steps.versions.outputs.result == 'changed' && steps.e2e.outcome == 'success'
+        env:
+          NEW: "${{ steps.versions.outputs.new }}"
+        run: |
+          git config user.name "ec-weather-ci"
+          git config user.email "ec-weather-ci@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin ci-state >/dev/null 2>&1; then
+            git fetch origin ci-state
+            git checkout ci-state
+          else
+            git checkout --orphan ci-state
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          echo "$NEW" > ha-e2e-version.txt
+          git add ha-e2e-version.txt
+          git commit -m "ci: HA e2e validated on $NEW" || { echo "no change"; exit 0; }
+          git push origin ci-state
+
+      - name: Open or update drift issue
+        if: steps.versions.outputs.result == 'changed' && steps.e2e.outcome == 'failure'
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          NEW: "${{ steps.versions.outputs.new }}"
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          BODY="HA \`$NEW\` breaks the fresh-install e2e (S1-S3 on the :stable image). Run: $RUN_URL"
+          OPEN=$(gh issue list --label ha-drift --state open --json number --jq 'length')
+          if [ "$OPEN" -gt 0 ]; then
+            NUM=$(gh issue list --label ha-drift --state open --json number --jq '.[0].number')
+            gh issue comment "$NUM" --body "$BODY"
+          else
+            gh label create ha-drift --color B60205 --description "HA version drift broke the e2e" 2>/dev/null || true
+            gh issue create --label ha-drift --title "HA $NEW breaks fresh install e2e" --body "$BODY"
+          fi
