@@ -14,6 +14,10 @@ import {
   isBooleanField,
   fillStep,
   isAlreadyConfiguredAbort,
+  summarizeStep,
+  nextRepeatState,
+  buildRepeatAbortMessage,
+  MAX_CONSECUTIVE_ERROR_STEPS,
 } from "../lib/flow-walker.mjs";
 
 test("extractOptions normalizes [value,label] pairs", () => {
@@ -160,4 +164,80 @@ test("isAlreadyConfiguredAbort rejects non-abort errors", () => {
   assert.equal(isAlreadyConfiguredAbort(new Error("HTTP 500")), false);
   assert.equal(isAlreadyConfiguredAbort(null), false);
   assert.equal(isAlreadyConfiguredAbort(undefined), false);
+});
+
+// ---------------------------------------------------------------------------
+// Step-cap diagnostics + repeated-error-step fail-fast (ha-drift run
+// 29145482481: an EC transient/429 on the city search made the walker
+// re-submit ~40 times to the 20-step cap with an opaque error).
+// ---------------------------------------------------------------------------
+
+const apiErrorStep = () => ({
+  type: "form",
+  step_id: "user",
+  errors: { city_query: "api_error" },
+  data_schema: [
+    { name: "city_query", required: true, type: "string" },
+    { name: "language", required: true, options: [["en", "English"]], default: "en" },
+  ],
+});
+
+test("summarizeStep extracts step_id, errors and schema field names", () => {
+  const summary = summarizeStep(apiErrorStep());
+  assert.equal(summary.stepId, "user");
+  assert.deepEqual(summary.errors, { city_query: "api_error" });
+  assert.deepEqual(summary.fieldNames, ["city_query", "language"]);
+});
+
+test("summarizeStep tolerates a step with no errors and no schema", () => {
+  const summary = summarizeStep({ type: "form", step_id: "confirm" });
+  assert.equal(summary.stepId, "confirm");
+  assert.deepEqual(summary.errors, {});
+  assert.deepEqual(summary.fieldNames, []);
+});
+
+test("nextRepeatState counts consecutive identical error steps", () => {
+  let state = nextRepeatState(null, apiErrorStep());
+  assert.equal(state.count, 1);
+  state = nextRepeatState(state, apiErrorStep());
+  assert.equal(state.count, 2);
+  state = nextRepeatState(state, apiErrorStep());
+  assert.equal(state.count, 3);
+});
+
+test("nextRepeatState resets on a DIFFERENT step (id or errors)", () => {
+  let state = nextRepeatState(null, apiErrorStep());
+  state = nextRepeatState(state, apiErrorStep());
+  assert.equal(state.count, 2);
+  // Different errors on the same step -> new sequence.
+  state = nextRepeatState(state, {
+    type: "form", step_id: "user", errors: { city_query: "no_city_found" }, data_schema: [],
+  });
+  assert.equal(state.count, 1);
+  // Different step_id, same errors -> new sequence too.
+  state = nextRepeatState(state, {
+    type: "form", step_id: "confirm", errors: { city_query: "no_city_found" }, data_schema: [],
+  });
+  assert.equal(state.count, 1);
+});
+
+test("nextRepeatState resets to zero on an error-free step", () => {
+  let state = nextRepeatState(null, apiErrorStep());
+  state = nextRepeatState(state, { type: "form", step_id: "user", errors: {}, data_schema: [] });
+  assert.equal(state.count, 0);
+  // A fresh error afterwards starts at 1 again.
+  state = nextRepeatState(state, apiErrorStep());
+  assert.equal(state.count, 1);
+});
+
+test("MAX_CONSECUTIVE_ERROR_STEPS is 3 (abort threshold)", () => {
+  assert.equal(MAX_CONSECUTIVE_ERROR_STEPS, 3);
+});
+
+test("buildRepeatAbortMessage names the step and the repeated error", () => {
+  const message = buildRepeatAbortMessage(apiErrorStep());
+  assert.match(message, /3 consecutive identical error steps/);
+  assert.match(message, /"user"/);
+  assert.match(message, /city_query/);
+  assert.match(message, /api_error/);
 });

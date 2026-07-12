@@ -120,11 +120,70 @@ export function fillStep(fields, known = {}, preferOptionLabel = {}) {
   return input;
 }
 
+// ---------------------------------------------------------------------------
+// Repeated-error-step fail-fast + step-cap diagnostics.
+//
+// The config flow maps ANY city-search failure to errors={city_query:
+// "api_error"} and re-presents the same form; a blind walker re-submits
+// immediately up to the step cap — ~40 rapid requests that AMPLIFY the very
+// 429/transient that caused the error (ha-drift run 29145482481). Instead:
+// an error-step that repeats identically gets a backoff sleep before the
+// retry, and three consecutive identical error-steps abort with a message
+// naming the repeated error. All decision logic is pure and unit-tested.
+// ---------------------------------------------------------------------------
+
+export const MAX_CONSECUTIVE_ERROR_STEPS = 3;
+// Sleep before re-submitting a step that just repeated an identical error —
+// gives an EC transient / rate limiter room to recover instead of hammering.
+export const ERROR_STEP_BACKOFF_MS = 5000;
+
+/** Pure: diagnostic summary of a step — its id, errors dict and field names. */
+export function summarizeStep(step) {
+  return {
+    stepId: step.step_id,
+    errors: step.errors || {},
+    fieldNames: (step.data_schema || [])
+      .map((field) => field.name)
+      .filter((name) => name !== undefined),
+  };
+}
+
+/** Pure: identity key of an ERROR step, or null when the step has no errors. */
+function repeatKey(step) {
+  const errors = step.errors || {};
+  if (!Object.keys(errors).length) return null;
+  return JSON.stringify([step.step_id, errors]);
+}
+
+/**
+ * Pure: fold one step into the consecutive-identical-error counter.
+ * `state` is `{ key, count }` (or null at the start); an error-free step
+ * resets the count to 0, a different error starts a new sequence at 1.
+ */
+export function nextRepeatState(state, step) {
+  const key = repeatKey(step);
+  if (key === null) return { key: null, count: 0 };
+  if (state && state.key === key) return { key, count: state.count + 1 };
+  return { key, count: 1 };
+}
+
+/** Pure: the abort message naming the step and its repeated error. */
+export function buildRepeatAbortMessage(step) {
+  return (
+    `flow-walker: aborting after ${MAX_CONSECUTIVE_ERROR_STEPS} consecutive `
+    + `identical error steps on "${step.step_id}" `
+    + `(errors: ${JSON.stringify(step.errors || {})})`
+  );
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Drive a config-entries flow to completion over REST.
  *
  * @returns the terminal `create_entry` step (has `.result` = entry id).
- * @throws on abort, unknown step type, or step overrun.
+ * @throws on abort, unknown step type, repeated identical error steps, or
+ *   step overrun (the error carries `.lastStep` diagnostics).
  */
 export async function walkConfigFlow(
   baseUrl,
@@ -156,6 +215,7 @@ export async function walkConfigFlow(
     show_advanced_options: false,
   });
 
+  let repeatState = null;
   for (let iteration = 0; iteration < maxSteps; iteration += 1) {
     if (step.type === "create_entry") return step;
     if (step.type === "abort") {
@@ -175,6 +235,17 @@ export async function walkConfigFlow(
       continue;
     }
     if (step.type === "form") {
+      repeatState = nextRepeatState(repeatState, step);
+      if (repeatState.count >= MAX_CONSECUTIVE_ERROR_STEPS) {
+        const error = new Error(buildRepeatAbortMessage(step));
+        error.lastStep = summarizeStep(step);
+        throw error;
+      }
+      if (repeatState.count >= 2) {
+        // The same error twice in a row: back off before the retry so a
+        // rate-limited/transient upstream gets room to recover.
+        await sleep(ERROR_STEP_BACKOFF_MS);
+      }
       const input = fillStep(step.data_schema || [], known, preferOptionLabel);
       step = await postJson(
         `${baseUrl}/api/config/config_entries/flow/${step.flow_id}`,
@@ -184,7 +255,17 @@ export async function walkConfigFlow(
     }
     throw new Error(`flow-walker: unexpected step type ${JSON.stringify(step.type)}`);
   }
-  throw new Error(`flow-walker: flow did not complete within ${maxSteps} steps`);
+  // Step overrun: carry evidence — the opaque bare cap message left run
+  // 29145482481 undiagnosable.
+  const lastStep = summarizeStep(step);
+  const error = new Error(
+    `flow-walker: flow did not complete within ${maxSteps} steps `
+    + `(last step_id=${JSON.stringify(lastStep.stepId)}, `
+    + `errors=${JSON.stringify(lastStep.errors)}, `
+    + `fields=${JSON.stringify(lastStep.fieldNames)})`,
+  );
+  error.lastStep = lastStep;
+  throw error;
 }
 
 /**

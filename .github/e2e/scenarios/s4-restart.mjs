@@ -21,6 +21,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import { assert, pollUntil, sleep, isKnownState } from "../lib/asserts.mjs";
+import { dumpContainerDiagnostics } from "../lib/diagnostics.mjs";
 import { ensureConfigEntry } from "../lib/flow-walker.mjs";
 import { connect } from "../lib/ws.mjs";
 import { containerLogs, restartContainer, waitForHttp } from "../lib/docker.mjs";
@@ -57,44 +58,17 @@ const KNOWN_MARKERS = [
   ["component-setup", "Setting up ec_weather"],
 ];
 
-/**
- * Print a clearly-delimited diagnostic dump: relevant container log lines
- * (capped, tail-biased — post-restart output is at the end), a one-line
- * summary of which known markers WERE found, and the .storage listing (names
- * only) so the store file's post-restart state is visible. Diagnostics only —
- * never throws, never changes assertion outcomes.
- */
+/** S4-flavoured dump: shared helper + the restore-path pattern and markers. */
 async function dumpRestartDiagnostics(ctx, label) {
-  const { log } = ctx;
-  log(`========== S4 DIAGNOSTICS: ${label} ==========`);
-  let logs = "";
-  try {
-    logs = await containerLogs(ctx.container.name);
-  } catch (error) {
-    log(`diagnostics: could not read container logs (${error.message})`);
-  }
-
-  const matchingLines = logs
-    .split("\n")
-    .filter((line) => DIAGNOSTIC_LINE_PATTERN.test(line));
-  const shown = matchingLines.slice(-DIAGNOSTIC_MAX_LINES);
-  if (matchingLines.length > shown.length) {
-    log(
-      `diagnostics: ${matchingLines.length - shown.length} earlier matching `
-      + `line(s) omitted (cap ${DIAGNOSTIC_MAX_LINES})`,
-    );
-  }
-  for (const line of shown) log(`| ${line}`);
-
-  const summary = KNOWN_MARKERS
-    .map(([name, marker]) => `${name}=${logs.includes(marker) ? "FOUND" : "absent"}`)
-    .join("  ");
-  log(`marker summary: ${summary}`);
-
-  const storageEntries = await readdir(join(ctx.configDir, ".storage"))
-    .catch((error) => [`<unreadable: ${error.message}>`]);
-  log(`.storage listing: ${storageEntries.join(", ") || "<empty>"}`);
-  log("========== END S4 DIAGNOSTICS ==========");
+  await dumpContainerDiagnostics({
+    log: ctx.log,
+    containerName: ctx.container.name,
+    label: `S4 ${label}`,
+    pattern: DIAGNOSTIC_LINE_PATTERN,
+    maxLines: DIAGNOSTIC_MAX_LINES,
+    markers: KNOWN_MARKERS,
+    configDir: ctx.configDir,
+  });
 }
 
 /**

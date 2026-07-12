@@ -21,6 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { retryOnce } from "./lib/asserts.mjs";
+import { dumpContainerDiagnostics } from "./lib/diagnostics.mjs";
 import { connect } from "./lib/ws.mjs";
 import { onboard } from "./lib/onboarding.mjs";
 import {
@@ -161,10 +162,7 @@ async function main() {
     }
     const module = modules[0];
     const ctx = { haVersion, componentSource, requiredRoles, port, log };
-    await retryOnce(() => module.run(ctx), (error) =>
-      log(`retrying ${module.id} after: ${error.message}`),
-    );
-    log(`${module.id} passed`);
+    await runScenario(module, ctx);
     return;
   }
 
@@ -179,13 +177,37 @@ async function main() {
   try {
     for (const module of modules) {
       log(`=== ${module.id} ===`);
-      await retryOnce(() => module.run(ctx), (error) =>
-        log(`retrying ${module.id} after: ${error.message}`),
-      );
-      log(`${module.id} passed`);
+      await runScenario(module, ctx);
     }
   } finally {
     await teardownStandard(ctx);
+  }
+}
+
+/**
+ * Run one scenario (with the retry-once policy); on failure, print the
+ * generic container-log diagnostics BEFORE the error propagates, so HTTP
+ * statuses from flow exceptions, setup errors, and tracebacks are visible in
+ * the CI log (generalizes what S4's restore debugging proved necessary).
+ */
+async function runScenario(module, ctx) {
+  try {
+    await retryOnce(() => module.run(ctx), (error) =>
+      log(`retrying ${module.id} after: ${error.message}`),
+    );
+    log(`${module.id} passed`);
+  } catch (error) {
+    if (ctx.container) {
+      await dumpContainerDiagnostics({
+        log,
+        containerName: ctx.container.name,
+        configDir: ctx.configDir || null,
+        label: `${module.id} failed: ${error.message}`,
+      }).catch(() => {});
+    } else {
+      log(`no container to dump diagnostics from (${module.id} failed before boot)`);
+    }
+    throw error;
   }
 }
 
