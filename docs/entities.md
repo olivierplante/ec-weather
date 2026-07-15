@@ -54,6 +54,8 @@ Outlook days (7 and beyond, only when the forecast range is 10 or 14) carry `sou
 | `sensor.ec_alert_count` | Integer, diagnostic |
 | `sensor.ec_alerts` | Highest alert type; `alerts` attribute is the full list |
 
+Alerts survive transient network failures by retaining the last-known-good set until each alert's EC-declared expiration, so a dropped fetch cycle never blanks an active alert.
+
 ## Air quality
 
 | Entity | State | Attributes |

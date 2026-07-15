@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.1
+
+Alert reliability and polish.
+
+### Fixed
+
+- Active alerts no longer disappear from the card when a forecast refresh hits a temporary network problem. The card keeps showing the last known alerts until they reach the expiration time Environment Canada declared for them, so a brief connection blip can never blank an active warning
+- A little more breathing room below the alert banner, and the spacing now holds inside stack-in-card wrappers
+
+
 ## 2.3.0
 
 The card now finds its entities by itself.
