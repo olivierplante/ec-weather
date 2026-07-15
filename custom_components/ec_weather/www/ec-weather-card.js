@@ -1978,7 +1978,12 @@ export class ECWeatherCard extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       <style>
-        :host { display: block; margin-bottom: 16px; contain: inline-size; }
+        /* 24px below matches the panel container's padding above the bar,
+           so the alert floats with equal air on both sides (user request).
+           PADDING, not margin: stack-in-card writes inline margin:0 onto its
+           children (keep.margin defaults false), which beats :host CSS —
+           padding survives every wrapper. */
+        :host { display: block; padding-bottom: 24px; contain: inline-size; }
         ${TOKEN_CSS}
         .alert-stack {
           display: flex;
