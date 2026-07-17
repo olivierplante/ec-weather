@@ -258,6 +258,7 @@ def merge_weong_into_daily(
     precip_windows: dict[str, list[dict]] | None = None,
     outlook: list[dict] | None = None,
     outlook_backfill: dict | None = None,
+    model_precip_estimate: bool = True,
 ) -> list[dict]:
     """Merge WEonG POP data and per-timestep breakdowns into daily forecast periods.
 
@@ -272,6 +273,14 @@ def merge_weong_into_daily(
 
     When hourly_forecast is provided, timesteps within the first 24h are enriched
     with EC hourly data (icon, condition, wind, feels-like) by matching UTC timestamps.
+
+    ``model_precip_estimate`` gates exposure of the model-derived daily AMOUNT
+    fields (rain_mm_day/night, snow_cm_day/night). When False (the daily
+    sensor's default, driven by the CONF_MODEL_PRECIP_ESTIMATE option), those
+    four fields are None so the card shows only EC-stated accumulation. POP is
+    never gated — it is an EC-independent probability, always shown. The param
+    defaults True here so transform-level callers keep the model amounts unless
+    a consumer deliberately opts out.
     """
     fetched_dates = set(days_fetched) if days_fetched else set()
     precip_windows_by_date = precip_windows or {}
@@ -307,15 +316,25 @@ def merge_weong_into_daily(
             if (has_night or is_night_only) else None
         )
 
-        # Day precip fields
+        # Day precip fields. POP always flows through; the model-derived AMOUNT
+        # fields are exposed only when the estimate option is on (else None, so
+        # the card falls back to EC-stated accumulation with no card changes).
         enriched["precip_prob_day"] = extract_weong_value(day_data, "pop")
-        enriched["snow_cm_day"] = extract_weong_value(day_data, "snow_cm")
-        enriched["rain_mm_day"] = extract_weong_value(day_data, "rain_mm")
+        enriched["snow_cm_day"] = (
+            extract_weong_value(day_data, "snow_cm") if model_precip_estimate else None
+        )
+        enriched["rain_mm_day"] = (
+            extract_weong_value(day_data, "rain_mm") if model_precip_estimate else None
+        )
 
         # Night precip fields
         enriched["precip_prob_night"] = extract_weong_value(night_data, "pop")
-        enriched["snow_cm_night"] = extract_weong_value(night_data, "snow_cm")
-        enriched["rain_mm_night"] = extract_weong_value(night_data, "rain_mm")
+        enriched["snow_cm_night"] = (
+            extract_weong_value(night_data, "snow_cm") if model_precip_estimate else None
+        )
+        enriched["rain_mm_night"] = (
+            extract_weong_value(night_data, "rain_mm") if model_precip_estimate else None
+        )
 
         # Combined max POP
         sub_periods = [s for s in [day_data, night_data] if s]

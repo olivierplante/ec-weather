@@ -142,6 +142,24 @@
         },
         "data_description": {
           "extended_forecast": "Affiche 7 jours de plus que les prévisions officielles de 7 jours d'Environnement Canada. Ces jours supplémentaires sont un aperçu à plus longue échéance et sont moins précis : les températures et les probabilités de pluie sont des estimations, pas des valeurs exactes, et le détail quotidien est réduit. Ils apparaissent atténués dans la carte pour les distinguer."
+        },
+        "sections": {
+          "beta": {
+            "name": "Beta",
+            "description": "Fonctions à l'essai avant de devenir officielles. Désactivées par défaut; elles peuvent changer considérablement ou disparaître d'une version à l'autre, et elles ne sont pas toujours parfaitement au point. Les désactiver ramène le comportement stable. Vos retours par issue GitHub sont appréciés.",
+            "data": {
+              "model_precip_estimate": "Quantités de précipitations estimées",
+              "ai_grouping": "Regrouper les alertes liées avec l'IA",
+              "ai_task_entity": "Entité de tâche IA",
+              "ai_grouping_instructions": "Instructions de regroupement IA"
+            },
+            "data_description": {
+              "model_precip_estimate": "Affiche un total quotidien de précipitations attendu, calculé par un modèle, lorsqu'Environnement Canada n'indique aucune quantité. Il est obtenu en pondérant les quantités horaires du modèle d'Environnement Canada par leur probabilité de précipitation horaire. Les très petits totaux sont masqués, car ils ne sont pas significatifs.",
+              "ai_grouping": "Lorsque plusieurs alertes décrivent le même événement météo, une tâche IA peut les regrouper afin que la carte affiche une seule alerte avec les bulletins liés imbriqués à l'intérieur. Rien n'est jamais masqué ni supprimé. Si l'IA n'est pas disponible, les alertes s'affichent simplement sans regroupement.",
+              "ai_task_entity": "Quelle entité de tâche IA utiliser. Laissez vide pour utiliser votre entité de tâche IA préférée.",
+              "ai_grouping_instructions": "Comment l'IA décide quelles alertes vont ensemble. La valeur par défaut fonctionne bien; ne la modifiez que si vous souhaitez changer le jugement de regroupement."
+            }
+          }
         }
       },
       "precip": {

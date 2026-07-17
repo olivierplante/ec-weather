@@ -27,7 +27,16 @@ from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_CITY_CODE, CONF_CITY_NAME, CONF_LANGUAGE, DOMAIN, GAUGE_TEMP_MAX, GAUGE_TEMP_MIN
+from .const import (
+    CONF_CITY_CODE,
+    CONF_CITY_NAME,
+    CONF_LANGUAGE,
+    CONF_MODEL_PRECIP_ESTIMATE,
+    DEFAULT_MODEL_PRECIP_ESTIMATE,
+    DOMAIN,
+    GAUGE_TEMP_MAX,
+    GAUGE_TEMP_MIN,
+)
 from .coordinator import (
     ECAlertCoordinator,
     ECAQHICoordinator,
@@ -370,6 +379,7 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
         city_code: str,
         city_name: str,
         language: str = "en",
+        model_precip_estimate: bool = DEFAULT_MODEL_PRECIP_ESTIMATE,
     ) -> None:
         super().__init__(weather_coordinator)
         self._attr_unique_id = f"ec_daily_forecast_{city_code}"
@@ -379,6 +389,7 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
         self._weong_coordinator = weong_coordinator
         self._attr_device_info = build_device_info(city_code, city_name)
         self._language = language
+        self._model_precip_estimate = model_precip_estimate
 
     @property
     def available(self) -> bool:
@@ -419,6 +430,7 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
                 ec_updated=ec_updated, weong_updated=weong_updated,
                 days_fetched=days_fetched, precip_windows=precip_windows,
                 outlook=outlook, outlook_backfill=outlook_backfill,
+                model_precip_estimate=self._model_precip_estimate,
             )
         except (KeyError, TypeError, ValueError):
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")
@@ -748,6 +760,12 @@ async def async_setup_entry(
     city_code = entry.data[CONF_CITY_CODE]
     city_name = entry.data.get(CONF_CITY_NAME, city_code)
     language = entry.data.get(CONF_LANGUAGE, "en")
+    # BETA opt-in: expose model-derived daily precip amounts when EC states
+    # none. Read here (from options) and passed to the daily sensor; toggling
+    # it forces an entry reload via the options-flow fast-path gate.
+    model_precip_estimate = entry.options.get(
+        CONF_MODEL_PRECIP_ESTIMATE, DEFAULT_MODEL_PRECIP_ESTIMATE
+    )
 
     entities: list = [
         ECCurrentSensor(data.weather, description, city_code, city_name)
@@ -757,7 +775,10 @@ async def async_setup_entry(
         ECHourlyForecastSensor(data.weather, data.weong, city_code, city_name, language)
     )
     entities.append(
-        ECDailyForecastSensor(data.weather, data.weong, city_code, city_name, language)
+        ECDailyForecastSensor(
+            data.weather, data.weong, city_code, city_name, language,
+            model_precip_estimate=model_precip_estimate,
+        )
     )
     entities.append(ECWeatherSummarySensor(data.weather, city_code, city_name, language))
     entities.append(

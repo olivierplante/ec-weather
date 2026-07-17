@@ -145,8 +145,14 @@ class TestPeriodAggregation:
         output = _aggregate_via_store(coord, all_results, periods)
         assert output["periods"][period_key]["pop"] == 60
 
-    def test_period_rain_is_sum_of_timesteps(self, hass: HomeAssistant):
-        """Given rain amounts across timesteps, period rain = sum (in mm)."""
+    def test_period_rain_is_expected_value_of_timesteps(self, hass: HomeAssistant):
+        """Period rain is the probability-weighted expected total (in mm).
+
+        UPDATED (was test_period_rain_is_sum_of_timesteps, asserting the naive
+        4.5 mm sum of the CONDITIONAL per-hour amounts). The amounts are
+        "rain GIVEN precip that hour", so the period total is now the expected
+        value: (pop/100) * amount per step, summed.
+        """
         coord = _make_weong_coordinator(hass)
         utc_start = datetime(2026, 3, 22, 11, 0, tzinfo=timezone.utc)
         utc_end = datetime(2026, 3, 22, 23, 0, tzinfo=timezone.utc)
@@ -163,11 +169,15 @@ class TestPeriodAggregation:
 
         output = _aggregate_via_store(coord, all_results, periods)
         result = output["periods"][period_key]
-        # Sum: 1.0 + 2.0 + 1.5 = 4.5 mm
-        assert result["rain_mm"] == 4.5
+        # Expected: 0.5*(1.0 + 2.0 + 1.5) = 2.25 -> 2.2 mm
+        assert result["rain_mm"] == 2.2
 
-    def test_period_snow_is_sum_of_timesteps(self, hass: HomeAssistant):
-        """Given snow amounts across timesteps, period snow = sum (in cm)."""
+    def test_period_snow_is_expected_value_of_timesteps(self, hass: HomeAssistant):
+        """Period snow is the probability-weighted expected total (in cm).
+
+        UPDATED (was test_period_snow_is_sum_of_timesteps, asserting the naive
+        6.0 cm sum). Now the expected value: (pop/100) * amount per step.
+        """
         coord = _make_weong_coordinator(hass)
         utc_start = datetime(2026, 3, 22, 11, 0, tzinfo=timezone.utc)
         utc_end = datetime(2026, 3, 22, 23, 0, tzinfo=timezone.utc)
@@ -184,8 +194,8 @@ class TestPeriodAggregation:
 
         output = _aggregate_via_store(coord, all_results, periods)
         result = output["periods"][period_key]
-        # Sum: 2.0 + 3.0 + 1.0 = 6.0 cm
-        assert result["snow_cm"] == 6.0
+        # Expected: 0.5*(2.0 + 3.0 + 1.0) = 3.0 cm
+        assert result["snow_cm"] == 3.0
 
     def test_no_precip_gives_null_amounts(self, hass: HomeAssistant):
         """Given POP=0 everywhere, rain/snow amounts = None."""
@@ -222,8 +232,9 @@ class TestPeriodAggregation:
 
         output = _aggregate_via_store(coord, all_results, periods)
         result = output["periods"][period_key]
-        # Freezing precip folds into rain: 2.5 + 1.5 = 4.0 mm
-        assert result["rain_mm"] == 4.0
+        # UPDATED for expected-value math (was 4.0 mm sum). Freezing precip
+        # folds into rain, then probability-weighted: 0.8*(2.5 + 1.5) = 3.2 mm.
+        assert result["rain_mm"] == 3.2
         # No snow from freezing precip
         assert result["snow_cm"] is None
 
@@ -245,8 +256,9 @@ class TestPeriodAggregation:
 
         output = _aggregate_via_store(coord, all_results, periods)
         result = output["periods"][period_key]
-        # Ice pellets fold into snow: 0.5 + 0.3 = 0.8 cm
-        assert result["snow_cm"] == 0.8
+        # UPDATED for expected-value math (was 0.8 cm sum). Ice pellets fold
+        # into snow, then probability-weighted: 0.7*(0.5 + 0.3) = 0.56 -> 0.6 cm.
+        assert result["snow_cm"] == 0.6
         # No rain from ice pellets
         assert result["rain_mm"] is None
 

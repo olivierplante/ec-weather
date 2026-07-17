@@ -16,6 +16,7 @@ All GEPS values here are synthetic (repo policy) — never captured live data.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
@@ -24,7 +25,7 @@ import pytest
 from freezegun import freeze_time
 from homeassistant.core import HomeAssistant
 
-from ec_weather.const import CACHE_TTL_GEPS
+from ec_weather.const import CACHE_TTL_GEPS, WEONG_SEMAPHORE_LIMIT
 from ec_weather.coordinator import ECWEonGCoordinator
 from ec_weather.coordinator.extended import (
     EXTENDED_FIRST_DAY,
@@ -217,6 +218,21 @@ class TestBuildPrecipWindow:
         assert window["amount_p25"] is None
         assert window["amount_p75"] is None
 
+    def test_noisy_amounts_rounded_to_one_decimal(self):
+        """GEPS band amounts arrive as float noise; round to 1 decimal, keep None."""
+        window = build_precip_window(
+            _utc(2026, 7, 12, 12), _utc(2026, 7, 13, 0),
+            55.6, 9.1000004, 0.075000003,
+        )
+        assert window["amount_p25"] == 9.1
+        assert window["amount_p75"] == 0.1
+        # None stays None (no rounding of a dry window's absent band).
+        none_band = build_precip_window(
+            _utc(2026, 7, 12, 12), _utc(2026, 7, 13, 0), 10, None, 0.0,
+        )
+        assert none_band["amount_p25"] is None
+        assert none_band["amount_p75"] == 0.0
+
 
 # ---------------------------------------------------------------------------
 # Query plans + folding
@@ -387,6 +403,113 @@ class TestGepsCacheTtl:
         assert coord._cache_ttl(GEPS_TEMPERATURE_P50) == CACHE_TTL_GEPS
 
 
+# ---------------------------------------------------------------------------
+# GEPS cache keyed by expected model run (freshness — zero extra API cost)
+# ---------------------------------------------------------------------------
+
+# RDPS-WEonG layer name (a non-GEPS control): its cache key must stay run-free.
+_RDPS_LAYER = "RDPS-WEonG_10km_Precipitation-Probability"
+
+
+class TestGepsRunKeyedCache:
+    """GEPS query-cache entries fold the expected GEPS run into their key.
+
+    While the run is unchanged the cache serves as before (zero extra queries);
+    once a new run publishes, the run component changes so the old entry misses
+    and the fresh run is fetched inside a refresh that was already running.
+    Non-GEPS (HRDPS/RDPS) entries keep their plain (layer, time) key.
+    """
+
+    def _geps_query(self):
+        step = _utc(2026, 7, 12, 12)
+        return [(GEPS_TEMPERATURE_P50, step, GEPS_QUERY_TAG)]
+
+    async def test_geps_cache_served_while_run_unchanged(self, hass: HomeAssistant):
+        coord = _make_coord(hass)
+        query_mock = AsyncMock(return_value=5.0)
+        coord._query_feature_info = query_mock
+        semaphore = asyncio.Semaphore(WEONG_SEMAPHORE_LIMIT)
+        queries = self._geps_query()
+
+        # 2026-07-07 18Z -> current GEPS run is 12Z. First call fetches.
+        now1 = _utc(2026, 7, 7, 18).timestamp()
+        _results, cached1, fetched1 = await coord._execute_queries(
+            queries, now1, None, semaphore,
+        )
+        assert (cached1, fetched1) == (0, 1)
+        assert query_mock.call_count == 1
+
+        # 20Z same day: still the 12Z run (next run publishes ~06Z tomorrow) and
+        # well within the 12h TTL -> cache hit, no refetch.
+        now2 = _utc(2026, 7, 7, 20).timestamp()
+        _results, cached2, fetched2 = await coord._execute_queries(
+            queries, now2, None, semaphore,
+        )
+        assert (cached2, fetched2) == (1, 0)
+        assert query_mock.call_count == 1
+
+    async def test_geps_refetches_after_run_rollover_before_ttl(
+        self, hass: HomeAssistant,
+    ):
+        """A refresh after a new run publishes misses the cache — even though the
+        cached value's 12h TTL has NOT expired (the run key, not TTL, drives it).
+        """
+        coord = _make_coord(hass)
+        query_mock = AsyncMock(return_value=5.0)
+        coord._query_feature_info = query_mock
+        semaphore = asyncio.Semaphore(WEONG_SEMAPHORE_LIMIT)
+        queries = self._geps_query()
+
+        # 2026-07-08 05Z: 00Z run not yet published -> current run is yesterday's
+        # 12Z. First call fetches under that run.
+        now1 = _utc(2026, 7, 8, 5).timestamp()
+        await coord._execute_queries(queries, now1, None, semaphore)
+        assert query_mock.call_count == 1
+
+        # 06Z (one hour later, far inside the 12h TTL): the 00Z run has now
+        # published -> the run component changes -> cache miss -> refetch.
+        now2 = _utc(2026, 7, 8, 6).timestamp()
+        _results, cached, fetched = await coord._execute_queries(
+            queries, now2, None, semaphore,
+        )
+        assert (cached, fetched) == (0, 1)
+        assert query_mock.call_count == 2
+
+    async def test_non_geps_cache_unaffected_by_run_rollover(
+        self, hass: HomeAssistant,
+    ):
+        """RDPS entries keep the plain (layer, time) key: across the same GEPS
+        run rollover (within RDPS's 6h TTL) the RDPS value stays a cache hit."""
+        coord = _make_coord(hass)
+        query_mock = AsyncMock(return_value=42.0)
+        coord._query_feature_info = query_mock
+        semaphore = asyncio.Semaphore(WEONG_SEMAPHORE_LIMIT)
+        queries = [(_RDPS_LAYER, _utc(2026, 7, 9, 12), ("2026-07-09", "day"))]
+
+        now1 = _utc(2026, 7, 8, 5).timestamp()
+        await coord._execute_queries(queries, now1, None, semaphore)
+        assert query_mock.call_count == 1
+
+        # GEPS run rolls over between 05Z and 06Z, but RDPS keys ignore it.
+        now2 = _utc(2026, 7, 8, 6).timestamp()
+        _results, cached, fetched = await coord._execute_queries(
+            queries, now2, None, semaphore,
+        )
+        assert (cached, fetched) == (1, 0)
+        assert query_mock.call_count == 1
+
+    def test_query_cache_is_memory_only_not_persisted(self, hass: HomeAssistant):
+        """The run-keyed query cache is memory-only: it is never written to the
+        persist payload, so a reboot cannot resurrect an old-run value."""
+        coord = _make_coord(hass)
+        coord._cache[(GEPS_TEMPERATURE_P50, "2026-07-12T12:00:00Z",
+                      "2026-07-07T12:00:00Z")] = (5.0, 0.0)
+        payload = coord._build_persist_payload()
+        assert "cache" not in payload
+        # No persisted key carries the raw query-cache tuples.
+        assert not any("2026-07-07T12:00:00Z" == v for v in payload.values())
+
+
 class TestWeongPathSkipsGeps:
     @freeze_time("2026-07-07T12:00:00Z")
     def test_build_timestep_info_never_yields_geps(self, hass: HomeAssistant):
@@ -407,16 +530,48 @@ class TestWeongPathSkipsGeps:
 
 
 class TestPrecipWindowsProjection:
+    @freeze_time("2026-07-07T16:00:00Z")
     def test_project_output_surfaces_precip_windows_in_range(self, hass: HomeAssistant):
         coord = _make_coord(hass)
         band = [{"start": "2026-07-12T12:00:00Z", "end": "2026-07-13T00:00:00Z",
                  "pop": 60, "amount_p25": 3.0, "amount_p75": 8.0}]
         coord._precip_windows = {
-            "2026-07-12": band,
+            "2026-07-12": band,          # days_ahead 5 -> geps day, surfaced
             "2026-07-30": [{"pop": 10}],  # out of range -> filtered
         }
         output = coord._project_output(DAY5_PERIODS)
         assert output["precip_windows"] == {"2026-07-12": band}
+
+    @freeze_time("2026-07-15T16:00:00Z")
+    def test_project_output_drops_windows_for_days_aged_out_of_geps_band(
+        self, hass: HomeAssistant,
+    ):
+        """A day that has aged out of the GEPS coverage band (days_ahead < 4)
+        must not keep surfacing its stale GEPS precip band.
+
+        Regression: a Saturday fetched days ago as a GEPS day (days_ahead 4-6)
+        keeps its ``_precip_windows`` entry as the calendar advances. Once it is
+        days_ahead 3 (RDPS-owned) the entry is orphaned — never re-queried by
+        ``_fetch_geps_day`` (which returns early for non-GEPS days) and never
+        overwritten — so the daily card shows a precip band frozen at whatever
+        GEPS run was current when it was last a GEPS day, contradicting the
+        fresher RDPS near-day data. The projection must drop it.
+        """
+        stale = [{"start": "2026-07-18T12:00:00Z", "end": "2026-07-19T00:00:00Z",
+                  "pop": 45, "amount_p25": 0.075, "amount_p75": 9.1}]
+        fresh = [{"start": "2026-07-19T12:00:00Z", "end": "2026-07-20T00:00:00Z",
+                  "pop": 60, "amount_p25": 3.0, "amount_p75": 8.0}]
+        coord = _make_coord(hass)
+        coord._precip_windows = {
+            "2026-07-18": stale,  # days_ahead 3 from 07-15 -> aged out, drop
+            "2026-07-19": fresh,  # days_ahead 4 -> still a geps day, keep
+        }
+        periods = [
+            ("2026-07-18", "day", _utc(2026, 7, 18, 10), _utc(2026, 7, 18, 22)),
+            ("2026-07-19", "day", _utc(2026, 7, 19, 10), _utc(2026, 7, 19, 22)),
+        ]
+        output = coord._project_output(periods)
+        assert output["precip_windows"] == {"2026-07-19": fresh}
 
 
 # ---------------------------------------------------------------------------

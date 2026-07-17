@@ -17,6 +17,9 @@ import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 
 from .const import (
+    CONF_AI_GROUPING,
+    CONF_AI_GROUPING_INSTRUCTIONS,
+    CONF_AI_TASK_ENTITY,
     CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
     CONF_BBOX,
@@ -33,6 +36,7 @@ from .const import (
     CONF_PRECIP_STATION_TYPE,
     CONF_WEATHER_INTERVAL,
     COORDINATOR_WEONG,
+    DEFAULT_AI_GROUPING,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_FORECAST_DAYS,
     DEFAULT_LANGUAGE,
@@ -42,6 +46,7 @@ from .const import (
     POLLING_MODE_EFFICIENT,
     POLLING_MODE_FULL,
     SERVICE_FETCH_DAY_TIMESTEPS,
+    resolve_ai_grouping_instructions,
 )
 from .coordinator import ECAlertCoordinator, ECAQHICoordinator, ECWeatherCoordinator
 from .coordinator import ECWEonGCoordinator, ECClimateCoordinator
@@ -191,7 +196,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass, city_code, language=language,
         interval_minutes=weather_interval, polling=weather_polls,
     )
-    alert_coordinator = ECAlertCoordinator(hass, bbox, language=language)
+    # AI alert grouping (opt-in, stored in options). Off by default.
+    ai_grouping = entry.options.get(CONF_AI_GROUPING, DEFAULT_AI_GROUPING)
+    ai_task_entity = entry.options.get(CONF_AI_TASK_ENTITY) or None
+    # Uncustomized (or blank / legacy-default) prompts resolve to the current
+    # default at read time so they track improvements; custom prompts pass
+    # through unchanged.
+    ai_grouping_instructions = resolve_ai_grouping_instructions(
+        entry.options.get(CONF_AI_GROUPING_INSTRUCTIONS)
+    )
+    alert_coordinator = ECAlertCoordinator(
+        hass, bbox, language=language,
+        ai_grouping=ai_grouping,
+        ai_task_entity=ai_task_entity,
+        ai_grouping_instructions=ai_grouping_instructions,
+    )
     aqhi_coordinator = ECAQHICoordinator(
         hass, aqhi_location_id,
         interval_minutes=aqhi_interval, polling=aqhi_polls,

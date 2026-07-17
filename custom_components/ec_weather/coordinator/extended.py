@@ -189,8 +189,11 @@ def build_precip_window(
         "start": _iso_z(window_start),
         "end": _iso_z(window_end),
         "pop": int(round(pop)) if pop is not None else None,
-        "amount_p25": amount_p25,
-        "amount_p75": amount_p75,
+        # GEPS ERC25/ERC75 arrive as raw floats (e.g. 9.1000004); round to 1
+        # decimal so the sensor attribute carries no float noise. None (a dry,
+        # wet-gated window) stays None.
+        "amount_p25": round(amount_p25, 1) if amount_p25 is not None else None,
+        "amount_p75": round(amount_p75, 1) if amount_p75 is not None else None,
     }
 
 

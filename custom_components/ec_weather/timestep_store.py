@@ -222,9 +222,16 @@ class TimestepStore:
         Each period is (date_str, period_type, utc_start, utc_end).
         Returns a dict keyed by (date_str, period_type) with:
         - pop: max POP across timesteps (or None)
-        - rain_mm: sum of rain (or None if all zero/null)
-        - snow_cm: sum of snow (or None if all zero/null)
+        - rain_mm: probability-weighted expected rain total (or None)
+        - snow_cm: probability-weighted expected snow total (or None)
         - timesteps: list of timestep dicts (public fields only)
+
+        The per-timestep WEonG amounts are CONDITIONAL ("amount GIVEN precip
+        occurs that hour"), so summing them inflates totals on low-POP days.
+        The period total is instead the EXPECTED amount: each timestep
+        contributes (pop/100) * amount, summed over the period. The per-hour
+        amounts in the ``timesteps`` list are left untouched — those surfaces
+        show the conditional amounts by design.
         """
         result: dict[tuple[str, str], dict] = {}
 
@@ -254,23 +261,41 @@ class TimestepStore:
             pops = [e.pop for e in period_entries if e.pop is not None]
             pop_max = int(round(max(pops))) if pops else None
 
-            rain_sum = 0.0
+            rain_expected = 0.0
             has_rain = False
-            snow_sum = 0.0
+            snow_expected = 0.0
             has_snow = False
 
             for entry in period_entries:
+                # A null-POP timestep contributes nothing: with no probability
+                # there is no defensible expectation, and inventing one (e.g.
+                # assuming certainty) would re-introduce the inflation bug.
+                if entry.pop is None:
+                    continue
+                probability = entry.pop / 100.0
                 if entry.rain_mm is not None and entry.rain_mm > 0:
-                    rain_sum += entry.rain_mm
+                    rain_expected += probability * entry.rain_mm
                     has_rain = True
                 if entry.snow_cm is not None and entry.snow_cm > 0:
-                    snow_sum += entry.snow_cm
+                    snow_expected += probability * entry.snow_cm
                     has_snow = True
+
+            rain_total = round(rain_expected, 1) if has_rain else None
+            snow_total = round(snow_expected, 1) if has_snow else None
+
+            # Trace floor: EC's own WEonG processing discards sub-0.1 mm/h as
+            # unrealistic noise, so a sub-measurable daily EXPECTATION is noise
+            # too. Report a period total below 1.0 mm rain / 0.5 cm snow as
+            # None rather than a misleading "0.3 mm" the user can't act on.
+            if rain_total is not None and rain_total < 1.0:
+                rain_total = None
+            if snow_total is not None and snow_total < 0.5:
+                snow_total = None
 
             result[key] = {
                 "pop": pop_max,
-                "rain_mm": round(rain_sum, 1) if has_rain else None,
-                "snow_cm": round(snow_sum, 1) if has_snow else None,
+                "rain_mm": rain_total,
+                "snow_cm": snow_total,
                 "timesteps": [e.to_dict() for e in period_entries],
             }
 

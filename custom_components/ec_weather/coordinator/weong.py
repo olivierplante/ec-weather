@@ -44,6 +44,7 @@ from .extended import (
     build_outlook_entry,
     build_precip_windows,
     days_ahead_for,
+    expected_geps_run,
     geps_timesteps_for_periods,
     geps_windows_for_periods,
     index_results,
@@ -192,10 +193,13 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         # Count of HTTP 429s seen during the current wave — drives the two-step
         # backoff. Reset at the start of each _do_update (F4).
         self._rate_limit_hits: int = 0
-        # Cache: (layer, time_str) -> (value, fetched_timestamp)
-        # Model data doesn't change between runs (HRDPS and RDPS both every 6h),
-        # so we cache results and only re-query when the TTL expires.
-        self._cache: dict[tuple[str, str], tuple[float | None, float]] = {}
+        # Cache: cache_key -> (value, fetched_timestamp). The key is
+        # (layer, time_str) for HRDPS/RDPS; GEPS layers additionally fold in the
+        # expected GEPS run (see _cache_key) so a newly published run misses the
+        # stale entry. Model data doesn't change between runs (HRDPS and RDPS
+        # both every 6h), so we cache results and only re-query when the TTL
+        # expires or — for GEPS — the expected run rolls over.
+        self._cache: dict[tuple[str, ...], tuple[float | None, float]] = {}
         # Lock for concurrent day merges during progressive loading
         self._merge_lock = asyncio.Lock()
         # Timestep cache for lazy popup data: {date_str: (data_dict, fetched_ts)}
@@ -252,6 +256,26 @@ class ECWEonGCoordinator(OnDemandCoordinator):
             return WEONG_CACHE_TTL_RDPS
         return WEONG_CACHE_TTL_HRDPS
 
+    def _cache_key(
+        self, layer: str, time_str: str, now_ts: float,
+    ) -> tuple[str, ...]:
+        """Build the query-cache key for one (layer, timestep) at fetch time.
+
+        HRDPS/RDPS keep the plain ``(layer, time_str)`` key — their freshness is
+        handled by the model-run scheduler and their 6h TTL. GEPS layers do NOT
+        pin a reference run (they query the latest published run), so a value
+        cached under the previous run would otherwise keep being served until its
+        12h TTL expired. Folding the expected GEPS run into the key makes a
+        refresh that fires after a new run publishes miss the stale entry and
+        refetch the fresh run; while no new run has published the key is
+        unchanged and the cache serves as before — zero extra API queries.
+        """
+        if layer.startswith("GEPS."):
+            now_utc = datetime.fromtimestamp(now_ts, tz=timezone.utc)
+            run = expected_geps_run(now_utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return (layer, time_str, run)
+        return (layer, time_str)
+
     async def _execute_queries(
         self,
         queries: list[tuple[str, datetime, tuple[str, str]]],
@@ -265,7 +289,7 @@ class ECWEonGCoordinator(OnDemandCoordinator):
 
         for layer, timestep, period_key in queries:
             time_str = timestep.strftime("%Y-%m-%dT%H:%M:%SZ")
-            cached = self._cache.get((layer, time_str))
+            cached = self._cache.get(self._cache_key(layer, time_str, now_ts))
             if cached is not None:
                 value, fetched_ts = cached
                 if now_ts - fetched_ts < self._cache_ttl(layer):
@@ -305,7 +329,9 @@ class ECWEonGCoordinator(OnDemandCoordinator):
                         fetched.append((layer, timestep, period_key, None))
                         continue
                     time_str = timestep.strftime("%Y-%m-%dT%H:%M:%SZ")
-                    self._cache[(layer, time_str)] = (value, now_ts)
+                    self._cache[self._cache_key(layer, time_str, now_ts)] = (
+                        value, now_ts,
+                    )
                     fetched.append((layer, timestep, period_key, value))
 
                 # Pace before the next chunk (never after the last one).
@@ -809,12 +835,22 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         period_projection = self._store.project_periods(periods)
         hourly_projection = self._store.project_hourly()
 
-        # Only surface precip_windows for dates still in the forecast range.
+        today = dt_util.now().date()
+
+        # Only surface precip_windows for dates that are BOTH still in the
+        # forecast range AND currently inside the GEPS coverage band (days_ahead
+        # 4-6). A GEPS band is only ever (re)written for a current GEPS day; once
+        # a day ages down to days_ahead 3 (RDPS-owned), _fetch_geps_day returns
+        # early and never overwrites its entry, so the band would otherwise
+        # linger frozen at whatever GEPS run was current when the day was last a
+        # GEPS day — a stale precip band contradicting the fresher RDPS near-day
+        # data. Gating the projection on is_geps_day drops those orphans.
         valid_dates = {date_str for date_str, _pt, _s, _e in periods}
         precip_windows = {
             date_str: windows
             for date_str, windows in self._precip_windows.items()
             if date_str in valid_dates
+            and is_geps_day(days_ahead_for(date_str, today))
         }
 
         # Outlook entries (days beyond the official 7), sorted by date. Empty in
@@ -828,7 +864,6 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         # the reload that follows enabling, replaced as fetches land.
         outlook_by_date = dict(self._outlook)
         if self._forecast_days > 7:
-            today = dt_util.now().date()
             for date_str in outlook_dates(today, self._forecast_days):
                 outlook_by_date.setdefault(date_str, {
                     "date": date_str,

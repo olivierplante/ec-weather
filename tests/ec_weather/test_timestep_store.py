@@ -325,12 +325,19 @@ class TestPeriodProjection:
 
         assert projection[("2026-03-22", "day")]["pop"] == 70
 
-    def test_period_rain_snow_sums(self):
-        """Period rain/snow are sums of timestep values."""
+    def test_period_rain_snow_expected_at_certainty(self):
+        """Period rain/snow are probability-weighted expected totals.
+
+        UPDATED (was test_period_rain_snow_sums, which asserted a naive sum of
+        the conditional per-hour amounts). project_periods now contributes
+        (pop/100) * amount per timestep. At POP=100 the expectation equals the
+        amount, so this pins the old sum values (3.5 mm / 1.5 cm) but now via
+        the expected-value path with explicit POPs.
+        """
         store = _make_store()
-        store.merge(TimestepData(time=_ts(12), rain_mm=1.5))
-        store.merge(TimestepData(time=_ts(13), rain_mm=2.0, snow_cm=0.5))
-        store.merge(TimestepData(time=_ts(14), snow_cm=1.0))
+        store.merge(TimestepData(time=_ts(12), rain_mm=1.5, pop=100))
+        store.merge(TimestepData(time=_ts(13), rain_mm=2.0, snow_cm=0.5, pop=100))
+        store.merge(TimestepData(time=_ts(14), snow_cm=1.0, pop=100))
 
         periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
         projection = store.project_periods(periods)
@@ -365,6 +372,104 @@ class TestPeriodProjection:
         timesteps = projection[("2026-03-22", "day")]["timesteps"]
         times = [ts["time"] for ts in timesteps]
         assert times == sorted(times)
+
+
+# ---------------------------------------------------------------------------
+# Expected-value precipitation (probability-weighted, trace-floored)
+# ---------------------------------------------------------------------------
+
+class TestPeriodExpectedPrecip:
+    """project_periods reports the expected daily total, not the sum of the
+    conditional per-hour amounts (the WEonG layers are "amount GIVEN precip
+    occurs that hour"). Each timestep contributes (pop/100) * amount, summed
+    over the period, then a trace floor drops sub-measurable expectations.
+    """
+
+    def test_expected_value_mixed_pops(self):
+        """Each timestep contributes (pop/100) * amount; totals sum those."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), rain_mm=2.0, pop=50))   # 1.0
+        store.merge(TimestepData(time=_ts(13), rain_mm=4.0, pop=25))   # 1.0
+        store.merge(TimestepData(time=_ts(14), snow_cm=2.0, pop=50))   # 1.0
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["rain_mm"] == 2.0   # 1.0 + 1.0
+        assert day["snow_cm"] == 1.0
+
+    def test_null_pop_contributes_nothing(self):
+        """A timestep with null POP adds nothing (no defensible expectation)."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), rain_mm=5.0, pop=None))  # ignored
+        store.merge(TimestepData(time=_ts(13), rain_mm=2.0, pop=100))   # 2.0
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        # A naive sum would be 7.0; the null-POP hour is excluded entirely.
+        assert day["rain_mm"] == 2.0
+
+    def test_rain_trace_floor_below_one_mm_is_none(self):
+        """Expected rain < 1.0 mm reports None (sub-measurable noise)."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), rain_mm=0.9, pop=100))  # 0.9
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["rain_mm"] is None
+
+    def test_rain_trace_floor_one_mm_is_kept(self):
+        """Expected rain of exactly 1.0 mm is kept."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), rain_mm=1.0, pop=100))  # 1.0
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["rain_mm"] == 1.0
+
+    def test_snow_trace_floor_below_half_cm_is_none(self):
+        """Expected snow < 0.5 cm reports None (sub-measurable noise)."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), snow_cm=0.4, pop=100))  # 0.4
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["snow_cm"] is None
+
+    def test_snow_trace_floor_half_cm_is_kept(self):
+        """Expected snow of exactly 0.5 cm is kept."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), snow_cm=0.5, pop=100))  # 0.5
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["snow_cm"] == 0.5
+
+    def test_rain_and_snow_kept_separate(self):
+        """Rain (mm) and snow (cm) are expected separately, never combined."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), rain_mm=2.0, snow_cm=1.0, pop=100))
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["rain_mm"] == 2.0
+        assert day["snow_cm"] == 1.0
+
+    def test_expected_value_rounds_to_one_decimal(self):
+        """Expected totals keep the 1-decimal rounding convention."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), rain_mm=2.34, pop=50))  # 1.17
+
+        periods = [("2026-03-22", "day", _utc(10, 22), _utc(22, 22))]
+        day = store.project_periods(periods)[("2026-03-22", "day")]
+
+        assert day["rain_mm"] == 1.2
 
 
 # ---------------------------------------------------------------------------

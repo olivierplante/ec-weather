@@ -253,10 +253,19 @@ def _parse_precip_accumulation(period: dict, lang: str) -> dict:
     """
     precip = period.get("precipitation") or {}
     accum = precip.get("accumulation") or {}
-    amount_obj = accum.get("amount") or {}
+    amount_obj = accum.get("amount")
+    if not isinstance(amount_obj, dict) or not amount_obj:
+        # EC drops the amount object below significance; resolve every field to
+        # None rather than leaking an empty {} into the sensor attributes.
+        return {
+            "precip_accum_amount": None,
+            "precip_accum_unit": None,
+            "precip_accum_name": None,
+        }
+    unit = loc(amount_obj.get("units") or {}, lang)
     return {
         "precip_accum_amount": num(amount_obj, lang),
-        "precip_accum_unit": loc((amount_obj.get("units") or {}), lang),
+        "precip_accum_unit": unit if isinstance(unit, str) else None,
         "precip_accum_name": loc(accum.get("name"), lang),
     }
 

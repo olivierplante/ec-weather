@@ -88,8 +88,9 @@ class TestTodayPopCard:
         # ec_weather/entities command); the Today row reads 'daily_forecast'.
         assert "entityIdFor('daily_forecast')" in section
         assert "dailyPrecip(" in section
-        # Compact units (design audit): "3mm"/"5cm", no space.
-        assert "fmtAmtUnit(" in section
+        # Amounts render through the shared precipAmtLabels() helper, which
+        # emits compact no-space units ("3mm"/"5cm") via fmtAmtUnit.
+        assert "precipAmtLabels(" in section
         # Amounts carry mdi icons so they read without labels: a filled
         # droplet on rain, a snowflake on snow. The chance % lives in the
         # panel header ("N% chance" / "None expected").

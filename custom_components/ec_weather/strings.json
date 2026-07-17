@@ -142,6 +142,24 @@
         },
         "data_description": {
           "extended_forecast": "Shows 7 extra days beyond Environment Canada's official 7-day forecast. The extra days are a longer-range outlook and are less precise: temperatures and rain chances are estimates, not exact values, and there is less daily detail. They appear dimmed in the card to set them apart."
+        },
+        "sections": {
+          "beta": {
+            "name": "Beta",
+            "description": "Features being tested before they become official. Off by default; they may change substantially or be removed in a later release, and they may not work perfectly yet. Turning them off restores the stable behaviour. Feedback through GitHub issues is appreciated.",
+            "data": {
+              "model_precip_estimate": "Estimated precipitation amounts",
+              "ai_grouping": "Group related alerts with AI",
+              "ai_task_entity": "AI Task entity",
+              "ai_grouping_instructions": "AI grouping instructions"
+            },
+            "data_description": {
+              "model_precip_estimate": "Shows a model-derived expected daily precipitation total when Environment Canada does not state an amount. It is computed by weighting Environment Canada's hourly model amounts by their hourly chance of precipitation. Very small totals are hidden as noise.",
+              "ai_grouping": "When several alerts describe the same weather event, ask an AI Task to group them so the card shows one alert with its related bulletins nested inside. Nothing is ever hidden or dropped. If the AI is unavailable, alerts simply appear ungrouped.",
+              "ai_task_entity": "Which AI Task entity to use. Leave empty to use your preferred AI Task entity.",
+              "ai_grouping_instructions": "How the AI decides which alerts belong together. The default works well; edit it only if you want to change the grouping judgment."
+            }
+          }
         }
       },
       "precip": {

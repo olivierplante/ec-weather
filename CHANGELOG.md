@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.4.0
+
+Smarter alerts, honest precipitation, and a card that fits anywhere.
+
+### What's new
+
+- **Group related alerts with AI (beta).** Environment Canada often publishes several alerts for one weather event, a severe thunderstorm warning alongside its watch, for example. When enabled, an AI Task decides which alerts describe the same event and the card shows one alert with its related bulletins nested inside. Nothing is ever hidden or dropped, and any AI problem simply shows the alerts ungrouped. Requires Home Assistant 2025.7+ and an AI Task entity (Ollama, OpenAI, Anthropic, Google). The default instructions are tuned for small local models and are fully editable if your model judges differently. See the new [AI features](docs/ai.md) documentation
+- **Duplicate alerts are merged.** The same alert issued for several neighbouring forecast zones now collapses to one, always, no AI involved
+- **A Beta section in the options.** Experimental settings now live in a collapsed Beta section of the configure dialog. They are opt-in, may change between releases, and can be disabled at any time
+- **Honest daily precipitation amounts.** The daily forecast now shows an amount only when Environment Canada states one. The previous behaviour could display inflated totals built from hourly model data on days with a low chance of precipitation. If you want a model-based estimate back, the new "Estimated precipitation amounts" beta option shows a probability-weighted total, marked with a tilde to distinguish it from amounts Environment Canada states, and hides trace amounts as noise
+- **Tonight shows a real temperature range.** Evening rows used to show a single point on the temperature bar; they now derive their range from the hourly forecast
+
+### Fixed
+
+- The precipitation outlook in the daily popup could keep showing an outdated ensemble band after the day moved into higher-resolution coverage, and could lag behind Environment Canada's newest model run. Both fixed; outlook bands now always reflect the latest published run
+- The 14-day list now adapts cleanly to narrow dashboard columns: content no longer overflows or sits off-centre, day labels align with the section title, winter temperatures and mixed rain-and-snow labels fit, and the temperature bars keep their width. Wider layouts are unchanged
+- French dashboards abbreviate "Aujourd'hui" to "Ajd" in the day list so the label never crowds the row
+
+
 ## 2.3.1
 
 Alert reliability and polish.

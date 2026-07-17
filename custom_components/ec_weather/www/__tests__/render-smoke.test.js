@@ -241,6 +241,459 @@ describe("compact units — amounts render with NO space everywhere", () => {
     const thursday = renderCard("daily")._dailyPopups[5].content;
     expect(thursday).toContain("1mm");
   });
+
+  it("daily — Tonight with hourly timesteps draws a two-ended bar and both labels", () => {
+    // A partial period (high dropped) that carries hourly timesteps: instead of
+    // collapsing to a single-point dot, the row derives its range from the
+    // hourly temps — spanning bar, both dlow and dhigh labels.
+    const forecast = [
+      {
+        period: "Tonight", date: "2026-07-04", icon_code: null, icon_code_night: 30,
+        temp_high: null, temp_low: 16, precip_prob_night: 0,
+        timesteps_day: [],
+        timesteps_night: [{ temp: 25 }, { temp: 22 }, { temp: 18 }, { temp: 16 }],
+      },
+      { period: "Sunday", date: "2026-07-05", icon_code: 0, icon_code_night: 30, temp_high: 29, temp_low: 15 },
+    ];
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "daily" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast });
+    card.hass = hass;
+    const rows = card.shadowRoot.querySelectorAll(".drow");
+    const tonight = rows[0];
+    // Two-ended span bar (not a single-point dot).
+    expect(tonight.querySelector(".dspan")).not.toBeNull();
+    expect(tonight.querySelector(".ddot")).toBeNull();
+    // Both labels reflect the hourly-derived min/max, not the single low.
+    expect(tonight.querySelector(".dlow").textContent).toBe("16°");
+    expect(tonight.querySelector(".dhigh").textContent).toBe("25°");
+  });
+
+  // Layout regression guard. jsdom can't measure geometry, so this asserts the
+  // CSS invariant that keeps every daily row's columns aligned AND keeps the row
+  // from overflowing its container. Two historical bugs:
+  //   1. `.dday { width: 60px }` — a flex item with default min-width:auto, so
+  //      the bold first-row label (fr "Aujourd'hui", ~71px at 600/14px) inflated
+  //      the cell while short labels stayed at 60px, misaligning that one row.
+  //   2. Fixing (1) by widening the cell to 74px raised the row's hard-minimum
+  //      width, so in a tight multi-column layout the extra 14px pushed the
+  //      high-temp label past the card's right edge.
+  // The cell is now a COMPACT, locked 60px column: flex:0 0 60px sets both the
+  // basis and flex-shrink:0 (min-width:auto can't grow it), min-width pins it
+  // against deflation, and overflow:hidden is a last-resort guard. Every label
+  // we actually render is abbreviated to fit 60px at bold weight (see the
+  // dayAbbr test below), so nothing is truncated. Verified against real headless
+  // layout: all rows share one dicons/dbar x-offset and .dhigh stays inside the
+  // container at 380px and 650px.
+  it("daily — label column is a compact, locked, non-inflatable width", () => {
+    const style = renderSection("daily").querySelector("style").textContent;
+    const ddayRule = style.match(/\.dday\s*\{[^}]*\}/)[0];
+    // Locked basis + no shrink (flex:0 0 …) so min-width:auto can't grow it.
+    expect(ddayRule).toMatch(/flex:\s*0\s+0\s+60px/);
+    // Pinned against deflation too.
+    expect(ddayRule).toMatch(/min-width:\s*60px/);
+    // Last-resort clip guard against an unexpected EC period name.
+    expect(ddayRule).toMatch(/overflow:\s*hidden/);
+    // The 74px column that overflowed tight layouts is gone.
+    expect(ddayRule).not.toMatch(/74px/);
+  });
+
+  // The elastic spines (.dtemps, .dbar) must carry min-width:0 so they can shrink
+  // below their content's intrinsic width and absorb the fixed columns — without
+  // it a nested flex item refuses to shrink past min-content and the row
+  // overflows on the right.
+  it("daily — flex spines may shrink (min-width:0 on .dtemps and .dbar)", () => {
+    const style = renderSection("daily").querySelector("style").textContent;
+    const dtempsRule = style.match(/\.dtemps\s*\{[^}]*\}/)[0];
+    const dbarRule = style.match(/\.dbar\s*\{[^}]*\}/)[0];
+    expect(dtempsRule).toMatch(/min-width:\s*0/);
+    expect(dbarRule).toMatch(/min-width:\s*0/);
+  });
+
+  // CSS invariant for the low·bar·high group's breathing room and fit. Two things
+  // are pinned:
+  //   1. `.dlow` / `.dhigh` are a locked, EQUAL 30px. A bold 15px "-40°" (the
+  //      widest realistic value: minus + two digits + degree) measures ~28px in
+  //      real Roboto, so the previous 26px overflowed on winter negatives and ate
+  //      the card's right-edge padding. 30px fits the worst case with headroom,
+  //      and low == high keeps the range bar's two edges aligned down the column.
+  //   2. `.dhigh { text-align: right }` pins the high temp's box edge one 8px
+  //      row-padding inside the card. That is geometrically symmetric with the
+  //      day label — but the value ends in a degree sign, a small, high glyph
+  //      whose trailing side-bearing is FONT-SPECIFIC, so the number's visual
+  //      mass (the digits) sits further from the card edge than the day letters
+  //      sit from the left and the row reads right-heavy. The earlier fix,
+  //      `margin-right: -5px`, was a magic number tuned on the harness's Roboto;
+  //      the dashboard's Glass theme forces `-apple-system` (San Francisco),
+  //      whose degree metrics differ, so the -5px mis-landed in production.
+  //      The font-robust replacement splits the value: the digits (`.dhnum`)
+  //      stay in flow and right-align to the box edge — pinning the DIGIT mass
+  //      one row-padding inside the card, symmetric with the left day label at
+  //      ANY font — while the degree (`.ddeg`) is a zero-advance inline-block
+  //      that contributes nothing to the line and hangs its glyph into the row
+  //      padding. Because the degree carries no advance width, the digit
+  //      position no longer depends on the degree's font-specific bearing, and
+  //      the row's minimum width (clip onset) drops rather than regressing.
+  it("daily — temp boxes are equal-width, fit winter negatives, and the high digit mass is font-robustly right-aligned", () => {
+    const style = renderSection("daily").querySelector("style").textContent;
+    const dlowRule = style.match(/\.dlow\s*\{[^}]*\}/)[0];
+    const dhighRule = style.match(/\.dhigh\s*\{[^}]*\}/)[0];
+    const ddegRule = style.match(/\.ddeg\s*\{[^}]*\}/)[0];
+    // Both boxes are the same locked 30px (fits bold "-40°" ~28px; keeps the
+    // bar edges aligned across every row) — the 26px that clipped negatives is gone.
+    expect(dlowRule).toMatch(/width:\s*30px/);
+    expect(dhighRule).toMatch(/width:\s*30px/);
+    expect(dlowRule).not.toMatch(/width:\s*26px/);
+    expect(dhighRule).not.toMatch(/width:\s*26px/);
+    // The high's box edge pins to the card-side (symmetric with the day label);
+    // the low still hugs the bar. Both are right-aligned but for opposite reasons.
+    expect(dhighRule).toMatch(/text-align:\s*right/);
+    expect(dlowRule).toMatch(/text-align:\s*right/);
+    // The Roboto-tuned magic number is GONE — no font-specific nudge on either box.
+    expect(dhighRule).not.toMatch(/margin-right/);
+    expect(dlowRule).not.toMatch(/margin-right/);
+    // Font-robust trailing-glyph hang: the degree is a zero-advance inline-block
+    // so the digits — not the degree's bearing — set the right edge.
+    expect(ddegRule).toMatch(/display:\s*inline-block/);
+    expect(ddegRule).toMatch(/width:\s*0/);
+    // The high value is split into a digit span and a degree span; the low keeps
+    // its degree inline (it hugs the bar, so no card-edge symmetry concern).
+    const rows = renderSection("daily").querySelectorAll(".drow");
+    const highWithValue = [...rows].find((r) => r.querySelector(".dhigh").textContent);
+    expect(highWithValue.querySelector(".dhigh .dhnum")).not.toBeNull();
+    expect(highWithValue.querySelector(".dhigh .ddeg")).not.toBeNull();
+    expect(highWithValue.querySelector(".dhigh .ddeg").textContent).toBe("°");
+    // textContent is unchanged for consumers (still e.g. "29°").
+    expect(highWithValue.querySelector(".dhigh").textContent).toMatch(/^-?\d+°$/);
+  });
+
+  // The wider temp boxes cost the row 8px of hard-minimum width; the narrow
+  // container query pays it back by tightening the low·bar·high gaps (12px -> 8px,
+  // two gaps = 8px) so the clip onset does not regress. The bar's 58px narrow
+  // floor and the untouched outer row padding must both survive that block.
+  it("daily — narrow mode reclaims temp-box width via tighter gaps, keeps the bar floor", () => {
+    const style = renderSection("daily").querySelector("style").textContent;
+    const narrow = style.match(/@container\s*\(max-width:\s*430px\)\s*\{[\s\S]*?\n\s*\}\s*\n/)[0];
+    // Base gap stays 12px on wide; narrow overrides .dtemps to 8px.
+    expect(style.match(/\.dtemps\s*\{[^}]*\}/)[0]).toMatch(/gap:\s*12px/);
+    expect(narrow).toMatch(/\.dtemps\s*\{[^}]*gap:\s*8px[^}]*\}/);
+    // The bar's narrow floor is preserved.
+    expect(narrow).toMatch(/\.dbar\s*\{[^}]*min-width:\s*58px[^}]*\}/);
+  });
+
+  // A single dashboard column can be far tighter than the 430px narrow tier
+  // assumes: the measured worst-case daily host is 238.5px (a 288.5px ha-card
+  // with 24px card_mod padding each side). At the 430px tier the row's
+  // hard-minimum (~254px) overflows that host by ~16px (up to ~35px on winter
+  // negatives), pushing the high-temp box past the card's right edge — the
+  // long-standing "not centered" defect. An ultra-narrow tier (engages at host
+  // <= 300px) reclaims the deficit WITHOUT touching the outer row padding (the
+  // visible margin): it tightens the row and low·bar·high gaps to 4px, trims the
+  // label column 60px -> 54px (bold "Tonight" ~51px in Roboto still clears it
+  // with headroom) and the icon cell 44px -> 37px with 16px icons, pins the 30px
+  // temp boxes with flex-shrink:0 (bar edges stay aligned; negatives can't widen
+  // the row), and drops the bar's floor to 16px so the bar is the sole
+  // shrink-sink. All told the reclaimed slack goes to the range bar (34.5px ->
+  // 69.5px at the 238.5px host, once the 6px vertical / 1px horizontal row
+  // padding lands too). overflow-x:clip on the row is the
+  // belt-and-braces backstop for pathological narrow widths no real layout
+  // produces.
+  it("daily — ultra-narrow tier fits the 238.5px host with symmetric margins", () => {
+    const style = renderSection("daily").querySelector("style").textContent;
+    const ultra = style.match(/@container\s*\(max-width:\s*300px\)\s*\{[\s\S]*?\n\s*\}\s*\n/)[0];
+    // Breakpoint is the ultra tier, distinct from and below the 430px narrow tier.
+    expect(style).toMatch(/@container\s*\(max-width:\s*300px\)/);
+    // Row + low·bar·high gaps tighten to 4px (base row gap stays 12px on wide).
+    // These 4px gaps, plus the trimmed label/icon columns and the 6px vertical /
+    // 1px horizontal row padding below, hand the reclaimed slack to the range
+    // bar (34.5px -> 69.5px at the 238.5px host).
+    expect(style.match(/\.drow\s*\{[^}]*\}/)[0]).toMatch(/gap:\s*12px/);
+    expect(ultra).toMatch(/\.drow\s*\{[^}]*gap:\s*4px[^}]*\}/);
+    expect(ultra).toMatch(/\.dtemps\s*\{[^}]*gap:\s*4px[^}]*\}/);
+    // The label column drops 60px -> 54px: the widest BOLD label ("Tonight",
+    // ~51px in Roboto) still clears it with >=2px headroom; overflow:hidden on
+    // the base .dday backstops any unexpected wider EC period word.
+    expect(ultra).toMatch(/\.dday\s*\{[^}]*flex:\s*0\s+0\s+54px[^}]*\}/);
+    expect(ultra).toMatch(/\.dday\s*\{[^}]*min-width:\s*54px[^}]*\}/);
+    // The icon cell drops 44px -> 37px with the daily icons shrunk 18px -> 16px
+    // (two 16px SVGs + their 3px gap = 35px, centered in 37px). The size override
+    // needs !important because each row's icon size is set inline in the markup.
+    expect(ultra).toMatch(/\.dicons\s*\{[^}]*width:\s*37px[^}]*\}/);
+    expect(ultra).toMatch(/\.dicons\s+ha-icon\s*\{[^}]*--mdc-icon-size:\s*16px\s*!important[^}]*\}/);
+    // Temp boxes are pinned: flex-shrink:0 keeps them a locked 30px so the range
+    // bar's two edges stay column-aligned and negatives can't widen the row.
+    expect(ultra).toMatch(/\.dlow,\s*\.dhigh\s*\{[^}]*flex-shrink:\s*0[^}]*\}/);
+    // The bar is the sole shrink-sink here: its 58px narrow floor drops to 16px.
+    expect(ultra).toMatch(/\.dbar\s*\{[^}]*min-width:\s*16px[^}]*\}/);
+    // Belt-and-braces guard: the row never paints outside the host even below
+    // the tier's fitting minimum. overflow-x (not overflow) keeps the vertical
+    // axis visible so the POP/amount float labels above the bar are never cut.
+    expect(ultra).toMatch(/\.drow\s*\{[^}]*overflow-x:\s*clip[^}]*\}/);
+    expect(ultra).not.toMatch(/\.drow\s*\{[^}]*overflow:\s*hidden[^}]*\}/);
+    // Row padding: vertical stays 6px (row rhythm), HORIZONTAL drops to 1px so
+    // the row content shares ONE left rail with the section title above it. The
+    // title (.seclbl) has no horizontal padding, so its ink sits at the daily
+    // host's content edge; the row's day label previously sat one 6px row-pad
+    // further in, so the title read ~5.4px LEFT of the day letters at the 238.5px
+    // host (two competing rails the user saw as a mis-alignment). At 1px the
+    // day-label ink lands ~0.4px right of the title ink (bold "Tonight"), within
+    // a pixel — a single rail. Mirrored 1px on the right keeps the high-temp digit
+    // ink at the same right-inset, so the row stays L/R symmetric. The ~10px freed
+    // across both sides flows to the range bar (the sole shrink-sink): 59.5px ->
+    // 69.5px at the 238.5px host. The base .drow keeps 8px on the wider tiers.
+    expect(style.match(/\.drow\s*\{[^}]*\}/)[0]).toMatch(/padding:\s*8px/);
+    expect(ultra).toMatch(/\.drow\s*\{[^}]*padding:\s*6px\s+1px[^}]*\}/);
+    // Mixed winter precip (POP + rain mm + snow cm) is the float's worst case:
+    // three values above the bar. The float centres over the bar, so content
+    // wider than the bar's clear span reaches over the flanking temp boxes — the
+    // low temp, right-aligned toward the bar, is what it crowds. This tier shrinks
+    // the float to fit that span: font 10px -> 9px, inter-value gap 7px -> 2px.
+    // The gap was 4px until the model-estimate "~" prefix widened the group; 2px
+    // reclaims the tilde's width so "90% ~12mm 8cm" fits the 77.5px clear span at
+    // the 238.5px host. Font stays 9px (legibility); all three values stay visible.
+    expect(style.match(/\.dfloat\s*\{[^}]*\}/)[0]).toMatch(/font-size:\s*10px/);
+    expect(ultra).toMatch(/\.dfloat\s*\{[^}]*font-size:\s*9px[^}]*\}/);
+    expect(ultra).toMatch(/\.dfloat\s*\{[^}]*gap:\s*2px[^}]*\}/);
+    // Source order: the ultra tier must follow the 430px tier so its tighter
+    // values win the cascade at widths where both queries match.
+    expect(style.indexOf("max-width: 300px")).toBeGreaterThan(style.indexOf("max-width: 430px"));
+  });
+
+  // The label is `dayAbbr[firstWord] || firstWord`, so any first-row period word
+  // wider than the 60px column must have a dayAbbr entry or it would be clipped.
+  // French "Aujourd'hui" (~71px bold) is the one that overflows; it abbreviates
+  // to the established shorthand "Ajd". English "Today"/"Tonight" and the French
+  // tonight period ("Ce soir…" → "Ce") already fit 60px unabbreviated.
+  it("daily — first-row period words are abbreviated to fit the compact column", () => {
+    const renderFirstLabel = (language, period) => {
+      const card = document.createElement("ec-weather-card");
+      card.setConfig({ section: "daily" });
+      const hass = buildHass();
+      hass.language = language;
+      hass.states["sensor.ec_daily_forecast"] = state("ok", {
+        forecast: [{ ...DAILY_FORECAST[0], period }, ...DAILY_FORECAST.slice(1)],
+      });
+      card.hass = hass;
+      return card.shadowRoot.querySelector(".drow .dday").textContent;
+    };
+    // The regression: "Aujourd'hui" must not render in full (it overflows 60px).
+    expect(renderFirstLabel("fr", "Aujourd'hui")).toBe("Ajd");
+    // These already fit; they are kept intact.
+    expect(renderFirstLabel("en", "Today")).toBe("Today");
+    expect(renderFirstLabel("en", "Tonight")).toBe("Tonight");
+    expect(renderFirstLabel("fr", "Ce soir et cette nuit")).toBe("Ce");
+  });
+});
+
+describe("precip source indicator — model estimates get a leading '~', EC-stated amounts render as-is", () => {
+  const renderDailyRows = (forecast) => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "daily" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast });
+    card.hass = hass;
+    return card.shadowRoot.querySelectorAll(".drow");
+  };
+  const renderTodayPanel = (entry0) => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "current" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast: [entry0] });
+    card.hass = hass;
+    return card.shadowRoot.querySelector(".ppanel").textContent;
+  };
+
+  it("daily column: EC-stated accumulation renders bare (byte-identical, no tilde)", () => {
+    const rows = renderDailyRows([
+      { period: "Today", date: "2026-07-06", icon_code: 12, temp_high: 22, temp_low: 14,
+        precip_prob_day: 70, precip_accum_amount: 8, precip_accum_unit: "mm" },
+    ]);
+    const col = rows[0].querySelector(".dprecip").textContent;
+    const float = rows[0].querySelector(".dfloat").textContent;
+    expect(col).toContain("8mm");
+    expect(col).not.toContain("~");
+    expect(float).toContain("8mm");
+    expect(float).not.toContain("~");
+  });
+
+  it("daily column: model-derived amount gets a leading tilde in both column and float", () => {
+    const rows = renderDailyRows([
+      { period: "Today", date: "2026-07-06", icon_code: 12, temp_high: 22, temp_low: 14,
+        precip_prob_day: 70, rain_mm_day: 8 },
+    ]);
+    expect(rows[0].querySelector(".dprecip").textContent).toContain("~8mm");
+    expect(rows[0].querySelector(".dfloat").textContent).toContain("~8mm");
+  });
+
+  it("daily column: mixed model rain+snow — one tilde leads the group, snow bare, POP untouched", () => {
+    const rows = renderDailyRows([
+      { period: "Today", date: "2026-07-06", icon_code: 12, temp_high: 22, temp_low: 14,
+        precip_prob_day: 90, rain_mm_day: 12, snow_cm_day: 8 },
+    ]);
+    const col = rows[0].querySelector(".dprecip").textContent;
+    expect(col).toContain("~12mm");
+    expect(col).toContain("8cm");
+    expect(col).not.toContain("~8cm");
+    // POP is never tilded.
+    expect(col).toContain("90%");
+    expect(col).not.toContain("~90");
+    // Exactly one tilde across the whole precip group.
+    expect((col.match(/~/g) || []).length).toBe(1);
+    // The float above the bar carries the same single-tilde group.
+    const float = rows[0].querySelector(".dfloat").textContent;
+    expect((float.match(/~/g) || []).length).toBe(1);
+    expect(float).toContain("~12mm");
+    expect(float).toContain("8cm");
+  });
+
+  it("daily column: snow-only model estimate tildes the snow (the sole amount)", () => {
+    const rows = renderDailyRows([
+      { period: "Today", date: "2026-07-06", icon_code: 12, temp_high: 22, temp_low: 14,
+        precip_prob_day: 80, snow_cm_day: 6 },
+    ]);
+    expect(rows[0].querySelector(".dprecip").textContent).toContain("~6cm");
+  });
+
+  it("today panel: model estimate tilded, EC-stated bare, POP never tilded", () => {
+    const ec = renderTodayPanel({ period: "Today", date: "2026-07-04", precip_prob_day: 70,
+      precip_accum_amount: 8, precip_accum_unit: "mm" });
+    expect(ec).toContain("8mm");
+    expect(ec).not.toContain("~");
+
+    const model = renderTodayPanel({ period: "Today", date: "2026-07-04", precip_prob_day: 70, rain_mm_day: 8 });
+    expect(model).toContain("~8mm");
+    expect(model).not.toContain("~70");
+  });
+
+  it("today panel: mixed model rain+snow tildes only the leading amount", () => {
+    const panel = renderTodayPanel({ period: "Today", date: "2026-07-04", precip_prob_day: 90,
+      rain_mm_day: 12, snow_cm_day: 8 });
+    expect(panel).toContain("~12mm");
+    expect(panel).toContain("8cm");
+    expect(panel).not.toContain("~8cm");
+    expect((panel.match(/~/g) || []).length).toBe(1);
+  });
+});
+
+describe("precip amount labels — byte-identity across sites (only the popup gains a tilde)", () => {
+  // The tilde convention + mm/cm formatting were consolidated into one helper
+  // (precipAmtLabels). Every pre-existing render site must emit byte-identical
+  // label text; these pin the exact strings so the consolidation can't drift.
+  const renderRootDaily = (forecast) => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "daily" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast });
+    card.hass = hass;
+    return card.shadowRoot;
+  };
+  const renderRootCurrent = (entry0) => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "current" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast: [entry0] });
+    card.hass = hass;
+    return card.shadowRoot;
+  };
+  const dailyBase = (extra) => ({
+    period: "Today", date: "2026-07-06", icon_code: 12, temp_high: 22, temp_low: 14, ...extra,
+  });
+
+  it("daily column .damts + .dfloat: EC-stated 8mm is exactly '8mm' / '70%8mm'", () => {
+    const row = renderRootDaily([dailyBase({ precip_prob_day: 70, precip_accum_amount: 8, precip_accum_unit: "mm" })])
+      .querySelector(".drow");
+    expect(row.querySelector(".damts").textContent).toBe("8mm");
+    expect(row.querySelector(".dfloat").textContent).toBe("70%8mm");
+  });
+
+  it("daily column .damts + .dfloat: model estimate 8mm is exactly '~8mm' / '70%~8mm'", () => {
+    const row = renderRootDaily([dailyBase({ precip_prob_day: 70, rain_mm_day: 8 })]).querySelector(".drow");
+    expect(row.querySelector(".damts").textContent).toBe("~8mm");
+    expect(row.querySelector(".dfloat").textContent).toBe("70%~8mm");
+  });
+
+  it("daily column .damts + .dfloat: mixed model estimate is exactly '~12mm8cm' / '90%~12mm8cm'", () => {
+    const row = renderRootDaily([dailyBase({ precip_prob_day: 90, rain_mm_day: 12, snow_cm_day: 8 })]).querySelector(".drow");
+    expect(row.querySelector(".damts").textContent).toBe("~12mm8cm");
+    expect(row.querySelector(".dfloat").textContent).toBe("90%~12mm8cm");
+  });
+
+  it("today panel .pchips: EC-stated is bare '8mm', model estimate is '~8mm'", () => {
+    const ec = renderRootCurrent({ period: "Today", date: "2026-07-04", precip_prob_day: 70,
+      precip_accum_amount: 8, precip_accum_unit: "mm" });
+    expect(ec.querySelector(".prow .pchips").textContent).toBe("8mm");
+
+    const model = renderRootCurrent({ period: "Today", date: "2026-07-04", precip_prob_day: 70, rain_mm_day: 8 });
+    expect(model.querySelector(".prow .pchips").textContent).toBe("~8mm");
+  });
+
+  it("today panel .pchips: mixed model estimate is exactly '~12mm8cm'", () => {
+    const panel = renderRootCurrent({ period: "Today", date: "2026-07-04", precip_prob_day: 90,
+      rain_mm_day: 12, snow_cm_day: 8 });
+    expect(panel.querySelector(".prow .pchips").textContent).toBe("~12mm8cm");
+  });
+});
+
+describe("popup day/night boxes — model per-half amounts always wear the '~'", () => {
+  // The popup's Day/Night box amounts read the raw per-half model fields
+  // (rain_mm_day/night, snow_cm_day/night), present only under the beta estimate
+  // option — so they are unconditionally estimates and always get the tilde.
+  const renderPopupContent = (entry) => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "daily" });
+    const hass = buildHass();
+    hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast: [entry] });
+    card.hass = hass;
+    return card._dailyPopups[0].content;
+  };
+  const parse = (content) => {
+    const div = document.createElement("div");
+    div.innerHTML = content;
+    return div;
+  };
+  const dayEntry = (extra) => ({
+    period: "Monday", date: "2026-07-06", icon_code: 12, icon_code_night: 30,
+    temp_high: 22, temp_low: 14, ...extra,
+  });
+
+  it("day box, rain only: the rain line reads '~8mm'", () => {
+    const div = parse(renderPopupContent(dayEntry({ precip_prob_day: 70, rain_mm_day: 8 })));
+    expect(div.querySelector(".ecp-rain").textContent).toBe("~8mm");
+    expect(div.querySelector(".ecp-snow")).toBeNull();
+  });
+
+  it("night box, rain only: the night rain line reads '~3mm'", () => {
+    const div = parse(renderPopupContent(dayEntry({ precip_prob_night: 60, rain_mm_night: 3 })));
+    expect(div.querySelector(".ecp-rain").textContent).toBe("~3mm");
+  });
+
+  it("day box, snow only: the snow line reads '~6cm'", () => {
+    const div = parse(renderPopupContent(dayEntry({ precip_prob_day: 80, snow_cm_day: 6 })));
+    expect(div.querySelector(".ecp-snow").textContent).toBe("~6cm");
+    expect(div.querySelector(".ecp-rain")).toBeNull();
+  });
+
+  it("day box, rain + snow: ONE tilde leads (rain '~12mm'), snow bare ('8cm')", () => {
+    const div = parse(renderPopupContent(dayEntry({ precip_prob_day: 90, rain_mm_day: 12, snow_cm_day: 8 })));
+    expect(div.querySelector(".ecp-rain").textContent).toBe("~12mm");
+    expect(div.querySelector(".ecp-snow").textContent).toBe("8cm");
+  });
+
+  it("day and night boxes each wear their own tilde", () => {
+    const div = parse(renderPopupContent(dayEntry({
+      precip_prob_day: 70, rain_mm_day: 8, precip_prob_night: 60, rain_mm_night: 3 })));
+    const rains = div.querySelectorAll(".ecp-rain");
+    expect(rains.length).toBe(2);
+    expect(rains[0].textContent).toBe("~8mm");
+    expect(rains[1].textContent).toBe("~3mm");
+  });
+
+  it("no amounts: neither box emits a rain/snow line (unchanged)", () => {
+    const div = parse(renderPopupContent(dayEntry({ precip_prob_day: 40 })));
+    expect(div.querySelector(".ecp-rain")).toBeNull();
+    expect(div.querySelector(".ecp-snow")).toBeNull();
+  });
 });
 
 describe("wind cell — headline speed+unit, secondary dir · gusts", () => {

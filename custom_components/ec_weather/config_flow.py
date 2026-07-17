@@ -15,9 +15,11 @@ import math
 import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.data_entry_flow import FlowResult, section
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -35,6 +37,9 @@ from .api_client import (
     parse_ec_city_features,
 )
 from .const import (
+    CONF_AI_GROUPING,
+    CONF_AI_GROUPING_INSTRUCTIONS,
+    CONF_AI_TASK_ENTITY,
     CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
     CONF_BBOX,
@@ -45,6 +50,7 @@ from .const import (
     CONF_LANGUAGE,
     CONF_LAT,
     CONF_LON,
+    CONF_MODEL_PRECIP_ESTIMATE,
     CONF_POLLING_MODE,
     CONF_PRECIP_DISCOVERED,
     CONF_PRECIP_STATION_DISTANCE_KM,
@@ -52,8 +58,11 @@ from .const import (
     CONF_PRECIP_STATION_NAME,
     CONF_PRECIP_STATION_TYPE,
     CONF_WEATHER_INTERVAL,
+    DEFAULT_AI_GROUPING,
+    DEFAULT_AI_GROUPING_INSTRUCTIONS,
     DEFAULT_AQHI_INTERVAL,
     DEFAULT_FORECAST_DAYS,
+    DEFAULT_MODEL_PRECIP_ESTIMATE,
     EXTENDED_FORECAST_DAYS,
     DEFAULT_LANGUAGE,
     DEFAULT_POLLING_MODE,
@@ -64,12 +73,18 @@ from .const import (
     POLLING_MODES,
     REQUEST_TIMEOUT,
     SUPPORTED_LANGUAGES,
+    resolve_ai_grouping_instructions,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
 PRECIP_OPT_OUT = "__none__"
+
+# Collapsible form section that houses not-yet-stable, opt-in options. Its
+# fields arrive nested under this key on submit and are flattened back into the
+# top-level options so the stored format never changes.
+CONF_BETA_SECTION = "beta"
 
 
 def _precip_choice_label(station: dict, language: str) -> str:
@@ -160,9 +175,21 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
         mutable_keys = {
             CONF_POLLING_MODE, CONF_WEATHER_INTERVAL,
             CONF_AQHI_INTERVAL, CONF_EXTENDED_FORECAST,
+            CONF_AI_GROUPING, CONF_AI_TASK_ENTITY,
+            CONF_AI_GROUPING_INSTRUCTIONS,
+            CONF_MODEL_PRECIP_ESTIMATE,
         }
 
         if user_input is not None:
+            # The beta section's fields arrive nested under its section key.
+            # Flatten them into the top level BEFORE the mutable/immutable
+            # split so entry.options keeps the flat keys (ai_grouping /
+            # ai_task_entity / ai_grouping_instructions) — no storage-format
+            # change, no migration. A field cleared inside the section is
+            # simply absent from the nested dict, so the cleared-entity pop
+            # below still fires correctly.
+            beta_section = user_input.pop(CONF_BETA_SECTION, {})
+            user_input.update(beta_section)
             # Snapshot the pre-save state so the terminal step can tell a
             # checkbox-only change (in-place fast path) from one needing a
             # full reload.
@@ -176,6 +203,10 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                     new_options[key] = value
                 else:
                     new_data[key] = value
+            # The optional AI Task entity selector omits its key when cleared;
+            # drop any stored value so clearing actually unsets it.
+            if CONF_AI_TASK_ENTITY not in user_input:
+                new_options.pop(CONF_AI_TASK_ENTITY, None)
             self.hass.config_entries.async_update_entry(
                 self.config_entry, data=new_data, options=new_options,
             )
@@ -266,6 +297,62 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                             )
                         ),
                     ): bool,
+                    # Not-yet-stable, opt-in options live in a collapsed
+                    # "Beta" section. The fields keep their exact selectors,
+                    # defaults, and suggested_value handling; only their
+                    # placement changes. Submitted input arrives nested under
+                    # this key and is flattened back to the top level above.
+                    vol.Required(CONF_BETA_SECTION): section(
+                        vol.Schema(
+                            {
+                                vol.Optional(
+                                    CONF_MODEL_PRECIP_ESTIMATE,
+                                    default=bool(
+                                        options.get(
+                                            CONF_MODEL_PRECIP_ESTIMATE,
+                                            DEFAULT_MODEL_PRECIP_ESTIMATE,
+                                        )
+                                    ),
+                                ): bool,
+                                vol.Optional(
+                                    CONF_AI_GROUPING,
+                                    default=bool(
+                                        options.get(
+                                            CONF_AI_GROUPING, DEFAULT_AI_GROUPING
+                                        )
+                                    ),
+                                ): bool,
+                                vol.Optional(
+                                    CONF_AI_TASK_ENTITY,
+                                    # Suggested-value (not a hard default): the
+                                    # entity selector rejects "", so leaving it
+                                    # blank must omit the key rather than
+                                    # validate an empty string.
+                                    description={
+                                        "suggested_value": options.get(
+                                            CONF_AI_TASK_ENTITY
+                                        )
+                                        or None,
+                                    },
+                                ): EntitySelector(
+                                    EntitySelectorConfig(domain="ai_task")
+                                ),
+                                vol.Optional(
+                                    CONF_AI_GROUPING_INSTRUCTIONS,
+                                    # Show the upgraded default when the stored
+                                    # value is blank or a superseded legacy
+                                    # default; a customized value is shown
+                                    # unchanged.
+                                    default=resolve_ai_grouping_instructions(
+                                        options.get(CONF_AI_GROUPING_INSTRUCTIONS)
+                                    ),
+                                ): TextSelector(
+                                    TextSelectorConfig(type="text", multiline=True)
+                                ),
+                            }
+                        ),
+                        {"collapsed": True},
+                    ),
                 }
             ),
             description_placeholders={
@@ -319,6 +406,16 @@ class ECWeatherOptionsFlow(config_entries.OptionsFlow):
                 CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
                 CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
                 CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+                # AI options must gate the reload too — changing any of them
+                # would otherwise take the checkbox-only fast path and never
+                # reload the alert coordinator with the new settings.
+                CONF_AI_GROUPING: DEFAULT_AI_GROUPING,
+                CONF_AI_TASK_ENTITY: None,
+                CONF_AI_GROUPING_INSTRUCTIONS: DEFAULT_AI_GROUPING_INSTRUCTIONS,
+                # The estimated-precip toggle must gate the reload too — a
+                # change would otherwise take the checkbox-only fast path and
+                # never rebuild the daily sensor with the new setting.
+                CONF_MODEL_PRECIP_ESTIMATE: DEFAULT_MODEL_PRECIP_ESTIMATE,
             }
             others_unchanged = pre_options is not None and all(
                 options_now.get(key, default)
