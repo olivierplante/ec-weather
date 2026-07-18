@@ -17,10 +17,16 @@
 ## What you get
 
 - Current conditions, a 48-hour hourly trend and a 7-day outlook
-- Active weather alerts for your area
+- Active weather alerts for your area, with optional AI grouping of related alerts (beta)
 - Feels-like (humidex / wind chill), AQHI and UV color-coded by risk
 - A Lovelace card that auto-registers, follows your HA theme (dark and light), English and Français
 - Renders in ~2 seconds, then fills in detailed data in the background
+
+## Beta features
+
+Some settings live in a collapsed "Beta" section at the bottom of the configure dialog. These are features being tested in the open before they become official: they are always off by default, they may change substantially or be removed in a later release, and they may not work perfectly yet. Turning them off always returns the integration to its stable behaviour. Feedback through GitHub issues is welcome.
+
+The current beta features are described in [Configuration](https://github.com/olivierplante/ec-weather/blob/main/docs/configuration.md) and, for the AI ones, in [AI features](https://github.com/olivierplante/ec-weather/blob/main/docs/ai.md).
 
 ## Install
 
@@ -38,6 +44,7 @@
 - [Lovelace card](https://github.com/olivierplante/ec-weather/blob/main/docs/card.md): sections, full panel, theming
 - [Screenshots](https://github.com/olivierplante/ec-weather/blob/main/docs/screenshots.md): desktop, mobile, popup, light theme
 - [Polling & API usage](https://github.com/olivierplante/ec-weather/blob/main/docs/polling.md): tiered loading and caching
+- [AI features (beta)](https://github.com/olivierplante/ec-weather/blob/main/docs/ai.md): optional AI grouping of related alerts
 
 ## Support
 

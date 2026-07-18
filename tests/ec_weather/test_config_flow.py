@@ -25,6 +25,11 @@ from ec_weather.config_flow import (
 )
 from ec_weather.const import (
     EXTENDED_FORECAST_DAYS,
+    CONF_AI_GROUPING,
+    CONF_AI_GROUPING_INSTRUCTIONS,
+    CONF_AI_TASK_ENTITY,
+    DEFAULT_AI_GROUPING_INSTRUCTIONS,
+    LEGACY_AI_GROUPING_INSTRUCTIONS,
     CONF_PRECIP_DISCOVERED,
     CONF_AQHI_INTERVAL,
     CONF_AQHI_LOCATION_ID,
@@ -33,6 +38,8 @@ from ec_weather.const import (
     CONF_CITY_NAME,
     CONF_EXTENDED_FORECAST,
     CONF_FORECAST_DAYS,
+    CONF_MODEL_PRECIP_ESTIMATE,
+    DEFAULT_MODEL_PRECIP_ESTIMATE,
     CONF_GEOMET_BBOX,
     CONF_PRECIP_STATION_ID,
     CONF_LANGUAGE,
@@ -703,7 +710,13 @@ class TestOptionsFlowInit:
         schema_dict = dict(result["data_schema"].schema)
         defaults = {}
         for key_obj in schema_dict:
-            if hasattr(key_obj, "schema") and hasattr(key_obj, "default"):
+            # Optional selector fields (e.g. the AI Task entity) carry a
+            # non-callable Undefined default — skip those.
+            if (
+                hasattr(key_obj, "schema")
+                and hasattr(key_obj, "default")
+                and callable(key_obj.default)
+            ):
                 defaults[key_obj.schema] = key_obj.default()
 
         assert defaults[CONF_POLLING_MODE] == POLLING_MODE_EFFICIENT
@@ -745,7 +758,13 @@ class TestOptionsFlowInit:
         schema_dict = dict(result["data_schema"].schema)
         defaults = {}
         for key_obj in schema_dict:
-            if hasattr(key_obj, "schema") and hasattr(key_obj, "default"):
+            # Optional selector fields (e.g. the AI Task entity) carry a
+            # non-callable Undefined default — skip those.
+            if (
+                hasattr(key_obj, "schema")
+                and hasattr(key_obj, "default")
+                and callable(key_obj.default)
+            ):
                 defaults[key_obj.schema] = key_obj.default()
 
         assert CONF_EXTENDED_FORECAST in defaults
@@ -765,7 +784,13 @@ class TestOptionsFlowInit:
         schema_dict = dict(result["data_schema"].schema)
         defaults = {}
         for key_obj in schema_dict:
-            if hasattr(key_obj, "schema") and hasattr(key_obj, "default"):
+            # Optional selector fields (e.g. the AI Task entity) carry a
+            # non-callable Undefined default — skip those.
+            if (
+                hasattr(key_obj, "schema")
+                and hasattr(key_obj, "default")
+                and callable(key_obj.default)
+            ):
                 defaults[key_obj.schema] = key_obj.default()
 
         assert defaults[CONF_EXTENDED_FORECAST] is True
@@ -837,6 +862,8 @@ class TestOptionsPersistenceAndFastPath(TestOptionsFlowInit):
             CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
             CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
             CONF_EXTENDED_FORECAST: True,
+            # AI options arrive nested under the collapsed section key.
+            "beta": {},
         }
 
     async def _save_both_steps(self, hass, flow, init_input):
@@ -902,3 +929,286 @@ class TestOptionsPersistenceAndFastPath(TestOptionsFlowInit):
             await self._save_both_steps(hass, flow, changed)
 
         mock_reload.assert_awaited_once()
+
+
+class TestOptionsFlowAIGrouping(TestOptionsPersistenceAndFastPath):
+    """The three AI-grouping options round-trip and gate the fast path."""
+
+    @patch("ec_weather.config_flow.discover_precip_stations")
+    async def test_ai_options_go_to_options(
+        self, mock_discover, hass: HomeAssistant,
+    ) -> None:
+        """AI keys are saved to options, not data."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
+        flow = await self._make_options_flow(hass)
+
+        hass.config_entries = MagicMock()
+        hass.config_entries.async_update_entry = MagicMock()
+        hass.config_entries.async_reload = AsyncMock()
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+
+        user_input = {
+            CONF_CITY_CODE: "on-118",
+            CONF_LANGUAGE: "en",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
+            CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
+            CONF_AQHI_LOCATION_ID: "",
+            CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
+            CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
+            CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+            # The three AI fields arrive nested under the section key.
+            "beta": {
+                CONF_AI_GROUPING: True,
+                CONF_AI_TASK_ENTITY: "ai_task.my_model",
+                CONF_AI_GROUPING_INSTRUCTIONS: "Group storms only.",
+            },
+        }
+        await flow.async_step_init(user_input=user_input)
+
+        new_options = hass.config_entries.async_update_entry.call_args[1]["options"]
+        assert new_options[CONF_AI_GROUPING] is True
+        assert new_options[CONF_AI_TASK_ENTITY] == "ai_task.my_model"
+        assert new_options[CONF_AI_GROUPING_INSTRUCTIONS] == "Group storms only."
+        # Not leaked into immutable data — neither the flat keys nor the
+        # nested section wrapper survive into storage.
+        new_data = hass.config_entries.async_update_entry.call_args[1]["data"]
+        assert CONF_AI_GROUPING not in new_data
+        assert "beta" not in new_data
+        assert "beta" not in new_options
+
+    @patch("ec_weather.config_flow.discover_precip_stations")
+    async def test_cleared_entity_is_unset(
+        self, mock_discover, hass: HomeAssistant,
+    ) -> None:
+        """Omitting the entity key (cleared selector) unsets the stored value."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
+        flow = await self._make_options_flow(
+            hass, options={CONF_AI_TASK_ENTITY: "ai_task.old"},
+        )
+        hass.config_entries = MagicMock()
+        hass.config_entries.async_update_entry = MagicMock()
+        hass.config_entries.async_reload = AsyncMock()
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+
+        # Entity key absent from the section dict == cleared field.
+        user_input = {
+            CONF_CITY_CODE: "on-118",
+            CONF_LANGUAGE: "en",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
+            CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
+            CONF_AQHI_LOCATION_ID: "",
+            CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
+            CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
+            CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+            "beta": {
+                CONF_AI_GROUPING: True,
+                CONF_AI_GROUPING_INSTRUCTIONS: "Group storms only.",
+            },
+        }
+        await flow.async_step_init(user_input=user_input)
+
+        new_options = hass.config_entries.async_update_entry.call_args[1]["options"]
+        assert CONF_AI_TASK_ENTITY not in new_options
+
+    async def test_ai_option_change_forces_reload(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """Turning on AI grouping is a non-checkbox change → full reload."""
+        flow = await self._make_options_flow(hass)
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+        changed = self._base_input()
+        changed["beta"] = {CONF_AI_GROUPING: True}
+        with patch.object(
+            hass.config_entries, "async_reload", AsyncMock(),
+        ) as mock_reload:
+            await self._save_both_steps(hass, flow, changed)
+
+        mock_reload.assert_awaited_once()
+
+    @staticmethod
+    def _schema_default(result, key):
+        """Return the resolved default for a schema key in a shown form.
+
+        Descends into collapsible sections so nested fields (the AI options)
+        are found alongside top-level ones.
+        """
+        candidates = []
+        for key_obj, value in dict(result["data_schema"].schema).items():
+            # A section wraps its fields in an inner vol.Schema; unwrap it.
+            if hasattr(value, "schema") and hasattr(value, "options"):
+                candidates.extend(dict(value.schema.schema).items())
+            else:
+                candidates.append((key_obj, value))
+        for key_obj, _value in candidates:
+            if (
+                hasattr(key_obj, "schema")
+                and key_obj.schema == key
+                and hasattr(key_obj, "default")
+                and callable(key_obj.default)
+            ):
+                return key_obj.default()
+        raise AssertionError(f"no callable default for {key}")
+
+    async def test_ai_fields_live_in_collapsed_section(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """The three AI options sit inside a collapsed 'beta' section."""
+        flow = await self._make_options_flow(hass)
+
+        result = await flow.async_step_init(user_input=None)
+
+        section_obj = None
+        for key_obj, value in dict(result["data_schema"].schema).items():
+            if getattr(key_obj, "schema", None) == "beta":
+                section_obj = value
+                break
+        assert section_obj is not None, "beta section missing from init form"
+        # Marked collapsed the way HA makes it inspectable.
+        assert section_obj.options.get("collapsed") is True
+        inner_keys = {
+            key_obj.schema for key_obj in dict(section_obj.schema.schema)
+        }
+        assert {
+            CONF_AI_GROUPING,
+            CONF_AI_TASK_ENTITY,
+            CONF_AI_GROUPING_INSTRUCTIONS,
+        } <= inner_keys
+        # The flat AI keys must not remain at the top level of the form.
+        top_level_keys = {
+            getattr(key_obj, "schema", None)
+            for key_obj in dict(result["data_schema"].schema)
+        }
+        assert CONF_AI_GROUPING not in top_level_keys
+
+    async def test_prefill_upgrades_legacy_default_to_current(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """A stored legacy default prompt is shown upgraded to the current
+        default on the options form (uncustomized users see the improvement)."""
+        flow = await self._make_options_flow(
+            hass,
+            options={
+                CONF_AI_GROUPING_INSTRUCTIONS: LEGACY_AI_GROUPING_INSTRUCTIONS[0],
+            },
+        )
+
+        result = await flow.async_step_init(user_input=None)
+
+        assert (
+            self._schema_default(result, CONF_AI_GROUPING_INSTRUCTIONS)
+            == DEFAULT_AI_GROUPING_INSTRUCTIONS
+        )
+
+    async def test_prefill_keeps_customized_prompt(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """A customized stored prompt is shown unchanged on the options form."""
+        custom = "Only group thunderstorm alerts."
+        flow = await self._make_options_flow(
+            hass, options={CONF_AI_GROUPING_INSTRUCTIONS: custom},
+        )
+
+        result = await flow.async_step_init(user_input=None)
+
+        assert self._schema_default(result, CONF_AI_GROUPING_INSTRUCTIONS) == custom
+
+    async def test_prefill_default_when_unset(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """With no stored prompt, the form prefills the current default."""
+        flow = await self._make_options_flow(hass)
+
+        result = await flow.async_step_init(user_input=None)
+
+        assert (
+            self._schema_default(result, CONF_AI_GROUPING_INSTRUCTIONS)
+            == DEFAULT_AI_GROUPING_INSTRUCTIONS
+        )
+
+
+class TestOptionsFlowModelPrecipEstimate(TestOptionsFlowAIGrouping):
+    """The estimated-precipitation BETA toggle round-trips, defaults off, and
+    gates the reload fast path so a change actually takes effect."""
+
+    @patch("ec_weather.config_flow.discover_precip_stations")
+    async def test_option_goes_to_options(
+        self, mock_discover, hass: HomeAssistant,
+    ) -> None:
+        """The key is saved to options (not data), and the nested wrapper is
+        flattened away."""
+        mock_discover.return_value = {"nearest": None, "nearest_split": None}
+        flow = await self._make_options_flow(hass)
+
+        hass.config_entries = MagicMock()
+        hass.config_entries.async_update_entry = MagicMock()
+        hass.config_entries.async_reload = AsyncMock()
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+
+        user_input = {
+            CONF_CITY_CODE: "on-118",
+            CONF_LANGUAGE: "en",
+            CONF_BBOX: "-75.9,45.2,-75.5,45.6",
+            CONF_GEOMET_BBOX: "44.420,-76.700,46.420,-74.700",
+            CONF_AQHI_LOCATION_ID: "",
+            CONF_POLLING_MODE: DEFAULT_POLLING_MODE,
+            CONF_WEATHER_INTERVAL: DEFAULT_WEATHER_INTERVAL,
+            CONF_AQHI_INTERVAL: DEFAULT_AQHI_INTERVAL,
+            "beta": {CONF_MODEL_PRECIP_ESTIMATE: True},
+        }
+        await flow.async_step_init(user_input=user_input)
+
+        new_options = hass.config_entries.async_update_entry.call_args[1]["options"]
+        assert new_options[CONF_MODEL_PRECIP_ESTIMATE] is True
+        new_data = hass.config_entries.async_update_entry.call_args[1]["data"]
+        assert CONF_MODEL_PRECIP_ESTIMATE not in new_data
+        assert "beta" not in new_data
+        assert "beta" not in new_options
+
+    async def test_change_forces_reload(self, hass: HomeAssistant) -> None:
+        """Toggling the option must NOT take the checkbox-only fast path."""
+        flow = await self._make_options_flow(hass)
+        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
+        changed = self._base_input()
+        changed["beta"] = {CONF_MODEL_PRECIP_ESTIMATE: True}
+        with patch.object(
+            hass.config_entries, "async_reload", AsyncMock(),
+        ) as mock_reload:
+            await self._save_both_steps(hass, flow, changed)
+
+        mock_reload.assert_awaited_once()
+
+    async def test_default_is_false_on_form(self, hass: HomeAssistant) -> None:
+        """The toggle prefills off by default."""
+        flow = await self._make_options_flow(hass)
+
+        result = await flow.async_step_init(user_input=None)
+
+        assert (
+            self._schema_default(result, CONF_MODEL_PRECIP_ESTIMATE)
+            is DEFAULT_MODEL_PRECIP_ESTIMATE
+        )
+        assert DEFAULT_MODEL_PRECIP_ESTIMATE is False
+
+    async def test_lives_in_collapsed_beta_section(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """The toggle sits inside the collapsed 'beta' section, not top level."""
+        flow = await self._make_options_flow(hass)
+
+        result = await flow.async_step_init(user_input=None)
+
+        section_obj = None
+        for key_obj, value in dict(result["data_schema"].schema).items():
+            if getattr(key_obj, "schema", None) == "beta":
+                section_obj = value
+                break
+        assert section_obj is not None, "beta section missing from init form"
+        inner_keys = {
+            key_obj.schema for key_obj in dict(section_obj.schema.schema)
+        }
+        assert CONF_MODEL_PRECIP_ESTIMATE in inner_keys
+        top_level_keys = {
+            getattr(key_obj, "schema", None)
+            for key_obj in dict(result["data_schema"].schema)
+        }
+        assert CONF_MODEL_PRECIP_ESTIMATE not in top_level_keys

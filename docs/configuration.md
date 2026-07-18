@@ -24,6 +24,12 @@ Settings → Integrations → EC Weather → Configure.
 | Polling mode | Controls background polling vs on-demand refresh. See [Polling & API usage](polling.md) |
 | Refresh intervals | Per-data-type cadence (weather, AQHI, forecast detail) |
 | Extended 14-day forecast | Off by default. Adds 7 dimmed outlook days past the official EC forecast. The extra days are less precise estimates from longer-range models. |
+| Estimated precipitation amounts | Off by default. Shows a model-derived expected daily precipitation total when Environment Canada does not state an amount. It weights EC's hourly model amounts by their hourly chance of precipitation, and hides very small totals as noise. |
+| Group related alerts with AI | Off by default. When several alerts describe the same weather event, an AI Task groups them so the card shows one alert with its related bulletins nested inside. Nothing is ever hidden or dropped. See [AI features](ai.md). |
+| AI Task entity | Which AI Task entity to use for grouping. Leave empty to use your preferred AI Task entity. |
+| AI grouping instructions | How the AI decides which alerts belong together. The default works well; edit it only to change the grouping judgment. |
+
+The last four settings are beta features, of which the last three are AI features. They sit in the collapsed "Beta" section of the configure dialog; expand it to reveal them.
 
 The integration reloads itself when you save.
 

@@ -28,6 +28,85 @@ CONF_PRECIP_DISCOVERED = "precip_discovered"
 DEFAULT_LANGUAGE = "en"
 SUPPORTED_LANGUAGES = {"en": "English", "fr": "Français"}
 
+# ---------------------------------------------------------------------------
+# AI alert grouping (opt-in)
+#
+# EC often publishes several alerts for one weather event (e.g. a severe
+# thunderstorm warning plus a watch). This opt-in layer asks an LLM, via HA's
+# native ai_task.generate_data service, which alerts describe the same event so
+# the card can group them. It only ANNOTATES alerts — nothing is ever dropped,
+# and every failure path leaves the alerts exactly as they are today.
+# ---------------------------------------------------------------------------
+CONF_AI_GROUPING = "ai_grouping"
+CONF_AI_TASK_ENTITY = "ai_task_entity"
+CONF_AI_GROUPING_INSTRUCTIONS = "ai_grouping_instructions"
+
+DEFAULT_AI_GROUPING = False
+
+# Hard ceiling on the LLM call — the coordinator must never block on it.
+AI_GROUPING_TIMEOUT = 60  # seconds
+
+# User-editable judgment half of the grouping prompt (the mechanical half —
+# the numbered alert list and the output format — is fixed in code). This text
+# is phenomenon-grounded (group only same-phenomenon alerts, with one explicit
+# negative example) and scored 100/100 runs against the target small local
+# model, versus systematic ordering/refusal failures from the prior default.
+#
+# The severity-order paragraph MUST stay LAST: small models obey the most
+# recent instruction, and moving this rule mid-prompt measurably regressed the
+# primary ordering.
+DEFAULT_AI_GROUPING_INSTRUCTIONS = (
+    "You are grouping the active weather alerts for one location so that alerts "
+    "describing the same weather event are shown together.\n\n"
+    "Two alerts describe the same event only when they are about the same "
+    "weather phenomenon (for example thunderstorms, rain, snow, freezing rain, "
+    "wind, heat, or air quality). A warning and a watch for that same "
+    "phenomenon are the same event, so group them together. Alerts about "
+    "different phenomena are never the same event, even when one alert's text "
+    "mentions the other: a heat warning and an air quality warning are two "
+    "separate events and must stay apart.\n\n"
+    "The alerts may be written in English or French.\n\n"
+    "When you group alerts, put the most severe one first: a warning outranks a "
+    "watch, a watch outranks an advisory, an advisory outranks a statement."
+)
+
+# Superseded default prompts, kept verbatim. A stored options value that equals
+# any entry here is auto-upgraded to the current DEFAULT at read time (see
+# resolve_ai_grouping_instructions), so users who never customized the prompt
+# track improvements without re-editing their config. Never rewrite the stored
+# value itself — resolution happens only when the value is consumed.
+LEGACY_AI_GROUPING_INSTRUCTIONS = (
+    (
+        "You are grouping active weather alerts for a single location. Group "
+        "together the alerts that describe the same underlying weather event — for "
+        "example one storm that has both a warning and a watch, or a rain event "
+        "covered by several bulletins. Within each group, list first the alert "
+        "that best describes the event or carries the highest gravity, using this "
+        "order of gravity: a warning outranks a watch, a watch outranks an "
+        "advisory, and an advisory outranks a statement. Only group alerts you are "
+        "confident describe the same event; when in doubt, leave an alert on its "
+        "own rather than grouping it. The alerts may be written in English or "
+        "French."
+    ),
+)
+
+
+def resolve_ai_grouping_instructions(stored: str | None) -> str:
+    """Return the effective grouping instructions for a stored options value.
+
+    A missing/blank value, or one that exactly matches a superseded default in
+    ``LEGACY_AI_GROUPING_INSTRUCTIONS``, resolves to the current
+    ``DEFAULT_AI_GROUPING_INSTRUCTIONS`` so uncustomized users automatically
+    track prompt improvements. Any other (customized) value is returned
+    unchanged — customized prompts always win. Read-time only: the stored
+    option is never mutated here.
+    """
+    if stored is None or not stored.strip():
+        return DEFAULT_AI_GROUPING_INSTRUCTIONS
+    if stored in LEGACY_AI_GROUPING_INSTRUCTIONS:
+        return DEFAULT_AI_GROUPING_INSTRUCTIONS
+    return stored
+
 # EC API
 EC_API_BASE = "https://api.weather.gc.ca"
 
@@ -78,6 +157,17 @@ DEFAULT_FORECAST_DAYS = 7
 # Legacy select key kept readable for entries saved by the pre-checkbox flow.
 CONF_EXTENDED_FORECAST = "extended_forecast"
 EXTENDED_FORECAST_DAYS = 14
+
+# ---------------------------------------------------------------------------
+# Model-derived daily precipitation estimate (opt-in, BETA)
+#
+# The daily forecast normally shows only EC-stated accumulation amounts. When
+# this option is on, days where EC states no amount fall back to an honest
+# probability-weighted model expectation (see timestep_store.project_periods).
+# Off by default — the model estimate is a beta refinement, not the baseline.
+# ---------------------------------------------------------------------------
+CONF_MODEL_PRECIP_ESTIMATE = "model_precip_estimate"
+DEFAULT_MODEL_PRECIP_ESTIMATE = False
 
 # Configurable interval defaults (minutes)
 CONF_WEATHER_INTERVAL = "weather_interval"

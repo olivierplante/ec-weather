@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from freezegun import freeze_time
+from unittest.mock import MagicMock
 
+from freezegun import freeze_time
+from homeassistant.core import HomeAssistant
+
+from ec_weather.sensor import ECDailyForecastSensor
 from ec_weather.transforms import (
     apply_icon_fallback,
     filter_past_hours,
@@ -116,6 +120,108 @@ class TestMergeWeongIntoDailyEnriched:
         result = merge_weong_into_daily(daily, weong_periods)
 
         assert result[0]["precip_prob"] == 60
+
+
+# ---------------------------------------------------------------------------
+# merge_weong_into_daily — model_precip_estimate gate (BETA option)
+# ---------------------------------------------------------------------------
+
+class TestMergeWeongModelPrecipGate:
+    """The model-derived daily amounts are exposed only when the option is on.
+
+    POP is never gated (POP is EC-independent probability, always shown). Only
+    the four model AMOUNT fields (rain_mm_day/night, snow_cm_day/night) are
+    suppressed when model_precip_estimate is off.
+    """
+
+    def _periods(self):
+        return {
+            ("2026-03-23", "day"): _weong_period(pop=65, rain=3.2, snow=None),
+            ("2026-03-23", "night"): _weong_period(pop=40, rain=1.0, snow=0.5),
+        }
+
+    def test_option_off_suppresses_model_amounts(self):
+        """model_precip_estimate=False → four amount fields None, POP kept."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+
+        result = merge_weong_into_daily(
+            daily, self._periods(), model_precip_estimate=False,
+        )
+
+        item = result[0]
+        assert item["rain_mm_day"] is None
+        assert item["snow_cm_day"] is None
+        assert item["rain_mm_night"] is None
+        assert item["snow_cm_night"] is None
+        # POP still flows through unchanged.
+        assert item["precip_prob_day"] == 65
+        assert item["precip_prob_night"] == 40
+        assert item["precip_prob"] == 65
+
+    def test_option_on_exposes_model_amounts(self):
+        """model_precip_estimate=True → model amounts present as before."""
+        daily = [_daily_item("Monday", "2026-03-23")]
+
+        result = merge_weong_into_daily(
+            daily, self._periods(), model_precip_estimate=True,
+        )
+
+        item = result[0]
+        assert item["rain_mm_day"] == 3.2
+        assert item["snow_cm_day"] is None
+        assert item["rain_mm_night"] == 1.0
+        assert item["snow_cm_night"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# ECDailyForecastSensor — option plumbs into the attribute output
+# ---------------------------------------------------------------------------
+
+class TestDailySensorModelPrecipPlumbing:
+    """The sensor forwards the configured option into its merge so the four
+    model amount fields are gated in the actual sensor attributes."""
+
+    def _sensor(self, hass: HomeAssistant, model_precip_estimate: bool):
+        weather = MagicMock()
+        weather.data = {
+            "daily": [_daily_item("Monday", "2026-03-23")],
+            "hourly": [],
+            "updated": "2026-03-22T18:00:00Z",
+        }
+        weong = MagicMock()
+        weong.data = {
+            "periods": {
+                ("2026-03-23", "day"): _weong_period(pop=65, rain=3.2, snow=None),
+                ("2026-03-23", "night"): _weong_period(pop=40, rain=1.0, snow=0.5),
+            },
+            "updated": "2026-03-22T18:00:00Z",
+            "days_fetched": ["2026-03-23"],
+            "precip_windows": None,
+            "outlook": None,
+            "outlook_backfill": None,
+        }
+        return ECDailyForecastSensor(
+            weather, weong, "on-118", "Ottawa", "en",
+            model_precip_estimate=model_precip_estimate,
+        )
+
+    @freeze_time("2026-03-22T12:00:00Z")
+    def test_option_off_gates_sensor_attributes(self, hass: HomeAssistant):
+        sensor = self._sensor(hass, model_precip_estimate=False)
+        forecast = sensor.extra_state_attributes["forecast"]
+        item = next(i for i in forecast if i.get("date") == "2026-03-23")
+        assert item["rain_mm_day"] is None
+        assert item["snow_cm_night"] is None
+        # POP still present.
+        assert item["precip_prob"] == 65
+
+    @freeze_time("2026-03-22T12:00:00Z")
+    def test_option_on_exposes_sensor_attributes(self, hass: HomeAssistant):
+        sensor = self._sensor(hass, model_precip_estimate=True)
+        forecast = sensor.extra_state_attributes["forecast"]
+        item = next(i for i in forecast if i.get("date") == "2026-03-23")
+        assert item["rain_mm_day"] == 3.2
+        assert item["snow_cm_night"] == 0.5
 
 
 # ---------------------------------------------------------------------------

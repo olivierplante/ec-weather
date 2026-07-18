@@ -314,6 +314,77 @@ class TestSetupEntryReadsOptions:
         # Options value (45) used, not data value (999)
         assert mock_wc.call_args.kwargs.get("interval_minutes") == 45
 
+    async def test_legacy_grouping_instructions_upgraded_to_current(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """Options holding a legacy default prompt wire the CURRENT default
+        into the alert coordinator (uncustomized users track improvements)."""
+        from ec_weather import async_setup_entry
+        from ec_weather.const import (
+            CONF_AI_GROUPING_INSTRUCTIONS,
+            DEFAULT_AI_GROUPING_INSTRUCTIONS,
+            LEGACY_AI_GROUPING_INSTRUCTIONS,
+        )
+        from .conftest import MOCK_CONFIG_DATA
+
+        entry = MagicMock()
+        entry.entry_id = "test_legacy_prompt"
+        entry.data = {**MOCK_CONFIG_DATA}
+        entry.options = {
+            CONF_AI_GROUPING_INSTRUCTIONS: LEGACY_AI_GROUPING_INSTRUCTIONS[0],
+        }
+        entry.async_create_background_task = lambda h, c, n: c.close()
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.services = MagicMock()
+        hass.services.has_service = MagicMock(return_value=False)
+        hass.config_entries.async_forward_entry_setups = AsyncMock()
+
+        with patch("ec_weather.ECWeatherCoordinator", return_value=_mock_coordinator()), \
+             patch("ec_weather.ECAlertCoordinator", return_value=_mock_coordinator()) as mock_alert, \
+             patch("ec_weather.ECAQHICoordinator", return_value=_mock_coordinator()), \
+             patch("ec_weather.ECWEonGCoordinator", return_value=_mock_coordinator()):
+
+            result = await async_setup_entry(hass, entry)
+
+        assert result is True
+        mock_alert.assert_called_once()
+        assert (
+            mock_alert.call_args.kwargs.get("ai_grouping_instructions")
+            == DEFAULT_AI_GROUPING_INSTRUCTIONS
+        )
+
+    async def test_customized_grouping_instructions_passed_through(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """A customized prompt is wired unchanged — customizations always win."""
+        from ec_weather import async_setup_entry
+        from ec_weather.const import CONF_AI_GROUPING_INSTRUCTIONS
+        from .conftest import MOCK_CONFIG_DATA
+
+        custom = "Only ever group thunderstorm alerts together."
+        entry = MagicMock()
+        entry.entry_id = "test_custom_prompt"
+        entry.data = {**MOCK_CONFIG_DATA}
+        entry.options = {CONF_AI_GROUPING_INSTRUCTIONS: custom}
+        entry.async_create_background_task = lambda h, c, n: c.close()
+
+        hass.data.setdefault(DOMAIN, {})
+        hass.services = MagicMock()
+        hass.services.has_service = MagicMock(return_value=False)
+        hass.config_entries.async_forward_entry_setups = AsyncMock()
+
+        with patch("ec_weather.ECWeatherCoordinator", return_value=_mock_coordinator()), \
+             patch("ec_weather.ECAlertCoordinator", return_value=_mock_coordinator()) as mock_alert, \
+             patch("ec_weather.ECAQHICoordinator", return_value=_mock_coordinator()), \
+             patch("ec_weather.ECWEonGCoordinator", return_value=_mock_coordinator()):
+
+            result = await async_setup_entry(hass, entry)
+
+        assert result is True
+        mock_alert.assert_called_once()
+        assert mock_alert.call_args.kwargs.get("ai_grouping_instructions") == custom
+
 
 # ---------------------------------------------------------------------------
 # Options flow saves to options, not data

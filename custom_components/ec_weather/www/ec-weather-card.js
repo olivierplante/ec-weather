@@ -76,6 +76,8 @@ const I18N = {
     dayDone: 'Day is over',
     noHourly: 'Hourly forecast isn’t available for this day yet.',
     ecAttribution: 'Environment Canada',
+    relatedOne: '+1 related alert',
+    relatedMany: '+{n} related alerts',
     hourly: 'HOURLY',
     loading: 'Loading\u2026',
     weatherUnavailable: 'Weather data unavailable',
@@ -125,6 +127,8 @@ const I18N = {
     dayDone: 'Journée terminée',
     noHourly: 'Prévisions horaires pas encore disponibles pour cette journée.',
     ecAttribution: 'Environnement Canada',
+    relatedOne: '+1 alerte connexe',
+    relatedMany: '+{n} alertes connexes',
     hourly: 'HORAIRE',
     loading: 'Chargement\u2026',
     weatherUnavailable: 'Données météo indisponibles',
@@ -162,6 +166,11 @@ const I18N = {
       Lundi: 'Lun', Mardi: 'Mar', Mercredi: 'Mer',
       Jeudi: 'Jeu', Vendredi: 'Ven', Samedi: 'Sam', Dimanche: 'Dim',
       Demain: 'Demain',
+      // First-row day period ("Aujourd'hui") localizes far wider than the
+      // compact label column (~71px bold vs the 60px cell). "Ajd" is the
+      // established French shorthand and keeps the column narrow without
+      // truncation; English "Today"/"Tonight" already fit 60px unabbreviated.
+      "Aujourd'hui": 'Ajd',
     },
   },
 };
@@ -1327,6 +1336,33 @@ export function fmtAmtUnit(value, unit) {
 }
 
 /**
+ * The single source of the compact precip-amount LABEL for every daily/period
+ * render site: the daily column and its in-bar float, the today panel chips,
+ * and the popup Day/Night boxes. Rain (mm) and snow (cm) are formatted with
+ * fmtAmtUnit and returned separately — different units, never summed — as
+ * { rain, snow }, each a ready-to-render string or null when that component is
+ * absent/zero (so a call site gates with a truthiness check exactly as it did
+ * on `rain > 0` / `snow > 0`).
+ *
+ * `estimated` carries the provenance convention in ONE place: model-derived
+ * amounts (the beta estimate, and the popup's per-half figures which are always
+ * model output) wear a single leading "~" for the whole group — rain renders
+ * first so it takes the mark; a snow-only group marks the snow. EC-stated
+ * accumulations pass estimated falsy and render bare. One tilde per group is
+ * unambiguous because EC-stated amounts are always single-unit (see
+ * dailyPrecip), so any group showing both rain and snow is structurally an
+ * estimate.
+ */
+export function precipAmtLabels(rain, snow, estimated) {
+  const rainMark = estimated && rain > 0 ? '~' : '';
+  const snowMark = estimated && !(rain > 0) && snow > 0 ? '~' : '';
+  return {
+    rain: rain > 0 ? rainMark + fmtAmtUnit(rain, 'mm') : null,
+    snow: snow > 0 ? snowMark + fmtAmtUnit(snow, 'cm') : null,
+  };
+}
+
+/**
  * Compact amount BAND label ("4-9mm"). Collapses to a single value when the
  * low and high round to the same string, or when either bound is absent —
  * so a band without a distinct high never reads as "5-5mm". Returns null when
@@ -1412,6 +1448,14 @@ export function precipAmtColor(rain, snow, precipType) {
  * Amounts prefer EC accumulation (meteorologist-interpreted, days 0-2) and
  * fall back to WEonG model amounts. Rain (mm) and snow (cm) are kept separate
  * — different units, never summed.
+ *
+ * `estimated` marks the amounts' provenance so renderers can distinguish them:
+ * false for EC accumulation (a committed figure — display AS-IS), true for the
+ * model fallback (probability-weighted expected totals — display with a leading
+ * "~"). It tracks the BRANCH taken, not whether the amounts are nonzero: a day
+ * with neither EC accumulation nor model amounts falls to the model branch, so
+ * estimated is true, but both amounts are 0 and nothing renders — the flag is
+ * inert there (no tilde ever surfaces without an amount beside it).
  */
 export function dailyPrecip(item) {
   const popDay = item.precip_prob_day || 0;
@@ -1421,14 +1465,16 @@ export function dailyPrecip(item) {
   const ecAccumDay = item.precip_accum_amount || 0;
   const ecAccumNight = item.precip_accum_amount_night || 0;
   const ecAccumUnit = item.precip_accum_unit || item.precip_accum_unit_night || '';
-  let rainAmt, snowAmt;
+  let rainAmt, snowAmt, estimated;
   if (ecAccumDay > 0 || ecAccumNight > 0) {
     const ecTotal = ecAccumDay + ecAccumNight;
     if (ecAccumUnit === 'cm') { rainAmt = 0; snowAmt = ecTotal; }
     else { rainAmt = ecTotal; snowAmt = 0; }
+    estimated = false;
   } else {
     rainAmt = (item.rain_mm_day || 0) + (item.rain_mm_night || 0);
     snowAmt = (item.snow_cm_day || 0) + (item.snow_cm_night || 0);
+    estimated = true;
   }
 
   return {
@@ -1436,7 +1482,38 @@ export function dailyPrecip(item) {
     showPrecip: popRounded >= 5,
     rainAmt,
     snowAmt,
+    estimated,
     pColor: precipAmtColor(rainAmt, snowAmt, item.precip_type),
+  };
+}
+
+/**
+ * Resolve a daily row's temperature range for the range bar and labels.
+ *
+ * EC's evening first row ("Tonight") states only temp_low (temp_high null), so
+ * the bar would collapse to a single point. When EXACTLY ONE bound is null and
+ * the row carries hourly timesteps, derive BOTH ends from those temps (min/max
+ * of timesteps_day + timesteps_night) so the row shows a real range instead.
+ *
+ * Passthrough (derived: false) when both bounds are present (a stated pair is
+ * never overridden), when both are absent (nothing to place), or when there are
+ * no usable hourly temps — preserving the single-point / empty-bar behavior.
+ * Symmetric: works whether the missing bound is the high or the low.
+ */
+export function dailyTempRange(item) {
+  const low = item.temp_low != null ? item.temp_low : null;
+  const high = item.temp_high != null ? item.temp_high : null;
+  const lowMissing = low == null;
+  const highMissing = high == null;
+  if (lowMissing === highMissing) return { low, high, derived: false };
+  const temps = (item.timesteps_day || []).concat(item.timesteps_night || [])
+    .map((step) => (step ? step.temp : null))
+    .filter((temp) => typeof temp === 'number' && !isNaN(temp));
+  if (!temps.length) return { low, high, derived: false };
+  return {
+    low: Math.min.apply(null, temps),
+    high: Math.max.apply(null, temps),
+    derived: true,
   };
 }
 
@@ -1616,6 +1693,7 @@ export class ECWeatherCard extends HTMLElement {
     this._config = null;
     this._rendered = false;
     this._expandedAlerts = new Set();
+    this._expandedRelated = new Set();
     this._activeRoles = null;
     // Re-render when the shared resolution changes (registry rename, reconnect).
     this._onResolutionChange = () => {
@@ -1954,24 +2032,99 @@ export class ECWeatherCard extends HTMLElement {
       });
     };
 
-    // One neutral style for every warning type — severity never colors the bar.
-    let bannersHtml = '';
-    alerts.forEach((alert, i) => {
-      const headline = escapeHtml(titleCase(alert.headline || alert.type));
+    const expLineHtml = (alert) => {
       const exp = fmtExp(alert.expires);
-      const expLine = exp
+      return exp
         ? '<div style="margin-bottom:8px;font-weight:500;opacity:0.85">' + t(h, 'expires') + ': ' + exp + '</div>'
         : '';
-      const text = escapeHtml(alert.text || '');
+    };
+    // The pill shows the numeral only (+1 / +2) so it stays language-neutral
+    // and never crowds the headline on a narrow tile; the full localized
+    // wording rides along in aria-label/title for screen readers and hover.
+    const relatedPill = (count) => {
+      const full = count === 1
+        ? t(h, 'relatedOne')
+        : t(h, 'relatedMany').replace('{n}', String(count));
+      const label = escapeHtml(full);
+      return '<span class="alert-related-count" aria-label="' + label
+        + '" title="' + label + '">+' + count + '</span>';
+    };
 
-      bannersHtml += `
+    // Collect display units: alerts sharing a group_id fold into one bar, all
+    // others stay standalone. A group_id present on only one alert (or a group
+    // that never resolves a primary) degrades gracefully — see below.
+    const unitsByKey = new Map();
+    const units = [];
+    alerts.forEach((alert, i) => {
+      const gid = alert.group_id;
+      const key = (gid == null) ? ('solo-' + i) : ('grp-' + gid);
+      let unit = unitsByKey.get(key);
+      if (!unit) {
+        unit = { members: [] };
+        unitsByKey.set(key, unit);
+        units.push(unit);
+      }
+      unit.members.push({ alert, index: i });
+    });
+
+    // One neutral style for every warning type — severity never colors the bar.
+    let bannersHtml = '';
+
+    const renderStandalone = ({ alert, index }) => {
+      const headline = escapeHtml(titleCase(alert.headline || alert.type));
+      const text = escapeHtml(alert.text || '');
+      return `
         <div class="alert-wrap">
-          <div class="alert-header" data-index="${i}">
+          <div class="alert-header" data-index="${index}">
             <ha-icon icon="mdi:alert-outline" class="alert-icon"></ha-icon>
             <span class="alert-title">${headline}</span>
           </div>
-          <div class="alert-detail" id="alert-detail-${i}">
-            ${expLine}${text}
+          <div class="alert-detail" id="alert-detail-${index}">
+            ${expLineHtml(alert)}${text}
+          </div>
+        </div>`;
+    };
+
+    units.forEach((unit) => {
+      // A group needs 2+ members to fold; anything less renders standalone.
+      if (unit.members.length < 2) {
+        bannersHtml += renderStandalone(unit.members[0]);
+        return;
+      }
+      // Primary = the flagged member, else defensively the first in the group.
+      let primary = unit.members.find((m) => m.alert.is_primary);
+      if (!primary) primary = unit.members[0];
+      const related = unit.members.filter((m) => m !== primary);
+
+      const headline = escapeHtml(titleCase(primary.alert.headline || primary.alert.type));
+      const primaryText = escapeHtml(primary.alert.text || '');
+      // Each related alert is a collapsed row (headline + chevron); its own
+      // expiry+text stays hidden until the row is clicked, keeping the primary
+      // the focus of the expanded bar. Whitespace-free markup on purpose:
+      // this lives inside .alert-detail, whose white-space: pre-wrap renders
+      // any literal newline/indent between tags as visible blank lines.
+      const relatedHtml = related.map((m) => {
+        const rHead = escapeHtml(titleCase(m.alert.headline || m.alert.type));
+        const rText = escapeHtml(m.alert.text || '');
+        return '<div class="alert-related">'
+          + `<div class="alert-related-header" data-related-index="${m.index}">`
+          + `<span class="alert-related-title">${rHead}</span>`
+          + '<ha-icon icon="mdi:chevron-down" class="alert-related-chevron"></ha-icon>'
+          + '</div>'
+          + `<div class="alert-related-detail" id="alert-related-detail-${m.index}">`
+          + expLineHtml(m.alert) + rText
+          + '</div></div>';
+      }).join('');
+
+      bannersHtml += `
+        <div class="alert-wrap">
+          <div class="alert-header" data-index="${primary.index}">
+            <ha-icon icon="mdi:alert-outline" class="alert-icon"></ha-icon>
+            <span class="alert-title">${headline}</span>
+            ${relatedPill(related.length)}
+          </div>
+          <div class="alert-detail" id="alert-detail-${primary.index}">
+            ${expLineHtml(primary.alert)}${primaryText}${relatedHtml}
           </div>
         </div>`;
     });
@@ -2031,6 +2184,64 @@ export class ECWeatherCard extends HTMLElement {
           line-height: 1.4;
           text-align: left;
         }
+        /* Related-count pill sits after the header title, quietly muted so the
+           primary headline stays the focus. */
+        .alert-related-count {
+          flex-shrink: 0;
+          font-size: 12px;
+          font-weight: 500;
+          color: var(--ecw-muted);
+          padding: 2px 8px;
+          border-radius: 999px;
+          background: var(--ecw-track);
+        }
+        /* Nested related alerts: separated from the primary text above, the
+           header itself carries the tappable affordance (no quote border on the
+           container — that read as passive text on mobile). */
+        .alert-related {
+          margin-top: 10px;
+        }
+        /* Related row header: a compact muted bar — same affordance language as
+           the outer alert bar, one size down — headline left, chevron right, its
+           body folded away by default so the expanded bar leads with the primary.
+           white-space: normal overrides the pre-wrap inherited from .alert-detail
+           so literal template whitespace can never reflow the title row. */
+        .alert-related-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 9px 12px;
+          border-radius: 8px;
+          background: var(--ecw-track);
+          white-space: normal;
+          cursor: pointer;
+          pointer-events: auto;
+        }
+        .alert-related-title {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--ecw-text);
+        }
+        .alert-related-chevron {
+          --mdc-icon-size: 18px;
+          color: var(--ecw-muted);
+          flex-shrink: 0;
+          transition: transform 0.15s ease;
+        }
+        .alert-related.open .alert-related-chevron {
+          transform: rotate(180deg);
+        }
+        /* Opened body nests just below the bar with the hairline quote rule,
+           reading as secondary detail to the related headline above it. */
+        .alert-related-detail {
+          display: none;
+          margin: 8px 0 0 4px;
+          padding-left: 12px;
+          border-left: 2px solid var(--ecw-hair);
+          font-size: 13px;
+          color: var(--ecw-text2);
+        }
       </style>
       <div class="${themeClass(h)}"><div class="alert-stack" id="alerts">${bannersHtml}</div></div>
     `;
@@ -2051,6 +2262,34 @@ export class ECWeatherCard extends HTMLElement {
           this._expandedAlerts.add(idx);
         } else {
           this._expandedAlerts.delete(idx);
+        }
+      });
+    });
+
+    // Related rows persist their own open state across re-renders via
+    // _expandedRelated, keyed by the alert's index in the attribute array
+    // (stable regardless of grouping order). The Set is the source of truth —
+    // jsdom (and any browser) reads it rather than the CSS-collapsed display.
+    this.shadowRoot.querySelectorAll('.alert-related-header').forEach(el => {
+      const relIdx = el.dataset.relatedIndex;
+      const detail = this.shadowRoot.getElementById('alert-related-detail-' + relIdx);
+      const row = el.closest('.alert-related');
+      if (detail && this._expandedRelated.has(relIdx)) {
+        detail.style.display = 'block';
+        if (row) row.classList.add('open');
+      }
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!detail) return;
+        const isOpen = this._expandedRelated.has(relIdx);
+        if (isOpen) {
+          detail.style.display = 'none';
+          if (row) row.classList.remove('open');
+          this._expandedRelated.delete(relIdx);
+        } else {
+          detail.style.display = 'block';
+          if (row) row.classList.add('open');
+          this._expandedRelated.add(relIdx);
         }
       });
     });
@@ -2128,15 +2367,19 @@ export class ECWeatherCard extends HTMLElement {
       '<div style="width:' + Math.max(3, Math.round(amount / barRef * 90))
       + '%;background:' + background + '"></div>';
 
-    const wetRowHtml = (label, rain, snow, tooltip) => {
+    // `estimated` (today's model-derived amounts) prepends one leading "~" to
+    // the amount group's first chip; yesterday's measured amounts pass it falsy
+    // so they render as-is.
+    const wetRowHtml = (label, rain, snow, tooltip, estimated) => {
       let chips = '';
       let segs = '';
+      const amtLabels = precipAmtLabels(rain, snow, estimated);
       if (rain > 0) {
-        chips += chipHtml('mdi:water', 'var(--ecw-rain)', fmtAmtUnit(rain, 'mm'));
+        chips += chipHtml('mdi:water', 'var(--ecw-rain)', amtLabels.rain);
         segs += segHtml(rain, 'var(--ecw-rain)');
       }
       if (snow > 0) {
-        chips += chipHtml('mdi:snowflake', 'var(--ecw-snow)', fmtAmtUnit(snow, 'cm'));
+        chips += chipHtml('mdi:snowflake', 'var(--ecw-snow)', amtLabels.snow);
         segs += segHtml(snow, 'var(--ecw-snowbar)');
       }
       return '<div class="prow"' + (tooltip ? ' title="' + escapeHtml(tooltip) + '"' : '') + '>'
@@ -2149,7 +2392,7 @@ export class ECWeatherCard extends HTMLElement {
       + '</span><span class="pstatus">' + statusText + '</span></div></div>';
 
     let panelRows = '';
-    if (todayWet) panelRows += wetRowHtml(t(h, 'todayForecast'), todayRain, todaySnow, '');
+    if (todayWet) panelRows += wetRowHtml(t(h, 'todayForecast'), todayRain, todaySnow, '', todayPrecip.estimated);
     if (yday === 'pending') panelRows += dryRowHtml(t(h, 'yesterday'), t(h, 'noData'));
     else if (ydayWet) panelRows += wetRowHtml(t(h, 'yesterday'), yday.rain, yday.snow, ydayTooltip);
     else if (yday !== null) panelRows += dryRowHtml(t(h, 'yesterday'), t(h, 'none'));
@@ -2584,8 +2827,11 @@ export class ECWeatherCard extends HTMLElement {
     // absolute temperature (cold weeks read blue, hot weeks orange).
     const weekTemps = [];
     forecast.forEach((item) => {
-      if (item.temp_low != null) weekTemps.push(item.temp_low);
-      if (item.temp_high != null) weekTemps.push(item.temp_high);
+      // Partial periods (Tonight) contribute their hourly-derived range so the
+      // week's min/max normalization matches the bars actually drawn below.
+      const range = dailyTempRange(item);
+      if (range.low != null) weekTemps.push(range.low);
+      if (range.high != null) weekTemps.push(range.high);
     });
     const weekMin = weekTemps.length ? Math.min.apply(null, weekTemps) : 0;
     const weekMax = weekTemps.length ? Math.max.apply(null, weekTemps) : 0;
@@ -2634,13 +2880,15 @@ export class ECWeatherCard extends HTMLElement {
           + '" style="--mdc-icon-size:18px;color:var(--ecw-muted)"></ha-icon>';
 
       // Range bar geometry (span clamping, single-value dot, isothermal
-      // guard) — see rangeBarGeometry for the semantics.
-      const bar = rangeBarGeometry(item.temp_low, item.temp_high, weekMin, weekMax);
+      // guard) — see rangeBarGeometry for the semantics. Partial periods
+      // (Tonight) derive both ends from their hourly temps.
+      const tempRange = dailyTempRange(item);
+      const bar = rangeBarGeometry(tempRange.low, tempRange.high, weekMin, weekMax);
       let barHtml = '';
       if (bar.kind === 'span') {
         barHtml = '<div class="dspan" style="left:' + bar.left + '%;width:' + bar.width
-          + '%;background:linear-gradient(90deg,' + tempColor(item.temp_low)
-          + ',' + tempColor(item.temp_high) + ')"></div>';
+          + '%;background:linear-gradient(90deg,' + tempColor(tempRange.low)
+          + ',' + tempColor(tempRange.high) + ')"></div>';
       } else if (bar.kind === 'dot') {
         barHtml = '<div class="ddot" style="left:' + bar.left
           + '%;background:' + tempColor(bar.value) + '"></div>';
@@ -2683,13 +2931,17 @@ export class ECWeatherCard extends HTMLElement {
             floatParts.push('<span style="color:var(--ecw-pop);font-weight:600">' + precip.popRounded + '%</span>');
           }
           let amtsHtml = '';
-          if (precip.rainAmt > 0) {
-            amtsHtml += '<span style="color:var(--ecw-rain)">' + fmtAmtUnit(precip.rainAmt, 'mm') + '</span>';
-            floatParts.push('<span style="color:var(--ecw-rain)">' + fmtAmtUnit(precip.rainAmt, 'mm') + '</span>');
+          // Model-estimated amounts carry one leading "~" for the whole group;
+          // EC-stated amounts render bare. The tilde + mm/cm formatting live in
+          // precipAmtLabels (shared with the today panel and popup boxes).
+          const amtLabels = precipAmtLabels(precip.rainAmt, precip.snowAmt, precip.estimated);
+          if (amtLabels.rain) {
+            amtsHtml += '<span style="color:var(--ecw-rain)">' + amtLabels.rain + '</span>';
+            floatParts.push('<span style="color:var(--ecw-rain)">' + amtLabels.rain + '</span>');
           }
-          if (precip.snowAmt > 0) {
-            amtsHtml += '<span style="color:var(--ecw-snow)">' + fmtAmtUnit(precip.snowAmt, 'cm') + '</span>';
-            floatParts.push('<span style="color:var(--ecw-snow)">' + fmtAmtUnit(precip.snowAmt, 'cm') + '</span>');
+          if (amtLabels.snow) {
+            amtsHtml += '<span style="color:var(--ecw-snow)">' + amtLabels.snow + '</span>';
+            floatParts.push('<span style="color:var(--ecw-snow)">' + amtLabels.snow + '</span>');
           }
           if (amtsHtml) precipHtml += '<span class="damts">' + amtsHtml + '</span>';
           precipColHtml = '<span class="dprecip">' + precipHtml + '</span>';
@@ -2704,9 +2956,10 @@ export class ECWeatherCard extends HTMLElement {
         + '<span class="dicons">' + dayIconHtml + nightIconHtml + '</span>'
         + precipColHtml
         + '<div class="dtemps">'
-        + '<span class="dlow">' + (item.temp_low != null ? Math.round(item.temp_low) + '°' : '') + '</span>'
+        + '<span class="dlow">' + (tempRange.low != null ? Math.round(tempRange.low) + '°' : '') + '</span>'
         + '<div class="dbar">' + barHtml + floatHtml + '</div>'
-        + '<span class="dhigh">' + (item.temp_high != null ? Math.round(item.temp_high) + '°' : '') + '</span>'
+        + '<span class="dhigh">' + (tempRange.high != null
+          ? '<span class="dhnum">' + Math.round(tempRange.high) + '</span><span class="ddeg">°</span>' : '') + '</span>'
         + '</div>'
         + '</div>';
     });
@@ -2734,7 +2987,16 @@ export class ECWeatherCard extends HTMLElement {
         }
         .drow:active { background: var(--ecw-hover); }
         @media (hover: hover) { .drow:hover { background: var(--ecw-hover); } }
-        .dday { width: 60px; font-size: 14px; white-space: nowrap; color: var(--ecw-text2); }
+        /* Compact, uninflatable label column. flex:0 0 locks the 60px basis
+           and its flex-shrink:0 stops min-width:auto from ever growing the
+           cell to fit a long label; min-width pins it against deflation. Every
+           label we produce is abbreviated to fit 60px at bold weight (fr's
+           "Aujourd'hui" -> "Ajd"; en "Today"/"Tonight" already fit), so the
+           overflow:hidden is only a last-resort guard against an unexpected
+           EC period name — no label we render is actually clipped. Locking the
+           basis narrow also keeps the row's hard-minimum width low so tight
+           multi-column layouts can't push the high-temp label past the card. */
+        .dday { flex: 0 0 60px; min-width: 60px; overflow: hidden; font-size: 14px; white-space: nowrap; color: var(--ecw-text2); }
         .dtoday .dday { color: var(--ecw-text); font-weight: 600; }
         /* Outlook rows: quieter (model ensemble, past EC's official horizon). */
         .drow-outlook { opacity: var(--ecw-outlook); }
@@ -2751,15 +3013,47 @@ export class ECWeatherCard extends HTMLElement {
         /* low · range bar · high are one group so the week's min/max always
            align and the bar keeps real width; the 12px gap matches the row's,
            so the wide layout is pixel-identical to the pre-group markup. */
-        .dtemps { flex: 1; display: flex; align-items: center; gap: 12px; }
-        .dlow { width: 26px; text-align: right; font-size: 15px; color: var(--ecw-text2); }
-        .dbar { flex: 1; position: relative; height: 6px; border-radius: 3px; background: var(--ecw-track); }
+        /* min-width:0 on both flex spines overrides the default min-width:auto
+           so they may shrink below their content's intrinsic width — the range
+           bar is the elastic slack that absorbs the fixed columns. The bar's
+           float labels are position:absolute (out of flow), so they never
+           inflate its min-content; min-width:0 keeps that true even if future
+           content lands in flow. Without this a nested flex item refuses to
+           shrink past min-content and the row overflows on the right. */
+        .dtemps { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; }
+        /* The low/high boxes are a locked 30px: a bold 15px "-40°" (the widest
+           realistic value — minus + two digits + degree) measures ~28px, so 26px
+           overflowed on winter negatives and ate the right-edge padding. 30px
+           fits the worst case with headroom, and low and high share the width so
+           the range bar's two edges align vertically down the whole column. */
+        .dlow { width: 30px; text-align: right; font-size: 15px; color: var(--ecw-text2); }
+        .dbar { flex: 1; min-width: 0; position: relative; height: 6px; border-radius: 3px; background: var(--ecw-track); }
         .dspan { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
         .ddot {
           position: absolute; top: 50%; width: 8px; height: 8px;
           border-radius: 50%; transform: translate(-50%, -50%);
         }
-        .dhigh { width: 26px; font-size: 15px; font-weight: 600; color: var(--ecw-text); }
+        /* text-align:right pins the high's box edge one row-padding (8px) inside
+           the card, geometrically symmetric with the left-aligned day label. But
+           the value ends in a degree sign — a small, high glyph whose trailing
+           side-bearing is FONT-SPECIFIC — so the number's visual MASS (the
+           digits) would sit further from the card edge than the day letters sit
+           from the left, reading right-heavy. The earlier fix hung the degree
+           with margin-right:-5px, a magic number tuned on the harness's Roboto;
+           the dashboard's Glass theme forces -apple-system (San Francisco),
+           whose degree metrics differ, so the -5px mis-landed in production.
+           Font-robust replacement: split the value. The digits (.dhnum) stay in
+           flow and right-align to the box edge, pinning the DIGIT mass one
+           row-padding inside the card — symmetric with the left day label at ANY
+           font. The degree (.ddeg) is a zero-advance inline-block that adds
+           nothing to the line's width and hangs its glyph into the row padding;
+           because it carries no advance, the digit position no longer depends on
+           its bearing, and the row's minimum width (clip onset) drops rather than
+           regressing. Box symmetry stays intact for the low/bar column edges. */
+        .dhigh { width: 30px; text-align: right; font-size: 15px; font-weight: 600; color: var(--ecw-text); }
+        /* Zero-advance so the trailing degree never shifts the digits nor widens
+           the row; overflow:visible lets its glyph paint into the row padding. */
+        .ddeg { display: inline-block; width: 0; overflow: visible; }
         /* Narrow-tile precip float: centered just above its day's bar
            (DC .dprecipfloat metrics). Absolutely positioned so it never adds
            a column or grows row height (no compensating margins). Hidden on
@@ -2777,6 +3071,118 @@ export class ECWeatherCard extends HTMLElement {
           /* The bar is the structural spine on narrow — it can't be squeezed
              to nothing by long day labels (DC .ecc.narrow .dbar). */
           .dbar { min-width: 58px; }
+          /* Tighten the low·bar·high gaps on narrow (12px -> 8px, two gaps =
+             8px reclaimed) to pay back exactly the width the wider 30px temp
+             boxes cost, so the row's hard-minimum — and the width at which the
+             high temp would start to clip — is no higher than before. The
+             outer row padding (the breathing room) is untouched. */
+          .dtemps { gap: 8px; }
+        }
+        /* ─── Ultra-narrow tier ─────────────────────────────────────────────
+           A single dashboard column can be far tighter than the 430px narrow
+           tier assumes. Measured worst case: the daily card's host is 238.5px
+           (a 288.5px ha-card with card_mod 24px padding each side). At the
+           430px tier the daily row's hard-minimum is ~254px, so at 238.5 the
+           low·bar·high group overflows the host by ~16px (up to ~35px on winter
+           negatives), pushing the high-temp box past the host's right edge —
+           the visible-asymmetry ("not centered") defect: with the row spilling
+           right, the day label sits ~33px from the card surface but the high
+           digit ends up jammed ~14px from it, i.e. ~19px right-heavy.
+
+           This tier (engages at host <= 300px; widths above 300 keep the 430px
+           tier verbatim, so >=310px is byte-identical to before) reclaims the
+           deficit WITHOUT touching the outer row padding — the 8px each side
+           that IS the visible margin — nor the .dday column (kept at 60px so no
+           produced label, incl. bold "Tonight" ~51px in Roboto / "Demain",
+           can ever clip). Instead:
+             • Row and low·bar·high gaps 12/8 -> 6px (reclaims ~14px total).
+             • .dlow/.dhigh pinned with flex-shrink:0 so the 30px temp boxes
+               NEVER deflate. Two payoffs: the range bar's two vertical edges
+               stay aligned down the whole column, and a negative low ("-40°",
+               normal weight, ~28px) or high ("-30", bold, ~22px) can't widen
+               the row's minimum — the boxes are fixed, so winter values cost
+               the same width as summer ones (no seasonal overflow).
+             • .dbar becomes the sole shrink-sink: its 430px-tier 58px floor
+               drops to 16px here, so as the column narrows the BAR gives up
+               width first and the row keeps fitting down to ~207px before
+               anything could spill — well past the 238.5px host and the 230px
+               headroom target. At the 238.5 host the bar still renders ~38px
+               (flex hands it the slack); the 16px floor only bites far below
+               any real column. Bars stay column-aligned via the pinned boxes.
+             • overflow-x:clip on the row is the belt-and-braces backstop for
+               pathological sub-207px widths no real layout produces. It clips
+               ONLY a horizontal spill past the host: the day label and the
+               high digit+degree all sit inside the row's own padding (within
+               the border-box, never clipped), and the POP/amount float labels
+               sit centered above the mid-row bar — nowhere near the horizontal
+               edges — while overflow-y stays visible so those floats are never
+               cut vertically. Nothing legitimate can clip at any realistic
+               width; the bar-shrink keeps the row inside the host long before
+               the clip could ever engage. */
+        @container (max-width: 300px) {
+          /* Row padding: vertical stays 6px (row rhythm/height unchanged from
+             the first ultra-narrow pass); HORIZONTAL drops 6px -> 1px so the
+             row content shares ONE left rail with the section title above it.
+             The title (.seclbl) has no horizontal padding, so its ink starts at
+             the daily host's content edge (~0.95px glyph bearing in); the row's
+             day label previously sat one 6px row-pad further in, so the title's
+             left ink read ~5.4px LEFT of the day letters — two competing rails
+             the user saw as a mis-alignment on their 238.5px host. At 1px the
+             day-label ink lands ~0.4px right of the title ink (bold "Tonight"),
+             within a pixel — a single rail. Mirrored: the same 1px on the right
+             brings the high-temp digit ink to the same inset from the right
+             surface, so the row stays L/R symmetric (the hard invariant). The
+             hover/active pill is a full-width stretched flex block, so its edges
+             DON'T move with this padding — it still spans the whole host width,
+             seated 25px (24px card_mod + 1px border) inside the visible card
+             surface with its 9px corners intact; only the text slides ~5px
+             outward to sit ~1px inside the pill's rounded edge, clear of the
+             corner arc at the vertically-centred baseline. The ~10px freed
+             across both sides flows to the range bar (the sole shrink-sink), as
+             the earlier gap/column trims did. */
+          .drow { gap: 4px; overflow-x: clip; padding: 6px 1px; }
+          .dtemps { gap: 4px; }
+          .dlow, .dhigh { flex-shrink: 0; }
+          .dbar { min-width: 16px; }
+          /* Mixed winter precip is the float's worst case: POP + rain(mm) +
+             snow(cm) render as three values above the bar ("60% 5mm 3cm"). The
+             float centers over the bar — which, with the two 30px temp boxes
+             equal, is the dtemps centre — so any content wider than the bar's
+             clear span (bar + its two 4px gaps) reaches sideways over the temp
+             boxes. The LOW temp is right-aligned toward the bar, so an oversized
+             float's leftmost value hovers just above it (~2px vertical air): a
+             visual collision, worst at the 230px host. Spanning the whole dtemps
+             would not help — the float is already dtemps-centred — so this tier
+             instead SHRINKS the float to fit the clear span: font 10px -> 9px and
+             the inter-value gap 7px -> 2px. The gap was 4px until model-estimate
+             amounts gained a leading "~" (marking probability-weighted totals):
+             at font 9px the "~" adds ~5.8px, pushing the worst-case float
+             "90% ~12mm 8cm" to 80.4px, past the 77.5px clear span at the 238.5px
+             host. Dropping the inter-value gap 4px -> 2px reclaims 4px (two gaps),
+             landing it at 76.4px — back inside 77.5px — WITHOUT shrinking the 9px
+             font (legibility) or touching the dtemps gaps that define the span.
+             All three values stay visible; only their footprint tightens. No other
+             tier is touched. */
+          .dfloat { font-size: 9px; gap: 2px; }
+          /* Reclaim fixed-column width for the range bar (the sole shrink-sink):
+             at the 238.5px host the bar sat at ~34px; trimming the label column,
+             the icon cell, and the two gap sets here (nowhere else) hands that
+             slack to the bar without touching the outer row padding — the 8px
+             each side that IS the visible margin. Every value is measured to keep
+             its content, not the arithmetic:
+               • .dday 60 -> 54: the widest BOLD label is row-0 "Tonight" (~51px
+                 in Roboto), so 54 keeps >=2px headroom; every other rendered
+                 label (3-letter weekday abbrevs, fr "Ajd"/"Ce"/"Demain") is far
+                 shorter, and the overflow:hidden guard still backstops any
+                 unexpected EC period word.
+               • .dicons 44 -> 37 with the daily icons dropped 18px -> 16px: two
+                 16px ha-icon SVGs + their 3px gap = 35px, centered in 37px. SVGs
+                 scale cleanly so they stay crisp. The !important is required
+                 because the icon size is set inline per-icon in the row markup.
+               • row gap and low·bar·high gap 6 -> 4 (four gaps total). */
+          .dday { flex: 0 0 54px; min-width: 54px; }
+          .dicons { width: 37px; }
+          .dicons ha-icon { --mdc-icon-size: 16px !important; }
         }
       </style>
       <div class="${themeClass(h)}">
@@ -2958,13 +3364,18 @@ export class ECWeatherCard extends HTMLElement {
       meta += '<div class="ecp-mline"><ha-icon icon="mdi:water-percent"></ha-icon>'
         + Math.round(model.pop) + '% ' + t(h, 'chance') + '</div>';
     }
+    // The Day/Night box amounts are the WEonG model's per-half figures, present
+    // only under the beta estimate option — so they are unconditionally
+    // estimates and always wear the "~" (one per box: rain first takes it, a
+    // snow-only box marks the snow). Same convention as the daily column.
+    const periodAmts = precipAmtLabels(model.rain, model.snow, true);
     if (model.showRain) {
       meta += '<div class="ecp-mline ecp-rain"><ha-icon icon="mdi:water"></ha-icon>'
-        + fmtAmtUnit(model.rain, 'mm') + '</div>';
+        + periodAmts.rain + '</div>';
     }
     if (model.showSnow) {
       meta += '<div class="ecp-mline ecp-snow"><ha-icon icon="mdi:snowflake"></ha-icon>'
-        + fmtAmtUnit(model.snow, 'cm') + '</div>';
+        + periodAmts.snow + '</div>';
     }
     // UV is Day-only; uvColor returns null for Night (uvIndex null) and any
     // non-numeric value, so this gate doubles as the "hidden when absent" rule.

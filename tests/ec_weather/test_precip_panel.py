@@ -24,6 +24,17 @@ def _current_section() -> str:
     return source[start:end]
 
 
+def _precip_amt_labels_helper() -> str:
+    """The precipAmtLabels() helper source — the single place that owns the
+    estimate-tilde convention AND the compact amount formatting for every
+    render site."""
+    source = CARD_JS.read_text()
+    start = source.find("export function precipAmtLabels(")
+    end = source.find("\n}", start)
+    assert start != -1 and end != -1
+    return source[start:end]
+
+
 class TestPanelStructure:
     def test_panel_container(self):
         assert "ppanel" in _current_section()
@@ -95,12 +106,20 @@ class TestBars:
 
     def test_units_compact_mm_and_cm(self):
         """Design audit: amounts are compact with NO space ('3mm', '5cm')
-        everywhere — the panel chips go through fmtAmtUnit."""
+        everywhere. The panel chips route amounts through precipAmtLabels(),
+        and that helper formats via fmtAmtUnit — so the full no-space guarantee
+        chain is still audited here."""
         section = _current_section()
-        assert "fmtAmtUnit(rain, 'mm')" in section
-        assert "fmtAmtUnit(snow, 'cm')" in section
+        # The panel chips no longer call fmtAmtUnit directly: they go through
+        # the shared precipAmtLabels() helper.
+        assert "precipAmtLabels(" in section
         assert "+ ' mm'" not in section
         assert "+ ' cm'" not in section
+        # ...and precipAmtLabels() is the one place that formats rain (mm) and
+        # snow (cm) via fmtAmtUnit, which appends the unit with no space.
+        helper = _precip_amt_labels_helper()
+        assert "fmtAmtUnit(rain, 'mm')" in helper
+        assert "fmtAmtUnit(snow, 'cm')" in helper
 
 
 class TestTooltipText:
