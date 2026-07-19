@@ -266,3 +266,100 @@ class TestRediscoveryOutcome:
 
         hass.config_entries.async_update_entry.assert_not_called()
         assert coord.aqhi_location_id == _DEAD_STATION
+
+
+def _live_response(aqhi: float = 3) -> dict:
+    """A well-formed response carrying one future forecast the parser accepts."""
+    return {
+        "type": "FeatureCollection",
+        "features": [{
+            "properties": {
+                "aqhi": aqhi,
+                # Far-future so it always clears the current-hour filter.
+                "forecast_datetime": "2100-01-01T00:00:00Z",
+                "publication_datetime": "2100-01-01T00:00:00Z",
+            },
+        }],
+    }
+
+
+class TestRediscoveryRefreshInterleave:
+    """A normal refresh (and a station swap) interleaved between dead polls must
+    not disturb the in-memory 24h re-discovery rate-limit — the untested race
+    the existing single-poll tests don't cover."""
+
+    async def test_live_refresh_and_swap_between_dead_polls_keep_rate_limit(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """dead → adopt new station → LIVE refresh → new station dies < 24h:
+        the clock survived the success AND the swap, so no second discovery."""
+        entry = _make_entry()
+        coord = _make_coordinator(hass, entry=entry)
+        hass.config_entries.async_update_entry = MagicMock()
+        coord.is_fresh = lambda: False  # force every _do_update to fetch
+
+        base = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+        with patch(
+            "ec_weather.coordinator.aqhi.fetch_json_with_retry", AsyncMock(),
+        ) as mock_fetch, patch(
+            "ec_weather.coordinator.aqhi.discover_aqhi_station",
+            AsyncMock(return_value="FEBWC"),
+        ) as mock_discover, patch(
+            "ec_weather.coordinator.aqhi.dt_util.utcnow",
+        ) as mock_now:
+            # 1) dead poll → rediscover + adopt the new station.
+            mock_now.return_value = base
+            mock_fetch.return_value = _empty_response()
+            await coord._do_update()
+            assert coord.aqhi_location_id == "FEBWC"
+            assert mock_discover.await_count == 1
+
+            # 2) interleaved LIVE refresh on the new station — no rediscovery.
+            mock_now.return_value = base + timedelta(hours=1)
+            mock_fetch.return_value = _live_response(3)
+            result = await coord._do_update()
+            assert result["aqhi"] == 3
+            assert mock_discover.await_count == 1
+
+            # 3) the new station also dies, still inside 24h → rate-limited.
+            mock_now.return_value = base + timedelta(hours=2)
+            mock_fetch.return_value = _empty_response()
+            await coord._do_update()
+            assert mock_discover.await_count == 1
+
+    async def test_adopted_station_dead_after_window_rediscovers_again(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """The rate-limit is per-clock, not per-station: once 24h elapse, the
+        adopted-but-now-dead station re-discovers a second replacement."""
+        entry = _make_entry()
+        coord = _make_coordinator(hass, entry=entry)
+        hass.config_entries.async_update_entry = MagicMock()
+        coord.is_fresh = lambda: False
+
+        base = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+        with patch(
+            "ec_weather.coordinator.aqhi.fetch_json_with_retry",
+            AsyncMock(return_value=_empty_response()),
+        ), patch(
+            "ec_weather.coordinator.aqhi.discover_aqhi_station",
+            AsyncMock(side_effect=["FEBWC", "GHIJK"]),
+        ) as mock_discover, patch(
+            "ec_weather.coordinator.aqhi.dt_util.utcnow",
+        ) as mock_now:
+            mock_now.return_value = base
+            await coord._do_update()
+            assert coord.aqhi_location_id == "FEBWC"
+
+            # Interleaved LIVE refresh mid-window must not consume the window.
+            mock_now.return_value = base + timedelta(hours=6)
+            await coord._do_update()  # still dead in this test — rate-limited
+            assert mock_discover.await_count == 1
+
+            # 25h after the first attempt → window elapsed, adopt a second id.
+            mock_now.return_value = base + timedelta(hours=25)
+            await coord._do_update()
+            assert mock_discover.await_count == 2
+            assert coord.aqhi_location_id == "GHIJK"

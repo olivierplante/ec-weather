@@ -23,7 +23,9 @@ from .const import CONF_CITY_CODE, CONF_CITY_NAME, CONF_LANGUAGE, DEFAULT_LANGUA
 from .coordinator import ECWeatherCoordinator, ECWEonGCoordinator, WEonGListenerMixin
 from .icon_registry import icon_code_to_condition
 from .models import ECWeatherData, build_device_info
-from .transforms import filter_past_hours, merge_weong_into_daily
+from .transforms import build_daily_view, display_pop, filter_past_hours
+
+from homeassistant.util import dt as dt_util
 
 
 class ECWeather(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], WeatherEntity):
@@ -111,8 +113,11 @@ class ECWeather(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], Wea
             weong_periods = self._weong_coordinator.data.get("periods") or {}
         if weong_periods:
             hourly = self.coordinator.data.get("hourly") or []
-            daily = merge_weong_into_daily(
-                daily, weong_periods, hourly, lang=self._language
+            # Shared merge + remaining-only trim (today's POP counts only the
+            # hours still ahead, matching the card and today-POP sensor).
+            daily = build_daily_view(
+                daily, weong_periods, hourly,
+                dt_util.now().date().isoformat(), lang=self._language,
             )
 
         forecasts: list[Forecast] = []
@@ -122,7 +127,9 @@ class ECWeather(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], Wea
                 "condition": icon_code_to_condition(item.get("icon_code")),
                 "temperature": item.get("temp_high"),
                 "templow": item.get("temp_low"),
-                "precipitation_probability": item.get("precip_prob"),  # from merge_weong_into_daily
+                # Stepped for display at the emission boundary (round up to the
+                # next 5, hidden below the floor) — matches the daily sensor.
+                "precipitation_probability": display_pop(item.get("precip_prob")),
                 "wind_speed": None,
                 "wind_bearing": None,
             }
@@ -141,7 +148,11 @@ class ECWeather(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinator], Wea
                 "datetime": item.get("time", ""),
                 "condition": icon_code_to_condition(item.get("icon_code")),
                 "temperature": item.get("temp"),
-                "precipitation_probability": item.get("precipitation_probability"),
+                # Stepped for display at the emission boundary — matches the
+                # hourly strip sensor.
+                "precipitation_probability": display_pop(
+                    item.get("precipitation_probability")
+                ),
                 "wind_speed": item.get("wind_speed"),
                 "wind_bearing": item.get("wind_direction"),
             }

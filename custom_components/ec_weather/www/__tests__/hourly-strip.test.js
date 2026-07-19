@@ -197,11 +197,19 @@ describe("buildHourlyStripHtml — reserved FL/POP cluster lines", () => {
     expect(html).toContain('<div class="ecs-pop">&nbsp;</div>');
   });
 
-  it("POP 0 renders a reserved blank line, not 0%", () => {
-    const zeroPop = [{ time: "2026-01-07T09:00:00", temp: 5, icon_code: 1, precipitation_probability: 0 }];
-    const html = buildHourlyStripHtml(zeroPop, hass24, { showDayBands: false });
+  it("a hidden POP (backend-stepped to null) renders a reserved blank line", () => {
+    // The backend emits null for any POP below the display floor (raw 0 too),
+    // so the card blanks the line on null — it never sees a bare 0 to print.
+    const hiddenPop = [{ time: "2026-01-07T09:00:00", temp: 5, icon_code: 1, precipitation_probability: null }];
+    const html = buildHourlyStripHtml(hiddenPop, hass24, { showDayBands: false });
     expect(html).toContain('<div class="ecs-pop">&nbsp;</div>');
     expect(html).not.toContain("0%");
+  });
+
+  it("a stepped POP prints exactly (e.g. 10%), no re-rounding", () => {
+    const steppedPop = [{ time: "2026-01-07T09:00:00", temp: 5, icon_code: 1, precipitation_probability: 10 }];
+    const html = buildHourlyStripHtml(steppedPop, hass24, { showDayBands: false });
+    expect(html).toContain('<div class="ecs-pop">10%</div>');
   });
 
   it("FL equal to the temp is blanked (reads as a modifier only when it differs)", () => {

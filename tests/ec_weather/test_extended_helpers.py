@@ -364,6 +364,20 @@ class TestOutlookDay:
         assert result["pop_day_display"] == 30
         assert result["pop_night_display"] is None
 
+    def test_pop_display_rounds_up_to_next_five(self):
+        """The >= 30 gate is on the RAW value, but the shown number is stepped
+        by the shared display_pop rule (round up to the next 5)."""
+        result = _outlook(pop_day=33, pop_night=31)
+        assert result["pop_day_display"] == 35
+        assert result["pop_night_display"] == 35
+
+    def test_pop_display_raw_gate_below_thirty_hidden_even_though_it_would_round_to_thirty(self):
+        """A raw 28 rounds to 30, but the gate is on the raw value (< 30) so it
+        stays hidden — the outlook list's stricter boundary is unchanged."""
+        result = _outlook(pop_day=28, pop_night=26)
+        assert result["pop_day_display"] is None
+        assert result["pop_night_display"] is None
+
     def test_icons_per_half_via_recipe(self):
         # Day: pop 55 (chance band) rain-dominant -> chance of showers.
         # Night: pop 20 (dry) cloud 30% -> partly cloudy night.

@@ -153,8 +153,12 @@ class TestBuildUnifiedHourlyMerged:
 
 class TestFilterPastHours:
     @freeze_time("2026-03-23T15:30:00Z")
-    def test_past_hours_filtered(self):
-        """Given frozen time at 15:30 → items before 15:00 removed."""
+    def test_past_and_current_hours_filtered(self):
+        """At 15:30 the in-progress 15:00 hour is dropped; strip starts at 16:00.
+
+        Hourly surfaces are a what's-ahead instrument, so the cutoff is the NEXT
+        full hour (16:00), not floor(now) (15:00).
+        """
         forecast = [
             {"time": "2026-03-23T13:00:00Z", "temp": -5},
             {"time": "2026-03-23T14:00:00Z", "temp": -4},
@@ -165,10 +169,21 @@ class TestFilterPastHours:
 
         result = filter_past_hours(forecast)
 
-        assert len(result) == 3
-        assert result[0]["time"] == "2026-03-23T15:00:00Z"
-        assert result[1]["time"] == "2026-03-23T16:00:00Z"
-        assert result[2]["time"] == "2026-03-23T17:00:00Z"
+        assert len(result) == 2
+        assert result[0]["time"] == "2026-03-23T16:00:00Z"
+        assert result[1]["time"] == "2026-03-23T17:00:00Z"
+
+    @freeze_time("2026-03-23T15:00:00Z")
+    def test_top_of_hour_starts_at_next_hour(self):
+        """Exactly on the hour, the current hour is still dropped (starts next)."""
+        forecast = [
+            {"time": "2026-03-23T15:00:00Z", "temp": -3},
+            {"time": "2026-03-23T16:00:00Z", "temp": -2},
+        ]
+
+        result = filter_past_hours(forecast)
+
+        assert [item["time"] for item in result] == ["2026-03-23T16:00:00Z"]
 
 
 # ---------------------------------------------------------------------------

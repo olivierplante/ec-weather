@@ -6,7 +6,8 @@ They are stateless and have no HA dependencies — easy to test directly.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import math
+from datetime import datetime, timedelta, timezone
 
 from .icon_registry import (
     CLEAR_NIGHT,
@@ -26,16 +27,139 @@ from .icon_registry import (
     condition_text,
 )
 from .timestamp_utils import hour_from_iso
+from .timestep_store import aggregate_expected_precip
 
 __all__ = [
     "build_unified_hourly",
+    "build_daily_view",
     "filter_past_hours",
     "merge_weong_into_daily",
     "derive_icon",
     "apply_icon_fallback",
+    "canonical_hourly_record",
+    "HOURLY_SOURCE_MAP",
     "enrich_timesteps",
     "extract_weong_value",
+    "next_hour_cutoff",
+    "apply_remaining_only",
+    "resolve_hourly_pop",
+    "resolve_half_precip",
+    "display_pop",
+    "apply_display_pop",
+    "POP_DISPLAY_MIN",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Probability-of-precipitation display rule (backend-owned presentation)
+# ---------------------------------------------------------------------------
+
+# A POP whose ROUNDED value falls below this percent is hidden entirely. Named
+# so flipping the floor (e.g. back to 5) is a one-line change here.
+POP_DISPLAY_MIN = 10
+
+
+def display_pop(raw: float | int | None) -> int | None:
+    """Round a probability-of-precipitation UP to the next multiple of 5 for display.
+
+    The ONE place the POP *display* rule lives. Every user-facing POP passes
+    through here at the attribute-emission boundary, so the card, the weather
+    entity, automations and voice assistants all read the SAME stepped number —
+    the card itself is a pure printer and reimplements none of this.
+
+    Presentation only: the raw store POPs that internal math consumes (the
+    expected-amount weighting in ``aggregate_expected_precip``, the in-progress
+    ``apply_remaining_only`` re-aggregation, and store-level aggregation) are
+    never stepped — this runs AFTER all of that, on the emitted field alone.
+
+    - ``None`` (and a raw 0) → ``None`` (nothing to show).
+    - Otherwise round UP to the next multiple of 5 (23 → 25, 8 → 10, 56 → 60).
+    - A rounded value below :data:`POP_DISPLAY_MIN` is hidden (returns ``None``),
+      so raw 1-5 disappear while raw 6+ surface as ``>= 10``.
+    """
+    if raw is None:
+        return None
+    stepped = math.ceil(raw / 5) * 5
+    return stepped if stepped >= POP_DISPLAY_MIN else None
+
+
+def apply_display_pop(view: list[dict]) -> None:
+    """Step every user-facing POP in a merged daily view IN PLACE, at emission.
+
+    Runs after ``build_daily_view`` (merge + remaining-only + amount resolution)
+    has consumed the RAW store POPs, so the expected-amount weighting and the
+    in-progress re-aggregate keep their raw inputs; only the fields a human reads
+    are stepped:
+
+    - the combined / day / night daily POPs,
+    - each displayed timestep's POP (the popup timeline), and
+    - on GEPS outlook rows, the detail-box per-half POP and the sentence's
+      dominant POP.
+
+    ``pop_*_display`` (the >= 30 outlook LIST gate) is already stepped upstream in
+    the coordinator, so it is left untouched here.
+    """
+    for period in view:
+        for key in ("precip_prob", "precip_prob_day", "precip_prob_night"):
+            if period.get(key) is not None:
+                period[key] = display_pop(period[key])
+        for ts_key in ("timesteps_day", "timesteps_night"):
+            for timestep in period.get(ts_key) or []:
+                if timestep.get("precipitation_probability") is not None:
+                    timestep["precipitation_probability"] = display_pop(
+                        timestep["precipitation_probability"]
+                    )
+        if period.get("source") == "outlook":
+            for key in ("pop_day", "pop_night"):
+                if period.get(key) is not None:
+                    period[key] = display_pop(period[key])
+            sentence = period.get("sentence")
+            if isinstance(sentence, dict) and sentence.get("dominant_pop") is not None:
+                # Copy so the coordinator's stored outlook entry keeps its raw
+                # sentence payload (display_pop is idempotent, but never mutate
+                # shared upstream state).
+                period["sentence"] = {
+                    **sentence,
+                    "dominant_pop": display_pop(sentence["dominant_pop"]),
+                }
+
+
+def resolve_hourly_pop(
+    weong_pop: int | None, ec_pop: int | None,
+) -> int | None:
+    """Resolve a single hour's probability-of-precipitation from both sources.
+
+    This is the ONE place the per-hour POP rule lives so the hourly strip
+    (``build_unified_hourly``) and the daily popup timesteps
+    (``enrich_timesteps``) can never diverge for the same timestamp:
+
+    - WEonG model pop wins whenever the WEonG value is present (not None) —
+      a real 0 is a value, not "missing", so it still wins over EC ``lop``;
+    - otherwise fall back to EC citypage ``lop``.
+
+    EC citypage ``lop`` can sit flat at 0/"Nil" for a whole day while the WEonG
+    model carries the real hour-by-hour probabilities beside real rain amounts,
+    so preferring WEonG keeps the shown POP coherent with the shown amounts.
+    """
+    return weong_pop if weong_pop is not None else ec_pop
+
+
+def next_hour_cutoff(now: datetime | None = None) -> str:
+    """Return the ISO-UTC timestamp of the NEXT full hour after ``now``.
+
+    Hourly surfaces are a what's-ahead instrument, so the in-progress hour is
+    excluded: an item stamped at floor(now) (e.g. the 21:00 item while it is
+    21:30) has already partly elapsed. The cutoff is therefore floor(now) + 1h,
+    and callers keep items whose timestamp is ``>= cutoff``. Both the hourly
+    strip filter (``filter_past_hours``) and the in-progress period recompute
+    (``apply_remaining_only``) share this single boundary so no surface can show
+    a different window start than another.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    floor_hour = now.replace(minute=0, second=0, microsecond=0)
+    cutoff = floor_hour + timedelta(hours=1)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -114,17 +238,172 @@ def apply_icon_fallback(entry: dict, ts_iso: str, lang: str = "en") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Canonical per-timestamp hourly record — the ONE source decision per field
+# ---------------------------------------------------------------------------
+
+# Authoritative field→source map for the canonical hourly record. This is the
+# single documented place where each per-hour field's datasource is decided;
+# ``canonical_hourly_record`` implements exactly this map, and a test asserts
+# ``set(HOURLY_SOURCE_MAP) == set(record)`` so the doc cannot drift from code.
+#
+# Time slices: "EC-covered" = the ~24h citypage hourly horizon; "WEonG-beyond"
+# = hours past it served by HRDPS/RDPS-WEonG. ``ec`` below is the parse_hourly
+# item; ``weong`` is the store projection (project_hourly/project_periods).
+HOURLY_SOURCE_MAP: dict[str, dict] = {
+    "time": {
+        "slice": "all",
+        "source": "canonical timestep key (ISO UTC)",
+        "fallback": None,
+    },
+    "temp": {
+        "slice": "EC-covered → citypage; WEonG-beyond → model AirTemp",
+        "source": "citypage hourly `temperature`",
+        "fallback": "EC temp → WEonG AirTemp (HRDPS/RDPS-WEonG); rounded 1 dp",
+    },
+    "feels_like": {
+        "slice": "EC-covered only",
+        "source": "citypage-derived feels_like (temp + wind + humidex)",
+        "fallback": "None beyond EC coverage (WEonG has no feels-like)",
+    },
+    "icon_code": {
+        "slice": "EC-covered → citypage; else derived",
+        "source": "citypage hourly `iconCode`",
+        "fallback": "EC icon → derive_icon(precip type → sky_state) → None",
+    },
+    "condition": {
+        "slice": "EC-covered → citypage; else derived",
+        "source": "citypage hourly `condition` (localized)",
+        "fallback": "EC condition → derive_icon condition text → None",
+    },
+    "precipitation_probability": {
+        "slice": "all",
+        "source": "WEonG model POP (Precip-Prob layer)",
+        "fallback": "WEonG pop (a real 0 wins) → EC citypage `lop` "
+                    "(resolve_hourly_pop)",
+        # The canonical record carries the RAW POP (internal math — the
+        # expected-amount weighting and remaining-only re-aggregate — reads it).
+        # The value a human reads is stepped by display_pop / apply_display_pop
+        # at the sensor + weather emission boundary (round UP to the next 5,
+        # hidden below POP_DISPLAY_MIN); the card never re-derives it.
+        "display": "raw here; display_pop at emission (round-up-5, hide < 10)",
+    },
+    "rain_mm": {
+        "slice": "all (WEonG-owned)",
+        "source": "WEonG conditional rain amount (per-hour)",
+        "fallback": "None when WEonG absent for the hour",
+    },
+    "snow_cm": {
+        "slice": "all (WEonG-owned)",
+        "source": "WEonG conditional snow amount (per-hour)",
+        "fallback": "None when WEonG absent for the hour",
+    },
+    "wind_speed": {
+        "slice": "EC-covered only",
+        "source": "citypage hourly `wind.speed`",
+        "fallback": "None beyond EC coverage",
+    },
+    "wind_gust": {
+        "slice": "EC-covered only",
+        "source": "citypage hourly `wind.gust`",
+        "fallback": "None beyond EC coverage",
+    },
+    "wind_direction": {
+        "slice": "EC-covered only",
+        "source": "citypage hourly `wind.direction`",
+        "fallback": "None beyond EC coverage",
+    },
+}
+
+
+def canonical_hourly_record(
+    ts_iso: str,
+    ec: dict | None,
+    weong: dict | None,
+    lang: str = "en",
+) -> dict:
+    """Build the ONE canonical per-timestamp hourly record.
+
+    This is the single place where the datasource of every per-hour field is
+    decided (see :data:`HOURLY_SOURCE_MAP`). Both the hourly strip
+    (``build_unified_hourly``) and the daily popup timesteps
+    (``enrich_timesteps``) derive their records from here, so the same
+    timestamp yields a byte-identical record on every surface — no consumer
+    makes its own source choice, and the two surfaces cannot diverge.
+
+    ``ec`` is the EC citypage hourly item for this timestamp (parse_hourly
+    shape) or None past the ~24h EC horizon. ``weong`` is the WEonG
+    per-timestamp dict (store projection shape: rain_mm, snow_cm, temp,
+    precipitation_probability, sky_state, freezing_precip_mm, ice_pellet_cm)
+    or None where WEonG has no data. Only WEonG-owned keys are read from
+    ``weong`` — its icon/condition/wind (always None from the store) are
+    ignored so the ``project_hourly`` and ``project_periods`` shapes resolve
+    identically.
+    """
+    ec = ec or {}
+    weong = weong or {}
+
+    # Temperature: EC citypage wins inside its coverage window; WEonG AirTemp
+    # beyond it. One rounded (1-decimal) representation on every surface so the
+    # strip and popup never carry a differently-rounded temp for the same hour.
+    ec_temp = ec.get("temp")
+    temp = ec_temp if ec_temp is not None else weong.get("temp")
+    if temp is not None:
+        temp = round(temp, 1)
+
+    record = {
+        "time": ts_iso,
+        "temp": temp,
+        "feels_like": ec.get("feels_like"),
+        "icon_code": ec.get("icon_code"),
+        "condition": ec.get("condition"),
+        # Per-hour POP: WEonG model pop wins (a real 0 counts), EC lop fallback.
+        "precipitation_probability": resolve_hourly_pop(
+            weong.get("precipitation_probability"),
+            ec.get("precipitation_probability"),
+        ),
+        "rain_mm": weong.get("rain_mm"),
+        "snow_cm": weong.get("snow_cm"),
+        "wind_speed": ec.get("wind_speed"),
+        "wind_gust": ec.get("wind_gust"),
+        "wind_direction": ec.get("wind_direction"),
+    }
+
+    # Icon fallback chain: when EC states no icon (beyond coverage, or a sparse
+    # citypage item), derive from WEonG precip type / sky_state at this hour.
+    if record["icon_code"] is None:
+        icon_code, condition = derive_icon(
+            {
+                "freezing_precip_mm": weong.get("freezing_precip_mm"),
+                "ice_pellet_cm": weong.get("ice_pellet_cm"),
+                "rain_mm": weong.get("rain_mm"),
+                "snow_cm": weong.get("snow_cm"),
+                "temp": temp,
+                "sky_state": weong.get("sky_state"),
+            },
+            hour_from_iso(ts_iso),
+            lang=lang,
+        )
+        record["icon_code"] = icon_code
+        record["condition"] = condition
+
+    return record
+
+
+# ---------------------------------------------------------------------------
 # Hourly forecast merging
 # ---------------------------------------------------------------------------
 
 def build_unified_hourly(
     ec_hourly: list[dict], weong_hourly: dict, lang: str = "en",
 ) -> list[dict]:
-    """Build a unified hourly forecast list from EC hourly + WEonG data.
+    """Build the unified hourly strip from EC hourly + WEonG data.
 
-    EC hourly items (0–24h) are the primary source with full data (icon, condition,
-    feels_like, wind). WEonG data enriches EC items with precip amounts and extends
-    the forecast to ~48h with derived icons for hours beyond EC coverage.
+    A thin window slicer over :func:`canonical_hourly_record`: it unions the EC
+    and WEonG timestamps and emits one canonical record per timestamp, sorted by
+    time. EC hourly items (~24h) supply icon/condition/feels_like/wind; WEonG
+    supplies amounts + POP and extends the list past EC coverage with derived
+    icons. Every field's source is decided in the canonical builder, so the
+    strip and the daily popup timesteps cannot diverge for a shared hour.
     """
     ec_lookup: dict[str, dict] = {}
     for item in ec_hourly:
@@ -135,57 +414,26 @@ def build_unified_hourly(
     all_timestamps: set[str] = set(ec_lookup.keys())
     all_timestamps.update(weong_hourly.keys())
 
-    result = []
-    for timestamp_str in sorted(all_timestamps):
-        ec = ec_lookup.get(timestamp_str)
-        weong = weong_hourly.get(timestamp_str)
-
-        if ec:
-            enriched = dict(ec)
-            if weong:
-                enriched["rain_mm"] = weong.get("rain_mm")
-                enriched["snow_cm"] = weong.get("snow_cm")
-                # Copy WEonG fields needed for icon derivation
-                enriched["sky_state"] = weong.get("sky_state")
-                enriched["freezing_precip_mm"] = weong.get("freezing_precip_mm")
-                enriched["ice_pellet_cm"] = weong.get("ice_pellet_cm")
-                apply_icon_fallback(enriched, timestamp_str, lang=lang)
-            else:
-                enriched["rain_mm"] = None
-                enriched["snow_cm"] = None
-            # Strip internal fields from output
-            enriched.pop("sky_state", None)
-            enriched.pop("freezing_precip_mm", None)
-            enriched.pop("ice_pellet_cm", None)
-            result.append(enriched)
-        elif weong:
-            derived = dict(weong)
-            apply_icon_fallback(derived, timestamp_str, lang=lang)
-            result.append({
-                "time": timestamp_str,
-                "temp": derived.get("temp"),
-                "feels_like": None,
-                "condition": derived.get("condition"),
-                "icon_code": derived.get("icon_code"),
-                "precipitation_probability": weong.get("precipitation_probability"),
-                "wind_speed": None,
-                "wind_gust": None,
-                "wind_direction": None,
-                "rain_mm": weong.get("rain_mm"),
-                "snow_cm": weong.get("snow_cm"),
-            })
-
-    return result
+    return [
+        canonical_hourly_record(
+            timestamp_str,
+            ec_lookup.get(timestamp_str),
+            weong_hourly.get(timestamp_str),
+            lang=lang,
+        )
+        for timestamp_str in sorted(all_timestamps)
+    ]
 
 
 def filter_past_hours(forecast: list[dict]) -> list[dict]:
-    """Remove hourly items whose hour has already passed.
+    """Remove hourly items at or before the current in-progress hour.
 
-    Keeps the current hour (floor of now) and all future hours.
+    Hourly surfaces start at the NEXT full hour: the in-progress hour (floor of
+    now) has already partly elapsed, so showing it reads as a contradiction
+    against the period estimates, which only count what's ahead. Keeps items
+    whose timestamp is ``>= next_hour_cutoff(now)``.
     """
-    now = datetime.now(timezone.utc)
-    cutoff = now.replace(minute=0, second=0, microsecond=0)
-    cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    cutoff_str = next_hour_cutoff()
     return [item for item in forecast if item.get("time", "") >= cutoff_str]
 
 
@@ -198,34 +446,27 @@ def enrich_timesteps(
     hourly_lookup: dict[str, dict],
     lang: str = "en",
 ) -> list[dict]:
-    """Enrich WEonG timesteps with EC hourly data and derive missing icons.
+    """Project a period's WEonG timesteps into canonical hourly records.
 
-    For timesteps within EC hourly coverage (~24h), merges in EC data
-    (icon, condition, wind, feels-like). For timesteps beyond EC coverage
-    or where EC has no icon, derives icon from WEonG sky_state/precip.
+    A thin period slicer over :func:`canonical_hourly_record`: for each WEonG
+    timestep in the period it emits the canonical record for that timestamp,
+    merging the matching EC hourly item (icon/condition/wind/feels_like) where
+    EC covers the hour. Because it shares the canonical builder with
+    ``build_unified_hourly``, the popup timeline and the hourly strip carry
+    byte-identical records for any timestamp they both display.
     """
     if not weong_data:
         return []
     raw_timesteps = weong_data.get("timesteps") or []
-    result = []
-    for timestep in raw_timesteps:
-        entry = dict(timestep)
-        hourly = hourly_lookup.get(timestep.get("time"))
-        if hourly:
-            if hourly.get("temp") is not None:
-                entry["temp"] = round(hourly["temp"], 1)
-            entry["feels_like"] = hourly.get("feels_like")
-            if hourly.get("icon_code") is not None:
-                entry["icon_code"] = hourly["icon_code"]
-                entry["condition"] = hourly.get("condition")
-            entry["wind_speed"] = hourly.get("wind_speed")
-            entry["wind_direction"] = hourly.get("wind_direction")
-            entry["wind_gust"] = hourly.get("wind_gust")
-        apply_icon_fallback(entry, timestep.get("time", ""), lang=lang)
-        # Strip internal fields from output
-        entry.pop("sky_state", None)
-        result.append(entry)
-    return result
+    return [
+        canonical_hourly_record(
+            timestep.get("time", ""),
+            hourly_lookup.get(timestep.get("time")),
+            timestep,
+            lang=lang,
+        )
+        for timestep in raw_timesteps
+    ]
 
 
 def extract_weong_value(data: dict | None, key: str):
@@ -397,4 +638,230 @@ def merge_weong_into_daily(
         for entry in outlook:
             merged.append(dict(entry))
 
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# In-progress period: project only what's still ahead
+# ---------------------------------------------------------------------------
+
+_REMAINING_SUB_PERIODS = (
+    ("timesteps_day", "precip_prob_day", "rain_mm_day", "snow_cm_day"),
+    ("timesteps_night", "precip_prob_night", "rain_mm_night", "snow_cm_night"),
+)
+
+
+def apply_remaining_only(
+    merged: list[dict],
+    today_str: str,
+    now: datetime | None = None,
+    model_precip_estimate: bool = True,
+) -> None:
+    """Re-project the in-progress day so its totals reflect only what's ahead.
+
+    ``project_periods`` aggregates each (date, day/night) period over its FULL
+    window, so at 21:00 "Tonight" still counts the rain that fell at 18–20h.
+    The card is a what's-ahead instrument: for the period that CONTAINS now, POP
+    and expected amounts must count only the REMAINING timesteps — the same
+    hours the hourly strip/popup can still show (window start =
+    ``next_hour_cutoff``). This runs at render time (the daily sensor re-reads
+    on every state read), so the value shrinks hour by hour with no refetch.
+
+    Mutates ``merged`` in place. Only the row whose ``date`` equals
+    ``today_str`` is touched:
+
+    - Each sub-period's displayed timesteps are trimmed to what's ahead.
+    - A sub-period that STRADDLES the cutoff (has both elapsed and remaining
+      timesteps — i.e. the one containing now) has its POP and amounts
+      re-aggregated over the remaining timesteps only.
+    - A sub-period WHOLLY in the past (had timesteps, all elapsed) contributes
+      NOTHING to any user-facing today value: its POP and amount fields are
+      nulled (not kept), so the combined ``precip_prob``, the today-POP sensor,
+      the weather entity, and the card's per-half ``dailyPrecip`` max all agree
+      on the remaining-only value. (This supersedes 92d69c6's conservative
+      "keep the stored total" choice, which let an already-elapsed daytime peak
+      linger beside a row showing only the remaining evening.) Its displayed
+      timesteps stay trimmed to empty, as before.
+    - A wholly-future sub-period is untouched (nothing elapsed).
+
+    Invariant this enforces, at any frozen clock: for TODAY's row the combined
+    today POP == the card's max over the per-half POPs == the max POP over the
+    row's remaining timesteps; amounts stay coherent the same way. Other days'
+    rows are never entered.
+
+    ``model_precip_estimate`` mirrors ``merge_weong_into_daily``: when False the
+    recomputed rain/snow amount fields are suppressed to None (POP is never
+    gated), so the gating stays coherent with the fetch-time projection.
+    """
+    cutoff_str = next_hour_cutoff(now)
+
+    for period in merged:
+        if period.get("date") != today_str:
+            continue
+
+        for ts_key, pop_key, rain_key, snow_key in _REMAINING_SUB_PERIODS:
+            timesteps = period.get(ts_key) or []
+            remaining = [ts for ts in timesteps if ts.get("time", "") >= cutoff_str]
+            had_past = len(remaining) < len(timesteps)
+
+            # Trim the displayed list to what's ahead in every case (Change 2).
+            period[ts_key] = remaining
+
+            # The straddling sub-period (elapsed AND remaining hours) is
+            # re-aggregated over what's ahead. A wholly-past sub-period (had
+            # elapsed timesteps, nothing remaining) contributes nothing to any
+            # today value, so its POP and amounts are nulled — never left to
+            # linger. A wholly-future sub-period (no past) never entered here.
+            if had_past and remaining:
+                pop, rain, snow = aggregate_expected_precip(
+                    [
+                        (
+                            ts.get("precipitation_probability"),
+                            ts.get("rain_mm"),
+                            ts.get("snow_cm"),
+                        )
+                        for ts in remaining
+                    ]
+                )
+                period[pop_key] = pop
+                period[rain_key] = rain if model_precip_estimate else None
+                period[snow_key] = snow if model_precip_estimate else None
+            elif had_past:
+                # Wholly past: excluded from every user-facing today field. POP
+                # is nulled too here (unlike the never-gated live POP) because
+                # the whole sub-period is behind us — there is nothing ahead to
+                # state a probability for.
+                period[pop_key] = None
+                period[rain_key] = None
+                period[snow_key] = None
+
+        # Combined max POP is derived from the (possibly recomputed) sub-POPs.
+        sub_pops = [
+            period.get("precip_prob_day"),
+            period.get("precip_prob_night"),
+        ]
+        sub_pops = [pop for pop in sub_pops if pop is not None]
+        period["precip_prob"] = max(sub_pops) if sub_pops else None
+
+
+# ---------------------------------------------------------------------------
+# Per-half popup precip amounts — one backend decision, EC-stated first
+# ---------------------------------------------------------------------------
+
+def resolve_half_precip(
+    ec_amount: float | None,
+    ec_unit: str | None,
+    weong_rain_mm: float | None,
+    weong_snow_cm: float | None,
+) -> dict:
+    """Resolve ONE day/night half's display amount (rain_mm, snow_cm, estimated).
+
+    This is the single place the popup Day/Night boxes' amounts are decided, so
+    they follow the same hierarchy as the daily column (``dailyPrecip``) but at
+    per-half resolution:
+
+    - EC-stated accumulation wins when present (> 0). Its unit distinguishes
+      rain (mm) from snow (cm) exactly as the column does — a ``cm`` amount is
+      snow, anything else is rain — and it is a committed figure, so
+      ``estimated`` is False (the box renders it bare, no tilde).
+    - Otherwise the WEonG model estimate for the half (``estimated`` True, the
+      box marks it with a tilde). These fields already honour the beta gate
+      (None when the model-estimate option is off) and the in-progress-day
+      remaining-only trim applied upstream, so this reads them as-is.
+
+    Amounts default to 0.0 so a caller can gate rendering on ``> 0`` exactly as
+    it did on the raw per-half fields.
+    """
+    if ec_amount is not None and ec_amount > 0:
+        if ec_unit == "cm":
+            return {"rain_mm": 0.0, "snow_cm": ec_amount, "estimated": False}
+        return {"rain_mm": ec_amount, "snow_cm": 0.0, "estimated": False}
+    return {
+        "rain_mm": weong_rain_mm or 0.0,
+        "snow_cm": weong_snow_cm or 0.0,
+        "estimated": True,
+    }
+
+
+def _attach_resolved_precip(period: dict) -> None:
+    """Attach ``precip_amount_day`` / ``precip_amount_night`` to a daily row.
+
+    Skips GEPS outlook rows (``source == "outlook"``) — they carry no per-half
+    EC/WEonG amount fields and render their precip from window bands, so they
+    keep their exact existing key set.
+    """
+    if period.get("source") == "outlook":
+        return
+    period["precip_amount_day"] = resolve_half_precip(
+        period.get("precip_accum_amount"),
+        period.get("precip_accum_unit"),
+        period.get("rain_mm_day"),
+        period.get("snow_cm_day"),
+    )
+    period["precip_amount_night"] = resolve_half_precip(
+        period.get("precip_accum_amount_night"),
+        period.get("precip_accum_unit_night"),
+        period.get("rain_mm_night"),
+        period.get("snow_cm_night"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared daily view — merge + remaining-only trim in lockstep
+# ---------------------------------------------------------------------------
+
+def build_daily_view(
+    daily_periods: list[dict],
+    weong_periods: dict,
+    hourly_forecast: list[dict] | None = None,
+    today_str: str | None = None,
+    *,
+    lang: str = "en",
+    ec_updated: str | None = None,
+    weong_updated: str | None = None,
+    days_fetched: list[str] | None = None,
+    precip_windows: dict[str, list[dict]] | None = None,
+    outlook: list[dict] | None = None,
+    outlook_backfill: dict | None = None,
+    model_precip_estimate: bool = True,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Produce the merged + remaining-trimmed daily view in one call.
+
+    This is the ONE place ``merge_weong_into_daily`` and ``apply_remaining_only``
+    run together, so every consumer (the daily sensor, the today-POP sensor and
+    the weather entity's daily forecast) gets the identical merge and the
+    identical in-progress-day trim — the lockstep is structural, not a
+    coincidence of three call sites happening to sequence the same two calls.
+
+    Every parameter is threaded straight through to ``merge_weong_into_daily``
+    (and ``model_precip_estimate`` / ``now`` on to ``apply_remaining_only``), so
+    a caller passing only what it has today gets byte-identical output to the
+    hand-written pair it replaced. ``today_str`` selects the in-progress row to
+    re-project; a None/absent date simply trims nothing.
+    """
+    merged = merge_weong_into_daily(
+        daily_periods,
+        weong_periods,
+        hourly_forecast,
+        lang=lang,
+        ec_updated=ec_updated,
+        weong_updated=weong_updated,
+        days_fetched=days_fetched,
+        precip_windows=precip_windows,
+        outlook=outlook,
+        outlook_backfill=outlook_backfill,
+        model_precip_estimate=model_precip_estimate,
+    )
+    apply_remaining_only(
+        merged,
+        today_str,
+        now=now,
+        model_precip_estimate=model_precip_estimate,
+    )
+    # Resolve each half's popup display amount ONCE, after the remaining-only
+    # trim so today's WEonG figures reflect only the hours still ahead. The
+    # popup Day/Night boxes are pure display over these fields.
+    for period in merged:
+        _attach_resolved_precip(period)
     return merged

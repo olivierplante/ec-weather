@@ -109,6 +109,61 @@ class TimestepData:
         return cls(**{key: value for key, value in data.items() if key in known})
 
 
+def aggregate_expected_precip(
+    entries: list[tuple[int | float | None, float | None, float | None]],
+) -> tuple[int | None, float | None, float | None]:
+    """Aggregate a set of timesteps into (pop_max, rain_mm, snow_cm).
+
+    ``entries`` is an iterable of ``(pop, rain_mm, snow_cm)`` triples. The
+    returned values follow the period-projection semantics:
+
+    - pop: max POP across the timesteps (or None if none carry a POP).
+    - rain_mm / snow_cm: probability-weighted EXPECTED totals. The per-timestep
+      WEonG amounts are conditional ("amount GIVEN precip that hour"), so each
+      timestep contributes ``(pop/100) * amount`` and those are summed. A
+      null-POP timestep contributes nothing (no defensible expectation).
+    - Trace floor: an expected total below 1.0 mm rain / 0.5 cm snow is reported
+      as None — EC discards sub-0.1 mm/h WEonG noise, so a sub-measurable daily
+      expectation is noise too and would only mislead.
+
+    This is the single source of the aggregation math so the fetch-time period
+    projection (:meth:`TimestepStore.project_periods`) and the render-time
+    remaining-window recompute (``transforms.apply_remaining_only``) always
+    agree for the same set of timesteps.
+    """
+    pops = [pop for pop, _rain, _snow in entries if pop is not None]
+    pop_max = int(round(max(pops))) if pops else None
+
+    rain_expected = 0.0
+    has_rain = False
+    snow_expected = 0.0
+    has_snow = False
+
+    for pop, rain_mm, snow_cm in entries:
+        # A null-POP timestep contributes nothing: with no probability there is
+        # no defensible expectation, and inventing one would re-inflate totals.
+        if pop is None:
+            continue
+        probability = pop / 100.0
+        if rain_mm is not None and rain_mm > 0:
+            rain_expected += probability * rain_mm
+            has_rain = True
+        if snow_cm is not None and snow_cm > 0:
+            snow_expected += probability * snow_cm
+            has_snow = True
+
+    rain_total = round(rain_expected, 1) if has_rain else None
+    snow_total = round(snow_expected, 1) if has_snow else None
+
+    # Trace floor: sub-measurable expectations are noise, not actionable amounts.
+    if rain_total is not None and rain_total < 1.0:
+        rain_total = None
+    if snow_total is not None and snow_total < 0.5:
+        snow_total = None
+
+    return pop_max, rain_total, snow_total
+
+
 # Model preference: HRDPS > RDPS > GEPS. Finer, nearer-term sources win where
 # they overlap the extended GEPS ensemble, so progressive refinement is
 # automatic — as a date nears, RDPS-WEonG overwrites the coarse GEPS synthesis.
@@ -257,40 +312,13 @@ class TimestepStore:
                 }
                 continue
 
-            # Aggregate
-            pops = [e.pop for e in period_entries if e.pop is not None]
-            pop_max = int(round(max(pops))) if pops else None
-
-            rain_expected = 0.0
-            has_rain = False
-            snow_expected = 0.0
-            has_snow = False
-
-            for entry in period_entries:
-                # A null-POP timestep contributes nothing: with no probability
-                # there is no defensible expectation, and inventing one (e.g.
-                # assuming certainty) would re-introduce the inflation bug.
-                if entry.pop is None:
-                    continue
-                probability = entry.pop / 100.0
-                if entry.rain_mm is not None and entry.rain_mm > 0:
-                    rain_expected += probability * entry.rain_mm
-                    has_rain = True
-                if entry.snow_cm is not None and entry.snow_cm > 0:
-                    snow_expected += probability * entry.snow_cm
-                    has_snow = True
-
-            rain_total = round(rain_expected, 1) if has_rain else None
-            snow_total = round(snow_expected, 1) if has_snow else None
-
-            # Trace floor: EC's own WEonG processing discards sub-0.1 mm/h as
-            # unrealistic noise, so a sub-measurable daily EXPECTATION is noise
-            # too. Report a period total below 1.0 mm rain / 0.5 cm snow as
-            # None rather than a misleading "0.3 mm" the user can't act on.
-            if rain_total is not None and rain_total < 1.0:
-                rain_total = None
-            if snow_total is not None and snow_total < 0.5:
-                snow_total = None
+            # Aggregate over the full period window. The in-progress period is
+            # re-aggregated at render time over its REMAINING timesteps only
+            # (transforms.apply_remaining_only), which reuses this same math so
+            # the two never diverge for the same set of timesteps.
+            pop_max, rain_total, snow_total = aggregate_expected_precip(
+                [(e.pop, e.rain_mm, e.snow_cm) for e in period_entries]
+            )
 
             result[key] = {
                 "pop": pop_max,
@@ -301,17 +329,24 @@ class TimestepStore:
 
         return result
 
-    def project_hourly(self) -> dict[str, dict]:
+    def project_hourly(self, horizon_end: str | None = None) -> dict[str, dict]:
         """Project the store into hourly output format.
 
-        Returns dict keyed by ISO timestamp with weather data for
-        the hourly scroll. Only includes HRDPS entries: the hourly strip is
-        the near-term high-resolution view, so far-day RDPS and extended GEPS
-        data are excluded.
+        Returns a dict keyed by ISO timestamp with per-hour weather data for the
+        hourly strip. Membership is decided by TIME, not model identity: any hour
+        the store can serve is served identically to every consumer, so a
+        near-term RDPS hour that HRDPS did not cover shows on the strip exactly
+        as it does in the daily popup (no consumer-side source divergence).
+
+        ``horizon_end`` (ISO UTC) bounds the near-term view: entries at or after
+        it are excluded. This preserves the original HRDPS-only filter's intent —
+        keeping coarse far-day RDPS/GEPS data out of the near-term scroll — via a
+        time bound rather than a model filter. When None (direct/legacy callers),
+        no upper bound is applied.
         """
         result: dict[str, dict] = {}
         for ts_key, entry in self._entries.items():
-            if entry.model in ("rdps", "geps"):
-                continue  # Skip far-day RDPS / extended GEPS for the hourly view
+            if horizon_end is not None and ts_key >= horizon_end:
+                continue
             result[ts_key] = entry.to_hourly_dict()
         return result

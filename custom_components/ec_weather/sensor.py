@@ -47,10 +47,12 @@ from .coordinator import (
 )
 from .models import ECWeatherData, build_device_info
 from .transforms import (
+    apply_display_pop,
+    build_daily_view,
     build_unified_hourly,
+    display_pop,
     extract_today_pop,
     filter_past_hours,
-    merge_weong_into_daily,
 )
 
 from homeassistant.util import dt as dt_util
@@ -343,19 +345,21 @@ class ECHourlyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoor
         if self._weong_coordinator.data:
             weong_hourly = self._weong_coordinator.data.get("hourly") or {}
 
-        if not weong_hourly:
-            # No WEonG data — return EC hourly with null precip amounts
-            result = []
-            for item in ec_hourly:
-                enriched = dict(item)
-                enriched["rain_mm"] = None
-                enriched["snow_cm"] = None
-                result.append(enriched)
-            return {"forecast": filter_past_hours(result)}
-
+        # One path for every case: the canonical builder produces the strip
+        # records (EC-only hours get null amounts, WEonG hours enrich/extend).
+        # No separate EC-only shaping path — the strip and popup can only ever
+        # carry the identical per-timestamp record.
         unified = filter_past_hours(
             build_unified_hourly(ec_hourly, weong_hourly, lang=self._language)
         )
+
+        # Emission boundary: step each hour's POP for display (round up to the
+        # next 5, hide below the floor). The canonical records stay raw upstream
+        # so the daily merge's POP fallback + expected-amount math read raw.
+        for item in unified:
+            item["precipitation_probability"] = display_pop(
+                item.get("precipitation_probability")
+            )
 
         return {"forecast": unified}
 
@@ -424,9 +428,16 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
             outlook = self._weong_coordinator.data.get("outlook")
             outlook_backfill = self._weong_coordinator.data.get("outlook_backfill")
 
+        # One shared helper merges WEonG into the daily forecast AND trims the
+        # in-progress day (POP/amounts/timesteps re-projected over only the
+        # hours still ahead — the value shrinks as the day passes, no refetch)
+        # in lockstep, so this sensor, the today-POP sensor and the weather
+        # entity can never do one without the other.
+        now_local = dt_util.now()
+        today_str = now_local.date().isoformat()
         try:
-            merged = merge_weong_into_daily(
-                daily, weong_periods, hourly, lang=self._language,
+            merged = build_daily_view(
+                daily, weong_periods, hourly, today_str, lang=self._language,
                 ec_updated=ec_updated, weong_updated=weong_updated,
                 days_fetched=days_fetched, precip_windows=precip_windows,
                 outlook=outlook, outlook_backfill=outlook_backfill,
@@ -436,24 +447,17 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")
             return {"forecast": daily}
 
-        # Filter past hours from today's timesteps
-        now_local = dt_util.now()
-        today_str = now_local.date().isoformat()
-        for period in merged:
-            if period.get("date") == today_str:
-                period["timesteps_day"] = filter_past_hours(
-                    period.get("timesteps_day") or []
-                )
-                period["timesteps_night"] = filter_past_hours(
-                    period.get("timesteps_night") or []
-                )
-
         # Drop leading night-only period ("Tonight") between 6 AM and 6 PM.
         # EC keeps it in the forecast until the next morning update, but
         # it's stale once the night has passed. After 6 PM, EC issues a
         # fresh "Tonight" for the upcoming night, so keep it.
         if merged and merged[0].get("temp_high") is None and 6 <= now_local.hour < 18:
             merged = merged[1:]
+
+        # Emission boundary: step every user-facing POP (daily/day/night, popup
+        # timesteps, outlook detail + sentence) for display. Runs last, after the
+        # merge + remaining-only trim have consumed the raw store POPs.
+        apply_display_pop(merged)
 
         return {"forecast": merged}
 
@@ -503,17 +507,22 @@ class ECTodayPopSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoordinato
             weong_periods = self._weong_coordinator.data.get("periods") or {}
             weong_updated = self._weong_coordinator.data.get("updated")
 
+        today_str = dt_util.now().date().isoformat()
+        # Same shared merge + remaining-only trim as the daily column, so today's
+        # POP matches what the column shows: only the hours still ahead count,
+        # and the in-progress period's already-elapsed peak doesn't linger.
         try:
-            merged = merge_weong_into_daily(
-                daily, weong_periods, hourly, lang=self._language,
+            merged = build_daily_view(
+                daily, weong_periods, hourly, today_str, lang=self._language,
                 ec_updated=ec_updated, weong_updated=weong_updated,
             )
         except (KeyError, TypeError, ValueError):
             _LOGGER.exception("EC weather: failed to merge WEonG data for today's POP")
             return None
 
-        today_str = dt_util.now().date().isoformat()
-        return extract_today_pop(merged, today_str)
+        # Emission boundary: the raw combined POP is stepped for display so this
+        # sensor's state matches the daily column and the weather entity.
+        return display_pop(extract_today_pop(merged, today_str))
 
 
 class ECAQHISensor(CoordinatorEntity[ECAQHICoordinator], SensorEntity):

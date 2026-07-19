@@ -327,15 +327,21 @@ export function tempColor(temp) {
   return 'var(--ec-weather-temp-scorching, #e5793f)';
 }
 
-/** AQHI risk color; null when the value is absent (cell hidden entirely).
- *  Non-numeric values are rejected — a truthy color would let a malformed
- *  attribute flow into innerHTML. */
-export function aqhiColor(value) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
-  if (value <= 3) return 'var(--ec-weather-aqhi-low, #4f9fd0)';
-  if (value <= 6) return 'var(--ec-weather-aqhi-moderate, #dcae4e)';
-  if (value <= 10) return 'var(--ec-weather-aqhi-high, #e08a3f)';
-  return 'var(--ec-weather-aqhi-very-high, #d1495b)';
+/** AQHI risk color from the backend's `risk_level` attribute; null when the
+ *  level is absent/unknown (cell hidden entirely). The backend owns the AQHI
+ *  scale (const.aqhi_risk_level); the card is a pure risk-level→color lookup
+ *  with NO numeric thresholds of its own — so the two can never disagree, and
+ *  an unrecognized (or malformed) value resolves to null rather than letting a
+ *  color flow into innerHTML. */
+const AQHI_RISK_COLORS = {
+  low: 'var(--ec-weather-aqhi-low, #4f9fd0)',
+  moderate: 'var(--ec-weather-aqhi-moderate, #dcae4e)',
+  high: 'var(--ec-weather-aqhi-high, #e08a3f)',
+  very_high: 'var(--ec-weather-aqhi-very-high, #d1495b)',
+};
+export function aqhiRiskColor(riskLevel) {
+  if (typeof riskLevel !== 'string') return null;
+  return AQHI_RISK_COLORS[riskLevel] || null;
 }
 
 /** UV index color; null when the value is absent (cell hidden entirely).
@@ -745,11 +751,12 @@ export function buildHourlyStripHtml(timesteps, hass, options = {}) {
     // (&nbsp; when absent) so the cluster height is constant.
     const feels = ts.feels_like != null ? Math.round(ts.feels_like) : null;
     const showFeels = feels !== null && hasTemp && feels !== Math.round(ts.temp);
-    const pop = Math.round(ts.precipitation_probability || 0);
+    // POP arrives backend-stepped: an int to show, or null to hide. Pure print.
+    const pop = ts.precipitation_probability;
     clusterHtml += '<div class="ecs-cell" ' + colStyle + '>'
       + '<div class="ecs-temp">' + (hasTemp ? Math.round(ts.temp) + '°' : '') + '</div>'
       + '<div class="ecs-fl">' + (showFeels ? 'FL ' + feels + '°' : '&nbsp;') + '</div>'
-      + '<div class="ecs-pop">' + (pop > 0 ? pop + '%' : '&nbsp;') + '</div>'
+      + '<div class="ecs-pop">' + (pop != null ? pop + '%' : '&nbsp;') + '</div>'
       + '</div>';
 
     // Water-fill vessel: rain rises from the bottom, snow (lighter) stacks
@@ -876,8 +883,8 @@ export function buildHourlyStripHtml(timesteps, hass, options = {}) {
  * Otherwise it carries the half's temperature (high for day, low for night),
  * condition icon, and the raw wind/POP/precip values the renderer turns into
  * meta lines. Line-suppression rules live here so they stay testable:
- * wind via windCellState (null hides, 0 is Calm), POP only when > 0, precip
- * amounts only for types > 0.
+ * wind via windCellState (null hides, 0 is Calm), POP shown when not null (the
+ * backend already stepped/hid it), precip amounts only for types > 0.
  */
 export function popupPeriodModel(item, half) {
   const isDay = half === 'day';
@@ -896,8 +903,21 @@ export function popupPeriodModel(item, half) {
     : (item.condition_night || item.condition || '');
   const windSpeed = isDay ? item.wind_speed : item.wind_speed_night;
   const pop = isDay ? item.precip_prob_day : item.precip_prob_night;
-  const rain = (isDay ? item.rain_mm_day : item.rain_mm_night) || 0;
-  const snow = (isDay ? item.snow_cm_day : item.snow_cm_night) || 0;
+  // Amounts are a pure read of the backend-resolved per-half field (EC-stated
+  // first, else the WEonG estimate — the same hierarchy as the daily column).
+  // `estimated` decides the tilde. Legacy items without the resolved field fall
+  // back to the raw WEonG per-half fields, which are always model estimates.
+  const resolved = isDay ? item.precip_amount_day : item.precip_amount_night;
+  let rain, snow, estimated;
+  if (resolved && typeof resolved === 'object') {
+    rain = resolved.rain_mm || 0;
+    snow = resolved.snow_cm || 0;
+    estimated = !!resolved.estimated;
+  } else {
+    rain = (isDay ? item.rain_mm_day : item.rain_mm_night) || 0;
+    snow = (isDay ? item.snow_cm_day : item.snow_cm_night) || 0;
+    estimated = true;
+  }
   // Detail-view extras the compact card omits (see the popup handoff). Feels-like
   // follows the hero's rule (hidden when absent or equal to the temp after
   // rounding); UV is a Day-only line, gated on uvColor rejecting non-numbers.
@@ -918,9 +938,11 @@ export function popupPeriodModel(item, half) {
     windSpeed,
     windGust: isDay ? item.wind_gust : item.wind_gust_night,
     windDirection: isDay ? item.wind_direction : item.wind_direction_night,
-    pop: (pop != null && pop > 0) ? pop : null,
+    // Backend-stepped: an int to show, or null to hide. No threshold here.
+    pop: pop != null ? pop : null,
     rain,
     snow,
+    estimated,
     showRain: rain > 0,
     showSnow: snow > 0,
   };
@@ -1444,7 +1466,11 @@ export function precipAmtColor(rain, snow, precipType) {
  * Single source of truth for a day's precipitation summary, used by both the
  * daily column and the current-conditions "today" line so they never diverge.
  *
- * POP is max(day, night) rounded up to the nearest 5%; shown only when >= 5%.
+ * POP is the max of the day/night halves. The value arrives already
+ * display-stepped from the backend (rounded up to the next 5%, and hidden —
+ * emitted as null — below the display floor), so this is a pure passthrough: no
+ * ceil or threshold math lives here. A half is "shown" iff its value is not
+ * null; showPrecip is true iff at least one half survived.
  * Amounts prefer EC accumulation (meteorologist-interpreted, days 0-2) and
  * fall back to WEonG model amounts. Rain (mm) and snow (cm) are kept separate
  * — different units, never summed.
@@ -1458,9 +1484,11 @@ export function precipAmtColor(rain, snow, precipType) {
  * inert there (no tilde ever surfaces without an amount beside it).
  */
 export function dailyPrecip(item) {
-  const popDay = item.precip_prob_day || 0;
-  const popNight = item.precip_prob_night || 0;
-  const popRounded = Math.ceil(Math.max(popDay, popNight) / 5) * 5;
+  // Backend-stepped POP: each half is an int (>= the display floor) or null.
+  // Pure passthrough — take the max of the shown halves, no rounding here.
+  const shownPops = [item.precip_prob_day, item.precip_prob_night]
+    .filter((value) => value != null);
+  const popRounded = shownPops.length ? Math.max(...shownPops) : null;
 
   const ecAccumDay = item.precip_accum_amount || 0;
   const ecAccumNight = item.precip_accum_amount_night || 0;
@@ -1479,7 +1507,7 @@ export function dailyPrecip(item) {
 
   return {
     popRounded,
-    showPrecip: popRounded >= 5,
+    showPrecip: popRounded != null,
     rainAmt,
     snowAmt,
     estimated,
@@ -1530,6 +1558,14 @@ export function entityNum(hass, entityId) {
   if (v === null) return null;
   const n = parseFloat(v);
   return isNaN(n) ? null : n;
+}
+
+/** Read a single attribute off an entity, returning null when the entity or
+ *  the attribute is missing. */
+export function entityAttr(hass, entityId, attr) {
+  const s = hass.states[entityId];
+  if (!s || !s.attributes || s.attributes[attr] == null) return null;
+  return s.attributes[attr];
 }
 
 // ─── Reusable Overlay ────────────────────────────────────────────────────────
@@ -2433,7 +2469,9 @@ export class ECWeatherCard extends HTMLElement {
     }
 
     const aqhi = entityNum(h, this.entityIdFor('air_quality'));
-    const aqhiCol = aqhiColor(aqhi);
+    // Color comes from the backend-decided risk_level attribute (pure lookup),
+    // never a numeric threshold in the card.
+    const aqhiCol = aqhiRiskColor(entityAttr(h, this.entityIdFor('air_quality'), 'risk_level'));
     const uvIndex = todayEntry && todayEntry.uv_index != null ? todayEntry.uv_index : null;
     const uvCol = uvColor(uvIndex);
 
@@ -2454,7 +2492,7 @@ export class ECWeatherCard extends HTMLElement {
         + '<span class="mv">' + windText + '</span>'
         + '<span class="ml">' + (gustText || '&nbsp;') + '</span></div>';
     }
-    if (aqhiCol) cellsHtml += metricCell('mdi:air-filter', String(Math.round(aqhi)), t(h, 'aqhiLabel'), aqhiCol);
+    if (aqhiCol && aqhi !== null) cellsHtml += metricCell('mdi:air-filter', String(Math.round(aqhi)), t(h, 'aqhiLabel'), aqhiCol);
     if (uvCol) cellsHtml += metricCell('mdi:white-balance-sunny', String(uvIndex), 'UV', uvCol);
 
     // ── Sun cell: arc with the dot placed by time of day; polar day/night
@@ -3268,8 +3306,9 @@ export class ECWeatherCard extends HTMLElement {
   /**
    * A slimmed Day/Night box for the outlook popup. Each GEPS 12h window IS a
    * half: icon (ensemble recipe), median temp (high for day / low for night),
-   * feels-like when present, the raw per-half POP (always shown — this is the
-   * detail view), and the amount band only when that half's POP >= 50. No
+   * feels-like when present, the per-half POP (backend display-stepped — shown
+   * when not null, down to the display floor, not the outlook list's stricter
+   * >= 30 gate), and the amount band only when that half's POP >= 50. No
    * humidity/wind/condition/UV (not rebuildable past EC's horizon).
    */
   _renderOutlookPeriod(item, half) {
@@ -3301,7 +3340,7 @@ export class ECWeatherCard extends HTMLElement {
     }
     if (pop != null) {
       meta += '<div class="ecp-mline"><ha-icon icon="mdi:water-percent"></ha-icon>'
-        + Math.round(pop) + '% ' + t(h, 'chance') + '</div>';
+        + pop + '% ' + t(h, 'chance') + '</div>';
     }
     if (band && pop != null && pop >= 50 && (band.low != null || band.high != null)) {
       meta += '<div class="ecp-mline ecp-rain"><ha-icon icon="mdi:water"></ha-icon>'
@@ -3362,13 +3401,13 @@ export class ECWeatherCard extends HTMLElement {
     }
     if (model.pop != null) {
       meta += '<div class="ecp-mline"><ha-icon icon="mdi:water-percent"></ha-icon>'
-        + Math.round(model.pop) + '% ' + t(h, 'chance') + '</div>';
+        + model.pop + '% ' + t(h, 'chance') + '</div>';
     }
-    // The Day/Night box amounts are the WEonG model's per-half figures, present
-    // only under the beta estimate option — so they are unconditionally
-    // estimates and always wear the "~" (one per box: rain first takes it, a
-    // snow-only box marks the snow). Same convention as the daily column.
-    const periodAmts = precipAmtLabels(model.rain, model.snow, true);
+    // The Day/Night box amounts come from the backend-resolved per-half field:
+    // EC-stated accumulation renders bare, the WEonG model estimate wears the
+    // "~" (one per box: rain first takes it, a snow-only box marks the snow).
+    // `model.estimated` carries that provenance — same convention as the column.
+    const periodAmts = precipAmtLabels(model.rain, model.snow, model.estimated);
     if (model.showRain) {
       meta += '<div class="ecp-mline ecp-rain"><ha-icon icon="mdi:water"></ha-icon>'
         + periodAmts.rain + '</div>';

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from freezegun import freeze_time
@@ -313,3 +314,75 @@ async def test_failures_not_persisted(hass: HomeAssistant, hass_storage):
     assert restored._store.get("2026-07-09T12:00:00Z") is not None
     assert restored._store.get("2026-07-09T13:00:00Z") is not None
     assert restored._store.get("2026-07-09T14:00:00Z") is None
+
+
+# ---------------------------------------------------------------------------
+# 10 — malformed / partial on-disk payloads: restore-or-discard, never crash
+#      (schema drift after an upgrade; corrupt writes). Test 5 covered a
+#      schema-version MISMATCH; these cover an unreadable file, an absent
+#      schema_version, and a schema-current-but-fieldless payload.
+# ---------------------------------------------------------------------------
+
+async def test_unreadable_file_discarded_no_crash(hass: HomeAssistant, hass_storage):
+    """async_load raising (corrupt on-disk JSON) is caught → fresh fetch, no crash."""
+    coord = _make(hass, "e10")
+    assert coord._persist_store is not None
+    coord._persist_store.async_load = AsyncMock(side_effect=ValueError("corrupt json"))
+
+    await coord.async_restore()  # must not raise
+
+    assert coord.data is None
+    assert len(coord._store) == 0
+    assert coord._completed_days == set()
+    assert coord.needs_refresh() is True
+
+
+async def test_absent_schema_version_discarded(hass: HomeAssistant, hass_storage):
+    """A payload with NO schema_version key is a mismatch (None != current) —
+    discarded, never migrated by guess."""
+    key = "ec_weather.e11"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {  # schema_version deliberately absent
+            "timesteps": [{"time": "2026-07-09T12:00:00Z", "temp": 5.0}],
+            "completed_days": ["2026-07-09"],
+            "last_model_run": "2026-07-09T06:00:00Z",
+        },
+    }
+
+    coord = _make(hass, "e11")
+    await coord.async_restore()
+
+    assert len(coord._store) == 0
+    assert coord._completed_days == set()
+    assert coord._last_model_run is None
+    assert coord.data is None
+    assert coord.needs_refresh() is True
+
+
+@freeze_time("2026-07-09T12:00:00Z")
+async def test_schema_current_but_fieldless_payload_restores_clean(
+    hass: HomeAssistant, hass_storage,
+):
+    """A schema-current payload missing every optional field restores to a safe
+    empty state and projects without crashing (each field defaults via .get)."""
+    key = "ec_weather.e12"
+    hass_storage[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {"schema_version": STORAGE_SCHEMA_VERSION},  # nothing else
+    }
+
+    coord = _make(hass, "e12")
+    coord._forecast_days = 14  # extended on — exercises the outlook branch too
+    await coord.async_restore()  # must not raise
+
+    assert len(coord._store) == 0
+    assert coord._completed_days == set()
+    assert coord._precip_windows == {}
+    assert coord._outlook == {}
+    assert coord._day7_backfill is None
+    assert coord._last_model_run is None

@@ -496,8 +496,8 @@ class TestMergeWeongUpdatedTimestamp:
 
 class TestFilterPastHoursOnTimesteps:
     @freeze_time("2026-03-23T15:30:00Z")
-    def test_past_timesteps_filtered(self):
-        """Given frozen time at 15:30 → timesteps before 15:00 removed."""
+    def test_past_and_current_timesteps_filtered(self):
+        """At 15:30 the in-progress 15:00 timestep is dropped; list starts 16:00."""
         timesteps = [
             {"time": "2026-03-23T13:00:00Z", "temp": -5},
             {"time": "2026-03-23T14:00:00Z", "temp": -4},
@@ -507,25 +507,23 @@ class TestFilterPastHoursOnTimesteps:
 
         result = filter_past_hours(timesteps)
 
-        assert len(result) == 2
-        assert result[0]["time"] == "2026-03-23T15:00:00Z"
-        assert result[1]["time"] == "2026-03-23T16:00:00Z"
+        assert len(result) == 1
+        assert result[0]["time"] == "2026-03-23T16:00:00Z"
 
     @freeze_time("2026-03-23T15:30:00Z")
-    def test_current_hour_kept(self):
-        """Given timestep at current hour (15:00) → kept in result."""
+    def test_current_hour_dropped(self):
+        """The in-progress hour (15:00) is dropped — surfaces start next hour."""
         timesteps = [
             {"time": "2026-03-23T15:00:00Z", "temp": -3},
         ]
 
         result = filter_past_hours(timesteps)
 
-        assert len(result) == 1
-        assert result[0]["time"] == "2026-03-23T15:00:00Z"
+        assert result == []
 
     @freeze_time("2026-03-23T23:30:00Z")
     def test_night_timesteps_filtered(self):
-        """Given frozen time at 23:30 → night timesteps before 23:00 removed."""
+        """At 23:30 the in-progress 23:00 timestep is dropped; list starts 00:00."""
         timesteps = [
             {"time": "2026-03-23T21:00:00Z", "temp": -8},
             {"time": "2026-03-23T22:00:00Z", "temp": -9},
@@ -535,6 +533,5 @@ class TestFilterPastHoursOnTimesteps:
 
         result = filter_past_hours(timesteps)
 
-        assert len(result) == 2
-        assert result[0]["time"] == "2026-03-23T23:00:00Z"
-        assert result[1]["time"] == "2026-03-24T00:00:00Z"
+        assert len(result) == 1
+        assert result[0]["time"] == "2026-03-24T00:00:00Z"

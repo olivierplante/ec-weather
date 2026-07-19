@@ -509,16 +509,37 @@ class TestHourlyProjection:
         assert entry["freezing_precip_mm"] == 2.5
         assert entry["ice_pellet_cm"] == 0.3
 
-    def test_hourly_only_hrdps(self):
-        """Hourly projection includes only HRDPS entries (far-day models excluded)."""
+    def test_hourly_includes_all_models_within_horizon(self):
+        """The strip is bounded by TIME, not model identity.
+
+        The old projection dropped rdps/geps hours by model, so a near-term
+        rdps hour showed in the popup but vanished from the strip. Under the
+        canonical directive any hour the store can serve is served to every
+        consumer; membership is decided by the time window alone.
+        """
         store = _make_store()
         store.merge(TimestepData(time=_ts(12), temp=-3.0, model="hrdps"))
         store.merge(TimestepData(time=_ts(15), temp=-5.0, model="rdps"))
+        store.merge(TimestepData(time=_ts(18), temp=-6.0, model="geps"))
 
         hourly = store.project_hourly()
 
         assert _ts(12) in hourly
-        assert _ts(15) not in hourly  # RDPS excluded from hourly
+        assert _ts(15) in hourly  # near-term RDPS now served to the strip
+        assert _ts(18) in hourly
+
+    def test_hourly_bounded_by_time_horizon(self):
+        """Entries at or after the horizon are excluded regardless of model."""
+        store = _make_store()
+        store.merge(TimestepData(time=_ts(12), temp=-3.0, model="hrdps"))
+        store.merge(TimestepData(time=_ts(23), temp=-5.0, model="hrdps"))
+
+        # Horizon cuts at 20:00 — the 23:00 HRDPS hour is past it and dropped,
+        # while a far-model hour before the cut would be kept.
+        hourly = store.project_hourly(horizon_end=_ts(20))
+
+        assert _ts(12) in hourly
+        assert _ts(23) not in hourly
 
 
 # ---------------------------------------------------------------------------

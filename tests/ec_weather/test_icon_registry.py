@@ -39,6 +39,33 @@ class TestIconConditionsAndMDIAlignment:
         assert set(ICON_CONDITIONS.keys()) == set(ICON_MDI.keys())
 
 
+class TestChanceOfConstants:
+    """The 'chance of' EC icon codes have named constants (no bare 6/8)."""
+
+    def test_chance_of_showers_is_code_6(self):
+        from ec_weather.icon_registry import CHANCE_OF_SHOWERS
+
+        assert CHANCE_OF_SHOWERS == 6
+        # Code 6 is a rainy condition in the shared vocabulary.
+        assert ICON_CONDITIONS[CHANCE_OF_SHOWERS] == "rainy"
+
+    def test_chance_of_flurries_is_code_8(self):
+        from ec_weather.icon_registry import CHANCE_OF_FLURRIES
+
+        assert CHANCE_OF_FLURRIES == 8
+        # Code 8 is a snowy condition in the shared vocabulary.
+        assert ICON_CONDITIONS[CHANCE_OF_FLURRIES] == "snowy"
+
+    def test_extended_helpers_uses_named_imports(self):
+        """extended_helpers must not hard-code bare 6/8 for the chance icons."""
+        import ec_weather.coordinator.extended_helpers as ext
+        from ec_weather.icon_registry import CHANCE_OF_FLURRIES, CHANCE_OF_SHOWERS
+
+        # The ensemble recipe reaches these codes at the 30-59% POP tier.
+        assert ext._ensemble_icon(45, 2.0, 0.0, None, False, 10.0) == CHANCE_OF_SHOWERS
+        assert ext._ensemble_icon(45, 0.0, 2.0, None, True, -5.0) == CHANCE_OF_FLURRIES
+
+
 class TestIconCodeToCondition:
     """icon_code_to_condition maps codes to HA condition strings."""
 
