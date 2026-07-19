@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.5.0
+
+The forecast now answers one question everywhere: what is still ahead.
+
+### What's new
+
+- **Forecasts look forward, not back.** The current period's precipitation chance and estimated amount now cover only the hours still to come, shrinking as the day progresses. Rain that already fell no longer inflates tonight's numbers, and the hourly view starts at the next full hour instead of the hour in progress
+- **Every "today" number agrees.** The precipitation panel at the top of the card, the Today row in the 14-day list, and the popup all derive from the same remaining-hours calculation, so they can never tell different stories
+- **Precipitation chances read in steps of five.** Every displayed percentage rounds up to the next step of five, and chances below 10% are hidden as noise, on every surface
+
+### Fixed
+
+- The hourly view could show no precipitation chance beside visible rain amounts, while the daily popup showed real percentages for the same hours. Both now read the same model probability, with the public hourly value as a fallback. A live capture showed the public field flat at zero through an evening of actual rain, so the model value is the more truthful of the two
+- More broadly, the hourly view and the popup's timeline are now two views over one shared per-hour record: every value (temperature, icon, wind, chance, amounts) is decided once, so the surfaces cannot disagree for the same hour. Hours covered only by the regional model no longer vanish from the hourly view while appearing in the popup
+- The popup's Day and Night boxes now show Environment Canada's stated precipitation amount when the forecaster commits to one; the tilde appears only on genuine model estimates, matching the daily list
+
+
 ## 2.4.0
 
 Smarter alerts, honest precipitation, and a card that fits anywhere.

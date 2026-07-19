@@ -19,6 +19,11 @@ from __future__ import annotations
 # Named constants (used by transforms.py derive_icon)
 # ---------------------------------------------------------------------------
 
+# "Chance of" icons (EC codes reused by the GEPS ensemble recipe): 6 is a
+# chance of showers (rainy family), 8 a chance of flurries (snowy family).
+CHANCE_OF_SHOWERS = 6
+CHANCE_OF_FLURRIES = 8
+
 # Precipitation icons (same day/night)
 CLOUDY = 10
 RAIN = 12

@@ -60,9 +60,10 @@ class TestWeatherEntityForecastMerge:
         show empty timelines with missing icons and temperatures.
         """
         source = inspect.getsource(ECWeather.async_forecast_daily)
-        # The merge call must include hourly data (3rd positional arg or hourly= kwarg)
-        assert "hourly" in source and "merge_weong_into_daily" in source, (
-            "async_forecast_daily must pass hourly data to merge_weong_into_daily — "
+        # The merge runs through build_daily_view (the lockstep merge+trim
+        # wrapper) and must include hourly data (3rd positional arg).
+        assert "hourly" in source and "build_daily_view" in source, (
+            "async_forecast_daily must pass hourly data to build_daily_view — "
             "without it, daily popup timesteps won't be enriched with EC hourly data"
         )
 

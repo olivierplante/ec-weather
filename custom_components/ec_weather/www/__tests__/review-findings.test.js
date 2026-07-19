@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  aqhiColor,
+  aqhiRiskColor,
   buildHourlyCurve,
   dailyPrecip,
   isEmptyTimestep,
@@ -25,7 +25,9 @@ describe("finding 1 — panel header must not say 'None expected' over a real PO
   });
 
   it("dry day (no POP, no amounts) → none-expected", () => {
-    const summary = dailyPrecip({ precip_prob_day: 0 });
+    // The backend hides a sub-floor/zero POP by emitting null; the card reads
+    // null as "nothing to show" (showPrecip false) → none-expected.
+    const summary = dailyPrecip({ precip_prob_day: null });
     expect(precipPanelHead(summary).kind).toBe("none-expected");
   });
 
@@ -161,12 +163,15 @@ describe("finding 6 hardening — risk colors reject non-numeric values", () => 
     expect(uvColor("<img src=x onerror=alert(1)>")).toBeNull();
     expect(uvColor(NaN)).toBeNull();
   });
-  it("aqhiColor gets the same gate", () => {
-    expect(aqhiColor("4")).toBeNull();
-    expect(aqhiColor(NaN)).toBeNull();
+  it("aqhiRiskColor: only known risk-level strings resolve to a color", () => {
+    // Anything not in the risk-level table (incl. a raw AQHI value) → null,
+    // so a malformed attribute can never flow a color into innerHTML.
+    expect(aqhiRiskColor("4")).toBeNull();
+    expect(aqhiRiskColor("<img src=x onerror=alert(1)>")).toBeNull();
+    expect(aqhiRiskColor(NaN)).toBeNull();
   });
-  it("real numbers still work", () => {
+  it("real values still work", () => {
     expect(uvColor(9)).toContain("#d1495b");
-    expect(aqhiColor(2)).toContain("#4f9fd0");
+    expect(aqhiRiskColor("low")).toContain("#4f9fd0");
   });
 });

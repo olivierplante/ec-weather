@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  aqhiColor,
+  aqhiRiskColor,
   dailyIconColor,
   dailyPrecip,
   dailyTempRange,
@@ -52,18 +52,23 @@ describe("tempColor — absolute temperature buckets", () => {
   });
 });
 
-describe("aqhiColor — risk buckets", () => {
-  it("null → null (cell hidden)", () => {
-    expect(aqhiColor(null)).toBeNull();
-    expect(aqhiColor(undefined)).toBeNull();
+describe("aqhiRiskColor — risk-level lookup (no numeric thresholds in JS)", () => {
+  it("absent / unknown risk → null (cell hidden, malformed rejected)", () => {
+    expect(aqhiRiskColor(null)).toBeNull();
+    expect(aqhiRiskColor(undefined)).toBeNull();
+    expect(aqhiRiskColor("")).toBeNull();
+    expect(aqhiRiskColor("garbage")).toBeNull();
+    // A raw numeric AQHI must not be mistaken for a risk level.
+    expect(aqhiRiskColor(4)).toBeNull();
   });
-  it("boundaries: 3 low, 4 moderate, 6 moderate, 7 high, 10 high, 11 very high", () => {
-    expect(aqhiColor(3)).toContain("#4f9fd0");
-    expect(aqhiColor(4)).toContain("#dcae4e");
-    expect(aqhiColor(6)).toContain("#dcae4e");
-    expect(aqhiColor(7)).toContain("#e08a3f");
-    expect(aqhiColor(10)).toContain("#e08a3f");
-    expect(aqhiColor(11)).toContain("#d1495b");
+  it("maps each backend risk_level to its token colour", () => {
+    expect(aqhiRiskColor("low")).toContain("#4f9fd0");
+    expect(aqhiRiskColor("moderate")).toContain("#dcae4e");
+    expect(aqhiRiskColor("high")).toContain("#e08a3f");
+    expect(aqhiRiskColor("very_high")).toContain("#d1495b");
+  });
+  it("every bucket is publicly overridable", () => {
+    expect(aqhiRiskColor("low")).toMatch(/^var\(--ec-weather-aqhi-/);
   });
 });
 
@@ -201,11 +206,18 @@ describe("dailyPrecip — shared POP/amount source of truth", () => {
     expect(summary.rainAmt).toBe(3);
     expect(summary.snowAmt).toBe(1);
   });
-  it("POP rounds UP to the nearest 5 — any nonzero POP is visible", () => {
-    expect(dailyPrecip({ precip_prob_day: 61 }).popRounded).toBe(65);
-    expect(dailyPrecip({ precip_prob_day: 4 }).popRounded).toBe(5);
-    expect(dailyPrecip({ precip_prob_day: 4 }).showPrecip).toBe(true);
-    expect(dailyPrecip({ precip_prob_day: 0 }).showPrecip).toBe(false);
+  it("POP is a pure passthrough of the backend-stepped value — no ceil here", () => {
+    // The backend already rounded up to the next 5 and hid sub-floor POPs
+    // (emitting null). The card only takes the max of the shown halves.
+    expect(dailyPrecip({ precip_prob_day: 65 }).popRounded).toBe(65);
+    expect(dailyPrecip({ precip_prob_day: 25 }).popRounded).toBe(25);
+    expect(dailyPrecip({ precip_prob_day: 25 }).showPrecip).toBe(true);
+    // A hidden half arrives as null; both null → nothing to show.
+    expect(dailyPrecip({ precip_prob_day: null }).showPrecip).toBe(false);
+    expect(dailyPrecip({ precip_prob_day: null }).popRounded).toBeNull();
+    // Max of the two shown halves wins.
+    expect(dailyPrecip({ precip_prob_day: 20, precip_prob_night: 45 }).popRounded).toBe(45);
+    expect(dailyPrecip({ precip_prob_day: 30, precip_prob_night: null }).popRounded).toBe(30);
   });
   it("cm accumulation counts as snow", () => {
     const summary = dailyPrecip({

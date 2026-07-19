@@ -22,6 +22,8 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from ..icon_registry import (
+    CHANCE_OF_FLURRIES,
+    CHANCE_OF_SHOWERS,
     CLEAR_NIGHT,
     CLOUDY,
     FREEZING_RAIN,
@@ -44,6 +46,7 @@ from ..icon_registry import (
 )
 from ..timestamp_utils import hour_from_iso
 from ..timestep_store import TimestepData
+from ..transforms import display_pop
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +192,10 @@ def window_covers_period(
 _POP_PRECIP_ICON = 60   # >= this -> a solid precip icon (rain/snow)
 _POP_CHANCE_ICON = 30   # >= this (but < precip) -> a "chance of" icon
 
-# "Chance of" EC icon codes, reused from icon_registry's ICON_CONDITIONS /
-# ICON_MDI vocabulary (6 -> rainy, 8 -> snowy). No named constant exists for
-# these in icon_registry, so they are named here without modifying that module.
-_CHANCE_OF_SHOWERS = 6
-_CHANCE_OF_FLURRIES = 8
+# "Chance of" EC icon codes, imported from icon_registry's shared vocabulary
+# (6 -> rainy / chance of showers, 8 -> snowy / chance of flurries).
+_CHANCE_OF_SHOWERS = CHANCE_OF_SHOWERS
+_CHANCE_OF_FLURRIES = CHANCE_OF_FLURRIES
 
 # GEPS NT (total cloud cover, percent) buckets for the dry sky icon.
 _CLOUD_CLEAR_MAX = 25    # < this -> clear / sunny
@@ -333,11 +335,18 @@ def synthesize_timestep(
 # A4 — outlook_day (day 8+ daily row + popup box payload)
 # ---------------------------------------------------------------------------
 
-def _pop_display(pop: float | None) -> float | None:
-    """Apply the extended-row POP display threshold (hide below 30%)."""
+def _pop_display(pop: float | None) -> int | None:
+    """Resolve the outlook LIST's displayed POP.
+
+    The extended rows keep their stricter >= 30 hide gate (on the RAW value), but
+    the number they show is stepped by the shared ``display_pop`` rule (round up
+    to the next 5) so every surface reads the same stepped POP. A raw POP that
+    clears 30 is always >= 10, so the shared floor never hides an outlook row the
+    >= 30 gate already admitted.
+    """
     if pop is None or pop < _POP_DISPLAY_MIN:
         return None
-    return pop
+    return display_pop(pop)
 
 
 def outlook_day(

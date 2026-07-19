@@ -75,7 +75,7 @@ const buildHass = () => ({
     "sensor.ec_humidity": state("37"),
     "sensor.ec_sunrise": state("05:11"),
     "sensor.ec_sunset": state("20:49"),
-    "sensor.ec_air_quality": state("3"),
+    "sensor.ec_air_quality": state("3", { risk_level: "low" }),
     "sensor.ec_yesterday_precipitation": state("unknown", { published: false, data_type: "combined" }),
     "sun.sun": state("above_horizon"),
     "binary_sensor.ec_alert_active": state("on"),
@@ -1148,5 +1148,103 @@ describe("popup timeline day/night bands (halves mode)", () => {
     const root = renderSection("hourly");
     // The card's rolling-days strip keeps the calendar labels unchanged.
     expect(bandLabels(root.innerHTML)).toContain("SAT 4");
+  });
+});
+
+describe("current — missing / redundant hero values (behavioral, replaces source greps)", () => {
+  // These pin the two hero-value rules the retired test_current_layout.py could
+  // only grep for ("—°" present, "!== tVal" present): now proven by rendering.
+  it("non-numeric temperature renders the em-dash degree, never 0°", () => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "current" });
+    const hass = buildHass();
+    // A present-but-unparseable value (not the 'unavailable'/'unknown' sentinels,
+    // which trip the card-level availability gate) reaches the hero's null path.
+    hass.states["sensor.ec_temperature"] = state("n/a", { fetched_at: new Date().toISOString() });
+    card.hass = hass;
+    const html = card.shadowRoot.innerHTML;
+    expect(html).toContain("—°");
+    expect(html).not.toContain("0°");
+  });
+
+  it("feels-like clause is dropped when it equals the temperature", () => {
+    const card = document.createElement("ec-weather-card");
+    card.setConfig({ section: "current" });
+    const hass = buildHass();
+    // 25.8 and 25.9 both round to 26° → the clause is redundant and omitted.
+    hass.states["sensor.ec_temperature"] = state("25.8");
+    hass.states["sensor.ec_feels_like"] = state("25.9");
+    card.hass = hass;
+    const html = card.shadowRoot.innerHTML;
+    expect(html).toContain("26°");
+    expect(html).not.toContain("feels like");
+  });
+
+  it("feels-like clause is shown when it differs from the temperature", () => {
+    // Guards the negative above from vacuously passing: a real difference shows.
+    const root = renderSection("current");
+    expect(root.innerHTML).toContain("feels like 27°");
+  });
+});
+
+describe("css override token contract — rendered <style> blocks reference exactly the canonical vars", () => {
+  // Strengthens the retired source-grep presence checks (test_card_groundwork):
+  // instead of asserting a var exists somewhere in the file, this proves the
+  // RENDERED style blocks reference exactly the public --ec-weather-* override
+  // set. Adding, removing or renaming an override var in the emitted CSS breaks
+  // this until the canonical list is updated intentionally.
+  //
+  // Scope note: temp/uv/aqhi bucket vars and --ec-weather-alert-warning resolve
+  // through INLINE style attributes (via tempColor()/uvColor()/aqhiRiskColor()),
+  // not <style> blocks — they are contract-guarded behaviorally in helpers.test.js
+  // and render-smoke's UV assertion, and by presence in the pytest canary.
+  //
+  // Behavioral LIMITATION (documented, not fixed here): jsdom applies no
+  // stylesheet, so this proves the vars are REFERENCED, not that an override
+  // actually WINS the cascade at paint — that needs the headless harness.
+  const CANONICAL_STYLE_OVERRIDE_VARS = [
+    "--ec-weather-alert-border",
+    "--ec-weather-curve",
+    "--ec-weather-divider",
+    "--ec-weather-hero-icon",
+    "--ec-weather-outlook-opacity",
+    "--ec-weather-panel-bg",
+    "--ec-weather-panel-border",
+    "--ec-weather-panel-head",
+    "--ec-weather-panel-title",
+    "--ec-weather-pop",
+    "--ec-weather-precip-rain",
+    "--ec-weather-precip-snow",
+    "--ec-weather-snow-bar",
+    "--ec-weather-sun",
+    "--ec-weather-sun-arc",
+    "--ec-weather-text-muted",
+    "--ec-weather-text-primary",
+    "--ec-weather-text-secondary",
+  ];
+
+  it("the union of override vars across every section's <style> is the canonical set", () => {
+    const found = new Set();
+    // An outlook row exercises the extended-forecast panel/outlook vars too.
+    const forecast = [
+      { period: "Today", date: "2026-07-04", icon_code: 12, icon_code_night: 30, temp_high: 24, temp_low: 17, precip_prob_day: 70, rain_mm_day: 8 },
+      {
+        period: "2026-07-11", date: "2026-07-11", source: "outlook", timesteps_state: "outlook",
+        temp_low: 12, temp_high: 22, temp_range: { low: 10, high: 24 },
+        pop_day_display: 55, icon_day: 12, icon_night: 30, amount_band: { low: 4, high: 9 },
+        sentence: { range_low: 10, range_high: 24, dominant_pop: 55, amount_band: { low: 4, high: 9 } },
+      },
+    ];
+    for (const section of ["current", "hourly", "daily", "alerts"]) {
+      const card = document.createElement("ec-weather-card");
+      card.setConfig({ section });
+      const hass = buildHass();
+      hass.states["sensor.ec_daily_forecast"] = state("ok", { forecast });
+      card.hass = hass;
+      card.shadowRoot.querySelectorAll("style").forEach((styleEl) => {
+        (styleEl.textContent.match(/--ec-weather-[a-z0-9-]+/g) || []).forEach((v) => found.add(v));
+      });
+    }
+    expect([...found].sort()).toEqual(CANONICAL_STYLE_OVERRIDE_VARS);
   });
 });

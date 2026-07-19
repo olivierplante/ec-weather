@@ -83,6 +83,12 @@ _HRDPS_PROCESSING_DELAY_H = 2
 # past this are not generated, so far days (5-6) stay honestly "unavailable".
 _RDPS_HORIZON_HOURS = 84
 
+# Hourly-strip horizon: the near-term high-resolution scroll spans ~48h from now
+# (the reliable HRDPS coverage window). project_hourly bounds the strip by THIS
+# time window rather than by model identity, so near-term RDPS hours are served
+# to the strip while coarse far-day RDPS/GEPS data stays out of the scroll.
+_HOURLY_STRIP_HORIZON_HOURS = 48
+
 
 def _expected_hrdps_model_run(now_utc: datetime) -> str:
     """Return the ISO timestamp of the latest HRDPS model run expected to be available.
@@ -833,7 +839,14 @@ class ECWEonGCoordinator(OnDemandCoordinator):
         the output format expected by sensor.py and transforms.py.
         """
         period_projection = self._store.project_periods(periods)
-        hourly_projection = self._store.project_hourly()
+        # Bound the strip by its ~48h time window (not by model). Near-term RDPS
+        # hours HRDPS did not cover are served here exactly as the popup serves
+        # them; coarse far-day RDPS/GEPS stays out of the near-term scroll.
+        strip_horizon = (
+            datetime.now(timezone.utc)
+            + timedelta(hours=_HOURLY_STRIP_HORIZON_HOURS)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        hourly_projection = self._store.project_hourly(horizon_end=strip_horizon)
 
         today = dt_util.now().date()
 

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from ec_weather.transforms import extract_today_pop
 
-from .conftest import CARD_JS_PATH as CARD_JS
-
 
 class TestExtractTodayPop:
     def test_returns_todays_combined_pop(self):
@@ -47,53 +45,3 @@ class TestExtractTodayPop:
             {"date": "2026-06-08", "precip_prob": 30},
         ]
         assert extract_today_pop(merged, "2026-06-08") == 30
-
-
-class TestTodayPopCard:
-    """The current-conditions card surfaces today's POP from a dedicated sensor."""
-
-    def test_card_renders_precip_panel(self):
-        """Today's POP surfaces in the precipitation panel (redesign)."""
-        source = CARD_JS.read_text()
-        assert "ppanel" in source, "Card must render the precipitation panel"
-
-    def test_shared_dailyPrecip_function_exists(self):
-        """A single dailyPrecip() helper is the source of truth for POP+amounts."""
-        source = CARD_JS.read_text()
-        assert "function dailyPrecip(" in source, (
-            "POP/amount logic must live in one shared dailyPrecip() function"
-        )
-        # Both the column and the current-conditions line must call it, not
-        # reimplement the rounding/gating/amount logic.
-        assert source.count("dailyPrecip(") >= 3, (
-            "dailyPrecip() must be defined once and called by both call sites"
-        )
-
-    def test_pop_gating_and_amounts_in_shared_function(self):
-        """The shared function gates on >=5% and exposes rain/snow amounts."""
-        source = CARD_JS.read_text()
-        start = source.find("function dailyPrecip(")
-        section = source[start:start + 1000]
-        assert "popRounded >= 5" in section, "POP gated on >=5% threshold"
-        assert "rain_mm_day" in section and "snow_cm_day" in section
-        assert "precip_accum_amount" in section, "EC accumulation preferred"
-
-    def test_today_row_uses_daily_forecast_entry(self):
-        """The panel's Today row reads today's daily forecast entry through
-        the shared dailyPrecip() so it never diverges from the daily column."""
-        source = CARD_JS.read_text()
-        start = source.find("_renderCurrent() {")
-        section = source[start:source.find("_renderHourly() {", start)]
-        # Entity ids are resolved by role now (see LEGACY_ENTITY_IDS + the
-        # ec_weather/entities command); the Today row reads 'daily_forecast'.
-        assert "entityIdFor('daily_forecast')" in section
-        assert "dailyPrecip(" in section
-        # Amounts render through the shared precipAmtLabels() helper, which
-        # emits compact no-space units ("3mm"/"5cm") via fmtAmtUnit.
-        assert "precipAmtLabels(" in section
-        # Amounts carry mdi icons so they read without labels: a filled
-        # droplet on rain, a snowflake on snow. The chance % lives in the
-        # panel header ("N% chance" / "None expected").
-        assert "mdi:water" in section, "rain amount must carry a droplet icon"
-        assert "mdi:snowflake" in section, "snow amount must carry a snowflake icon"
-        assert "popRounded" in section, "chance % comes from the shared gate"

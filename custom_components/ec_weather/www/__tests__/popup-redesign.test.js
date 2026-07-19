@@ -96,14 +96,13 @@ describe("popupPeriodModel — POP and precip line rules", () => {
     expect(popupPeriodModel(item, "day").pop).toBeNull();
   });
 
-  it("POP 0 → no pop line", () => {
-    const item = { icon_code: 1, precip_prob_day: 0 };
-    expect(popupPeriodModel(item, "day").pop).toBeNull();
-  });
-
-  it("POP > 0 → shown", () => {
+  it("POP is a pure passthrough of the backend-stepped value", () => {
+    // The backend hides sub-floor POPs (emitting null) and rounds the rest up,
+    // so the box prints exactly what it receives — no rounding or 0-gate here.
     const item = { icon_code: 1, precip_prob_day: 75 };
     expect(popupPeriodModel(item, "day").pop).toBe(75);
+    const stepped = { icon_code: 1, precip_prob_day: 25 };
+    expect(popupPeriodModel(stepped, "day").pop).toBe(25);
   });
 
   it("only precip types > 0 render (rain/snow independent)", () => {
@@ -120,6 +119,36 @@ describe("popupPeriodModel — POP and precip line rules", () => {
     expect(model.showSnow).toBe(true);
     expect(model.showRain).toBe(false);
     expect(model.snow).toBe(3);
+  });
+
+  it("backend-resolved precip_amount_day wins over legacy fields", () => {
+    // EC-stated 5mm resolved by the backend; legacy WEonG field ignored.
+    const item = {
+      icon_code: 1,
+      rain_mm_day: 99,
+      precip_amount_day: { rain_mm: 5, snow_cm: 0, estimated: false },
+    };
+    const model = popupPeriodModel(item, "day");
+    expect(model.rain).toBe(5);
+    expect(model.estimated).toBe(false);
+  });
+
+  it("resolved estimated flag drives the tilde provenance", () => {
+    const item = {
+      icon_code: 1,
+      precip_amount_day: { rain_mm: 2, snow_cm: 0.5, estimated: true },
+    };
+    const model = popupPeriodModel(item, "day");
+    expect(model.rain).toBe(2);
+    expect(model.snow).toBe(0.5);
+    expect(model.estimated).toBe(true);
+  });
+
+  it("legacy items (no resolved field) fall back as estimates", () => {
+    const item = { icon_code: 1, rain_mm_day: 2.4 };
+    const model = popupPeriodModel(item, "day");
+    expect(model.rain).toBe(2.4);
+    expect(model.estimated).toBe(true);
   });
 });
 
