@@ -53,6 +53,7 @@ from .transforms import (
     display_pop,
     extract_today_pop,
     filter_past_hours,
+    leading_night_is_stale,
 )
 
 from homeassistant.util import dt as dt_util
@@ -447,11 +448,13 @@ class ECDailyForecastSensor(WEonGListenerMixin, CoordinatorEntity[ECWeatherCoord
             _LOGGER.exception("EC weather: failed to merge WEonG data into daily forecast")
             return {"forecast": daily}
 
-        # Drop leading night-only period ("Tonight") between 6 AM and 6 PM.
-        # EC keeps it in the forecast until the next morning update, but
-        # it's stale once the night has passed. After 6 PM, EC issues a
-        # fresh "Tonight" for the upcoming night, so keep it.
-        if merged and merged[0].get("temp_high") is None and 6 <= now_local.hour < 18:
+        # Drop a leading night-only period ("Tonight") only when it is STALE —
+        # its hours have all elapsed. EC drops the daytime "Today" period in the
+        # late afternoon (before 6 PM), leaving a fresh "Tonight" we must keep;
+        # it also carries the previous evening's "Tonight" into the next morning,
+        # where it is stale. leading_night_is_stale tells them apart by timestep
+        # coverage instead of the clock hour (see its docstring).
+        if merged and leading_night_is_stale(merged[0]):
             merged = merged[1:]
 
         # Emission boundary: step every user-facing POP (daily/day/night, popup

@@ -41,6 +41,7 @@ __all__ = [
     "enrich_timesteps",
     "extract_weong_value",
     "next_hour_cutoff",
+    "leading_night_is_stale",
     "apply_remaining_only",
     "resolve_hourly_pop",
     "resolve_half_precip",
@@ -160,6 +161,36 @@ def next_hour_cutoff(now: datetime | None = None) -> str:
     floor_hour = now.replace(minute=0, second=0, microsecond=0)
     cutoff = floor_hour + timedelta(hours=1)
     return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def leading_night_is_stale(period: dict, now: datetime | None = None) -> bool:
+    """True when a leading night-only period's hours have all elapsed.
+
+    EC drops the daytime 'Today' period in the late afternoon, leaving a
+    night-only 'Tonight' as the first forecast entry — that is legitimately
+    tonight and must be kept. EC ALSO keeps the previous evening's 'Tonight'
+    through the following morning until its next update; by then that night has
+    passed and the entry is stale and should be dropped.
+
+    The two look identical structurally (``temp_high`` is None). They differ only
+    in time coverage: a fresh 'Tonight' still has hours ahead in its
+    ``timesteps_night``; a stale one's hours are all in the past (EC hourly is
+    future-only, so it no longer feeds them). We therefore keep the period while
+    it has any timestep at or after ``next_hour_cutoff`` — the same what's-ahead
+    boundary the hourly strip uses — and call it stale otherwise. This is
+    independent of the clock hour, which is what the old 6 AM–6 PM window got
+    wrong: EC drops 'Today' before 6 PM, so that window dropped the fresh
+    evening Tonight and promoted tomorrow into today's slot.
+
+    Full day+night periods (``temp_high`` set) are never stale leading nights.
+    """
+    if period.get("temp_high") is not None:
+        return False
+    cutoff = next_hour_cutoff(now)
+    timesteps = period.get("timesteps_night") or []
+    return not any(
+        (timestep.get("time") or "") >= cutoff for timestep in timesteps
+    )
 
 
 # ---------------------------------------------------------------------------
