@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.5.1
+
+### Fixed
+
+- In the late afternoon, once Environment Canada drops today's daytime forecast and only tonight remains, the card's Today column and the precipitation panel at the top could jump forward to tomorrow's numbers. Both now stay on tonight for the rest of the day.
+
+
 ## 2.5.0
 
 The forecast now answers one question everywhere: what is still ahead.
