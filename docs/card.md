@@ -27,8 +27,8 @@ section: current
 |---|---|
 | `alerts` | Neutral alert bars (one style for every warning type) with expand/collapse. Hidden when nothing is active. |
 | `current` | Hero (temperature, condition, feels-like), precipitation panel (today's chance + amounts, optional yesterday), metric bar (humidity · wind · AQHI · UV · sun arc). |
-| `hourly` | 48-hour scrollable trend: temperature curve, POP + rain/snow amounts with bars, per-day bands. |
-| `daily` | 7-day rows with day/night icons, POP + amounts, and temperature range bars colored by absolute temperature. Tap a day for a detail overlay (wind, humidity, UV, precipitation amounts, hourly timeline). When the forecast range is set to 10 or 14 days, the days past 7 render as muted model-outlook rows and tap open a summary popup instead of a timeline. See [Extended forecast](#extended-forecast). |
+| `hourly` | 48-hour scrollable trend: temperature curve, POP + rain/snow amounts with bars, per-day bands. The day label stays pinned to the left edge as you scroll, so the visible date always names the hours on screen. |
+| `daily` | 7-day rows with day/night icons, POP + amounts, and temperature range bars colored by absolute temperature. Tap a day for a detail overlay (wind, humidity, UV, precipitation amounts, hourly timeline whose Day/Night label pins the same way). When the forecast range is set to 10 or 14 days, the days past 7 render as muted model-outlook rows and tap open a summary popup instead of a timeline. See [Extended forecast](#extended-forecast). |
 
 ## Full panel example
 

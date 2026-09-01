@@ -25,6 +25,30 @@ CONF_PRECIP_STATION_NAME = "precip_station_name"
 CONF_PRECIP_STATION_DISTANCE_KM = "precip_station_distance_km"
 CONF_PRECIP_DISCOVERED = "precip_discovered"
 
+# Precip-station freshness + self-heal. A "reporting" station (any non-null
+# TOTAL_PRECIPITATION in the discovery window) can still be chronically
+# useless if EC's publication backlog means its latest value is always days
+# old — see parse_precip_stations and ECClimateCoordinator._maybe_rediscover_station.
+#
+# PRECIP_STATION_FRESHNESS_DAYS gates *selection*: a discovery candidate is
+# "fresh" when its latest non-null date is within this many days of the
+# discovery window's end date.
+PRECIP_STATION_FRESHNESS_DAYS = 2
+# PRECIP_STALE_THRESHOLD_DAYS gates *self-heal*: a configured station whose
+# most recently published value is this many days old (or older) is lagging
+# and triggers a rate-limited rediscovery attempt.
+PRECIP_STALE_THRESHOLD_DAYS = 4
+# Lookback window (days before "yesterday") the climate coordinator queries
+# on every fetch so it can derive the station's most recent published date
+# from the SAME request that fetches yesterday's value — no extra API call.
+PRECIP_STALENESS_LOOKBACK_DAYS = 7
+
+# Station-data-gap repair (existing installs that predate the onboarding
+# station_choice step). Stores the city_code the user dismissed the repair
+# for, so switching city later (a different city_code) re-arms the repair
+# instead of staying silently dismissed forever.
+CONF_STATION_GAP_DISMISSED_FOR = "station_gap_dismissed_for"
+
 DEFAULT_LANGUAGE = "en"
 SUPPORTED_LANGUAGES = {"en": "English", "fr": "Français"}
 

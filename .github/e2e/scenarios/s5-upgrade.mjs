@@ -39,12 +39,29 @@ const NEWMARKET = { latitude: 44.056, longitude: -79.462 };
 const DEFAULT_REPO = "olivierplante/ec-weather";
 
 /**
+ * Headers for the release-metadata API call (pure, for tests). Adds a Bearer
+ * Authorization header when GITHUB_TOKEN is present in the given env — CI runs
+ * share egress IPs on GitHub-hosted runners, so the anonymous 60/hr/IP quota
+ * gets exhausted by other tenants; an authenticated request gets its own,
+ * much higher, per-token quota. Anonymous (no env var) behaves exactly as
+ * before. The tarball download below is unaffected: codeload is not
+ * API-rate-limited, so it does not need this header.
+ */
+export function releaseFetchHeaders(env) {
+  const headers = { "User-Agent": "ec-weather-e2e", Accept: "application/vnd.github+json" };
+  if (env.GITHUB_TOKEN) {
+    headers.Authorization = `Bearer ${env.GITHUB_TOKEN}`;
+  }
+  return headers;
+}
+
+/**
  * Download the previous published release's custom_components/ec_weather tree
  * into a temp dir and return its path.
  */
 async function downloadPreviousRelease(repo, log) {
   const releaseResponse = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-    headers: { "User-Agent": "ec-weather-e2e", Accept: "application/vnd.github+json" },
+    headers: releaseFetchHeaders(process.env),
   });
   assert(releaseResponse.ok, `S5: could not read latest release (${releaseResponse.status})`);
   const release = await releaseResponse.json();

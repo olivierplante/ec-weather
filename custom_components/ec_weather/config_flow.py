@@ -32,8 +32,10 @@ from homeassistant.helpers.selector import (
 )
 
 from .api_client import (
+    AqhiDiscoveryError,
     discover_aqhi_station,
     discover_precip_stations,
+    find_nearest_complete_city,
     parse_ec_city_features,
 )
 from .const import (
@@ -85,6 +87,45 @@ PRECIP_OPT_OUT = "__none__"
 # fields arrive nested under this key on submit and are flattened back into the
 # top-level options so the stored format never changes.
 CONF_BETA_SECTION = "beta"
+
+# async_step_station_choice option values.
+STATION_CHOICE_KEEP = "keep"
+STATION_CHOICE_SWITCH = "switch"
+
+# Human labels for missing_data_points() keys, EN/FR. description_placeholders
+# values are plain resolved strings — HA's config-flow translation system
+# (strings.json/translations/*.json) only translates the step's static
+# title/description/data text, not text composed at runtime from arbitrary
+# data. The existing precip step already solves this the same way
+# (_precip_choice_label / opt_out_label below), so this follows that
+# established in-repo pattern rather than introducing a new mechanism.
+_MISSING_DATA_POINT_LABELS = {
+    "en": {
+        "sky_condition": "sky condition",
+        "temperature": "temperature",
+        "humidity": "humidity",
+        "wind_speed": "wind speed",
+    },
+    "fr": {
+        "sky_condition": "conditions du ciel",
+        "temperature": "température",
+        "humidity": "humidité",
+        "wind_speed": "vitesse du vent",
+    },
+}
+
+
+def _missing_points_label(missing: list[str], language: str) -> str:
+    """Comma-joined, translated list of missing-data-point labels."""
+    labels = _MISSING_DATA_POINT_LABELS["fr" if language == "fr" else "en"]
+    return ", ".join(labels.get(key, key) for key in missing)
+
+
+def _station_choice_name(name, language: str, fallback_id: str) -> str:
+    """Resolve a city name (dict or plain string) to the given language."""
+    if isinstance(name, dict):
+        return name.get(language) or name.get("en") or fallback_id
+    return name or fallback_id
 
 
 def _precip_choice_label(station: dict, language: str) -> str:
@@ -504,6 +545,7 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._auto_detected: bool = False
         self._pending_entry_data: dict | None = None
         self._precip_choices: dict = {}
+        self._station_alternative: dict | None = None
 
     # ------------------------------------------------------------------
     # Step 1: City name search + language (with auto-detection)
@@ -549,7 +591,7 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         # Single match — skip disambiguation
                         self._selected_city = matches[0]
                         self._selected_city["language"] = language
-                        return await self._run_discovery()
+                        return await self.async_step_station_choice()
                     else:
                         # Multiple matches — go to disambiguation
                         self._cities = matches
@@ -669,7 +711,7 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._selected_city = city
                     self._selected_city["language"] = self._cities_language
                     break
-            return await self._run_discovery()
+            return await self.async_step_station_choice()
 
         options = [
             SelectOptionDict(
@@ -694,6 +736,120 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
+    # Step 2.5: Station completeness choice (auto-station citypages)
+    # ------------------------------------------------------------------
+
+    async def async_step_station_choice(
+        self, user_input: dict | None = None
+    ) -> FlowResult:
+        """Offer to switch away from a citypage that structurally omits data.
+
+        Some EC citypages are backed by automatic observation stations that
+        never publish certain current-conditions fields (e.g. no
+        human-observed sky condition). When the selected citypage has any
+        such gaps, this step lets the user keep their pick — now knowing
+        what's missing — or switch to the nearest citypage that reports
+        everything. A fully-reporting citypage skips this step entirely, so
+        it is zero behaviour change for the common case.
+        """
+        missing = self._selected_city.get("missing") or []
+        if not missing:
+            return await self._run_discovery()
+
+        language = self._selected_city.get("language", DEFAULT_LANGUAGE)
+
+        if user_input is not None:
+            if (
+                user_input.get("choice") == STATION_CHOICE_SWITCH
+                and self._station_alternative
+            ):
+                alt = self._station_alternative
+                self._selected_city = {
+                    "id": alt["id"],
+                    "name": _station_choice_name(alt["name"], language, alt["id"]),
+                    "province": (
+                        alt["id"].split("-")[0].upper() if "-" in alt["id"] else ""
+                    ),
+                    "lat": alt["lat"],
+                    "lon": alt["lon"],
+                    "language": language,
+                }
+            return await self._run_discovery()
+
+        lat = self._selected_city.get("lat")
+        lon = self._selected_city.get("lon")
+        self._station_alternative = None
+        if lat is not None and lon is not None:
+            session = async_get_clientsession(self.hass)
+            self._station_alternative = await find_nearest_complete_city(
+                session=session,
+                lat=lat,
+                lon=lon,
+                exclude_id=self._selected_city.get("id", ""),
+                api_base=EC_API_BASE,
+                timeout=REQUEST_TIMEOUT,
+            )
+
+        selected_name = self._selected_city.get("name", "")
+        if language == "fr":
+            keep_label = f"Garder {selected_name}"
+        else:
+            keep_label = f"Keep {selected_name}"
+        options = [SelectOptionDict(value=STATION_CHOICE_KEEP, label=keep_label)]
+
+        alternative_name = ""
+        alternative_distance = ""
+        if self._station_alternative:
+            alt = self._station_alternative
+            alt_name = _station_choice_name(alt["name"], language, alt["id"])
+            alternative_name = alt_name
+            alternative_distance = f"{alt['distance_km']} km"
+            if language == "fr":
+                switch_label = f"Passer à {alt_name} — {alternative_distance}"
+                alternative_sentence = (
+                    f"La station la plus proche qui rapporte tout est "
+                    f"{alt_name}, à environ {alternative_distance}."
+                )
+            else:
+                switch_label = f"Switch to {alt_name} — {alternative_distance}"
+                alternative_sentence = (
+                    f"The nearest citypage that reports everything is "
+                    f"{alt_name}, about {alternative_distance} away."
+                )
+            options.append(
+                SelectOptionDict(value=STATION_CHOICE_SWITCH, label=switch_label)
+            )
+        else:
+            alternative_sentence = (
+                "Aucune station à proximité rapportant tout n'a été trouvée."
+                if language == "fr"
+                else "No nearby citypage reporting everything was found."
+            )
+
+        return self.async_show_form(
+            step_id="station_choice",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "choice", default=STATION_CHOICE_KEEP
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=options,
+                            mode=SelectSelectorMode.LIST,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={
+                "city_name": self._selected_city.get("name", ""),
+                "missing_points": _missing_points_label(missing, language),
+                "alternative_name": alternative_name,
+                "alternative_distance": alternative_distance,
+                "alternative_sentence": alternative_sentence,
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Auto-discovery
     # ------------------------------------------------------------------
 
@@ -710,15 +866,23 @@ class ECWeatherConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_confirm()
 
     async def _discover_aqhi_station(self, lat: float, lon: float) -> str | None:
-        """Find the nearest AQHI forecast station within +/-1.5 deg of the city."""
+        """Find the nearest AQHI forecast station within +/-1.5 deg of the city.
+
+        A failed discovery request (AqhiDiscoveryError) is treated the same
+        as EC answering "no station found" here — onboarding just proceeds
+        without an AQHI station, same as today.
+        """
         session = async_get_clientsession(self.hass)
-        return await discover_aqhi_station(
-            session=session,
-            lat=lat,
-            lon=lon,
-            api_base=EC_API_BASE,
-            timeout=REQUEST_TIMEOUT,
-        )
+        try:
+            return await discover_aqhi_station(
+                session=session,
+                lat=lat,
+                lon=lon,
+                api_base=EC_API_BASE,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except AqhiDiscoveryError:
+            return None
 
     # ------------------------------------------------------------------
     # Step 3: Editable confirmation

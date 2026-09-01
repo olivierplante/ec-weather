@@ -81,10 +81,11 @@ describe("buildHourlyStripHtml — day bands", () => {
   });
 });
 
-// Every non-empty day-label the strip emitted, in order (the empty spacer
-// cells at non-boundary columns are dropped).
+// Every day-label the strip emitted, in order — one per segment cell, read
+// out of the sticky .ecs-dayname span (not the .ecs-daylbl cell itself, which
+// now only carries the segment's width).
 const bandLabels = (html) =>
-  [...html.matchAll(/<div class="ecs-daylbl"[^>]*>([^<]*)<\/div>/g)]
+  [...html.matchAll(/<span class="ecs-dayname">([^<]*)<\/span>/g)]
     .map((m) => m[1])
     .filter(Boolean);
 
@@ -156,6 +157,117 @@ describe("buildHourlyStripHtml — bandMode default is byte-identical calendar",
   it("calendar mode still labels each midnight with the weekday + date", () => {
     const html = buildHourlyStripHtml(CROSS_MIDNIGHT, hass24, { bandMode: "calendar" });
     expect(bandLabels(html)).toEqual(["WED 7", "THU 8"]);
+  });
+});
+
+describe("buildHourlyStripHtml — day-label cells span their whole segment (sticky)", () => {
+  // Each label is now ONE cell per run of columns sharing a segment, not one
+  // cell per column — otherwise position: sticky has nothing to hold onto
+  // past the first column's width. These pin the run-length math.
+  it("calendar mode: CROSS_MIDNIGHT emits exactly two segment cells, each 128px (2 cols x 64px default)", () => {
+    const html = buildHourlyStripHtml(CROSS_MIDNIGHT, hass24, {});
+    const widths = [...html.matchAll(/<div class="ecs-daylbl" style="width:(\d+)px">/g)].map((m) => Number(m[1]));
+    expect(widths).toEqual([128, 128]);
+  });
+
+  it("segment cell widths sum to timesteps.length * colWidth, including an uneven split and a non-default colWidth", () => {
+    // First calendar day gets 3 columns (21:00-23:00), second gets 1 (00:00).
+    const uneven = [
+      { time: "2026-01-07T21:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-07T22:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-07T23:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-08T00:00:00", temp: 5, icon_code: 1 },
+    ];
+    const html = buildHourlyStripHtml(uneven, hass24, { colWidth: 50 });
+    const widths = [...html.matchAll(/<div class="ecs-daylbl" style="width:(\d+)px">/g)].map((m) => Number(m[1]));
+    expect(widths).toEqual([150, 50]);
+    expect(widths.reduce((a, b) => a + b, 0)).toBe(uneven.length * 50);
+  });
+
+  it("each .ecs-daylbl cell contains exactly one .ecs-dayname span carrying the label text", () => {
+    const html = buildHourlyStripHtml(CROSS_MIDNIGHT, hass24, {});
+    const cells = [...html.matchAll(/<div class="ecs-daylbl"[^>]*>(.*?)<\/div>/g)].map((m) => m[1]);
+    expect(cells.length).toBe(2);
+    cells.forEach((cellInner) => {
+      const spans = [...cellInner.matchAll(/<span class="ecs-dayname">([^<]*)<\/span>/g)];
+      expect(spans.length).toBe(1);
+      expect(spans[0][1].length).toBeGreaterThan(0);
+    });
+    expect(bandLabels(html)).toEqual(["WED 7", "THU 8"]);
+  });
+
+  it("halves mode: sixToSix() emits exactly two segment cells (DAY 12 cols, NIGHT 12 cols) at the default colWidth", () => {
+    const html = buildHourlyStripHtml(sixToSix(), hass24, { bandMode: "halves" });
+    const widths = [...html.matchAll(/<div class="ecs-daylbl" style="width:(\d+)px">/g)].map((m) => Number(m[1]));
+    expect(widths).toEqual([12 * 64, 12 * 64]);
+    expect(bandLabels(html)).toEqual(["DAY", "NIGHT"]);
+  });
+
+  it("halves mode: a single-column day segment crossing the 18:00 boundary still gets a correctly-sized one-column cell", () => {
+    // 17:00 is the sole daytime hour (day = [6,18)); 18:00/19:00 are night.
+    const crossing18 = [17, 18, 19].map((hour) => ({
+      time: `2026-01-07T${String(hour).padStart(2, "0")}:00:00`, temp: 5, icon_code: 1,
+    }));
+    const html = buildHourlyStripHtml(crossing18, hass24, { bandMode: "halves", colWidth: 40 });
+    const widths = [...html.matchAll(/<div class="ecs-daylbl" style="width:(\d+)px">/g)].map((m) => Number(m[1]));
+    expect(widths).toEqual([40, 80]);
+    expect(bandLabels(html)).toEqual(["DAY", "NIGHT"]);
+  });
+});
+
+describe("buildHourlyStripHtml — label-cell boundaries line up with tint-belt boundaries", () => {
+  // Every other test in this file pins each row (labels, tints) to a fixed
+  // expected value independently. Nothing compares the two rows against EACH
+  // OTHER — so a future edit that moves the label-segment boundary and the
+  // tint-flip boundary inconsistently (e.g. reintroducing a second, separate
+  // copy of the day-boundary predicate) would go uncaught even though both
+  // rows individually still "look right." This derives both boundary sets
+  // purely from the rendered markup and asserts they agree.
+  const segmentStartColumns = (html, colWidth) => {
+    const widths = [...html.matchAll(/<div class="ecs-daylbl" style="width:(\d+)px">/g)].map((m) => Number(m[1]));
+    const starts = [];
+    let cumulative = 0;
+    widths.forEach((w) => { starts.push(cumulative / colWidth); cumulative += w; });
+    return starts;
+  };
+  const tintFlipColumns = (html) => {
+    const tints = [...html.matchAll(/height:100%;background:(var\(--ecw-tint\)|transparent)"/g)].map((m) => m[1]);
+    const flips = [];
+    for (let i = 1; i < tints.length; i++) if (tints[i] !== tints[i - 1]) flips.push(i);
+    return flips;
+  };
+
+  // Deliberately NOT pinning `starts` to a fixed expected array here — that
+  // belongs to the "spans their whole segment" tests above. If this test also
+  // pinned an exact boundary position, a predicate change that shifts the
+  // boundary (but shifts it consistently for both rows) would fail on that
+  // fixed-value assertion before ever reaching the cross-row comparison,
+  // which would prove nothing about alignment. The only thing pinned here is
+  // agreement between two independently-parsed rows of the SAME rendered
+  // output, plus a non-vacuity guard so a fixture with zero interior
+  // boundaries can't make the comparison pass by having nothing to compare.
+  it("calendar mode: a 3-day fixture's tint flips land exactly at the label segment starts", () => {
+    const threeDays = [
+      { time: "2026-01-07T22:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-07T23:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-08T00:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-08T01:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-08T02:00:00", temp: 5, icon_code: 1 },
+      { time: "2026-01-09T00:00:00", temp: 5, icon_code: 1 },
+    ];
+    const html = buildHourlyStripHtml(threeDays, hass24, {});
+    const starts = segmentStartColumns(html, 64);
+    // Two interior boundaries expected (index 0 is a segment start too, but
+    // it is not a tint "flip" — there is no prior column to flip against).
+    expect(starts.length).toBeGreaterThan(2);
+    expect(tintFlipColumns(html)).toEqual(starts.filter((i) => i > 0));
+  });
+
+  it("halves mode: sixToSix()'s tint flip lands exactly at the DAY→NIGHT label segment start", () => {
+    const html = buildHourlyStripHtml(sixToSix(), hass24, { bandMode: "halves" });
+    const starts = segmentStartColumns(html, 64);
+    expect(starts.length).toBeGreaterThan(1);
+    expect(tintFlipColumns(html)).toEqual(starts.filter((i) => i > 0));
   });
 });
 
@@ -445,5 +557,17 @@ describe("strip cells never exceed their declared column width", () => {
     // top and bottom edges (the main section uses 14px via .ecs-band).
     expect(stripCss).toContain(".ecs-strip-compact .ecs-band { padding: 8px 0; }");
     expect(stripCss).toContain(".ecs-strip-compact .ecs-daylbl { padding-left: 7px; padding-top: 1px; }");
+  });
+
+  // The day/date label must stay pinned to the scroll port's left edge as its
+  // segment's columns scroll past — the whole reason the label cell now spans
+  // its segment run instead of one column (see the describe block above).
+  it("STRIP_CSS makes .ecs-dayname sticky at the same inset as each mode's padding-left", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync("ec-weather-card.js", "utf8");
+    const stripCss = source.slice(
+      source.indexOf("const STRIP_CSS"), source.indexOf("const STRIP_DEFAULTS"));
+    expect(stripCss).toContain(".ecs-dayname { position: sticky; left: 2px; display: inline-block; }");
+    expect(stripCss).toContain(".ecs-strip-compact .ecs-dayname { left: 7px; }");
   });
 });

@@ -20,7 +20,7 @@ from ..const import (
     REQUEST_TIMEOUT,
     aqhi_risk_level,
 )
-from ..api_client import discover_aqhi_station, fetch_json_with_retry
+from ..api_client import AqhiDiscoveryError, discover_aqhi_station, fetch_json_with_retry
 from ..utils import safe_float
 from .base import OnDemandCoordinator
 
@@ -74,20 +74,49 @@ class ECAQHICoordinator(OnDemandCoordinator):
         if self.is_fresh():
             return self.data
 
-        # Fetch upcoming forecasts — filter server-side to reduce payload
+        result, needs_rediscovery = await self._fetch_and_parse(self.aqhi_location_id)
+        if needs_rediscovery:
+            adopted_new_station = await self._maybe_rediscover_station()
+            if adopted_new_station:
+                # Minimal mode never polls again after startup, so a healed
+                # station must be usable from THIS cycle's result — retry
+                # once with the new id. If that retry also comes up empty,
+                # fall through to the None shape as before; either way this
+                # is a single retry, not a loop back into rediscovery.
+                result, _ = await self._fetch_and_parse(self.aqhi_location_id)
+        return result
+
+    async def _fetch_and_parse(self, location_id: str) -> tuple[dict, bool]:
+        """Fetch and parse one AQHI forecast page for ``location_id``.
+
+        Returns ``(result, needs_rediscovery)``. ``result`` is either the
+        parsed aqhi/risk_level/forecast_datetime dict or the None shape.
+        ``needs_rediscovery`` is True when the response indicates the
+        station itself is dead: a well-formed empty features list, or a
+        non-empty list where nothing clears the current-hour filter. A
+        malformed body (features not a list) does NOT count — that's an API
+        problem, not evidence the station is retired.
+        """
+        # EC's datetime= filter no longer matches rows on this collection for
+        # a healthy station (Sept 2026: it appears publication-based, not
+        # forecast_datetime-based, and returns numberMatched: 0 even for a
+        # fresh publication) — the current-hour filter runs entirely
+        # client-side below via the candidate loop instead. Sorted
+        # newest-forecast-first with limit=48 so the latest publication's
+        # ~36h of rows are comfortably covered.
         now_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-        now_hour_iso = now_hour.strftime("%Y-%m-%dT%H:%M:%SZ")
         url = (
             f"{EC_API_BASE}/collections/aqhi-forecasts-realtime/items"
-            f"?location_id={self.aqhi_location_id}&f=json&limit=24"
-            f"&sortby=forecast_datetime&skipGeometry=true"
-            f"&datetime={now_hour_iso}/.."
+            f"?location_id={location_id}&f=json&limit=48"
+            f"&sortby=-forecast_datetime&skipGeometry=true"
             f"&properties=aqhi,forecast_datetime,publication_datetime"
         )
         session = async_get_clientsession(self.hass)
         data = await fetch_json_with_retry(
             session, url, label="AQHI",
         )
+
+        none_shape = {"aqhi": None, "risk_level": None, "forecast_datetime": None}
 
         raw_features = data.get("features")
         well_formed_empty = isinstance(raw_features, list) and not raw_features
@@ -99,12 +128,10 @@ class ECAQHICoordinator(OnDemandCoordinator):
         else:
             features = raw_features
         if not features:
-            _LOGGER.debug("EC AQHI: no forecasts returned for %s", self.aqhi_location_id)
+            _LOGGER.debug("EC AQHI: no forecasts returned for %s", location_id)
             # A well-formed empty response means the configured station is dead
             # (retired or renumbered). Malformed bodies do NOT count.
-            if well_formed_empty:
-                await self._maybe_rediscover_station()
-            return {"aqhi": None, "risk_level": None, "forecast_datetime": None}
+            return none_shape, well_formed_empty
 
         # Find the current-hour forecast from the most recent publication.
         # Multiple publications exist per forecast_datetime — pick the latest pub.
@@ -125,7 +152,10 @@ class ECAQHICoordinator(OnDemandCoordinator):
 
         if not candidates:
             _LOGGER.debug("EC AQHI: no current-or-future forecast found")
-            return {"aqhi": None, "risk_level": None, "forecast_datetime": None}
+            # Non-empty features but nothing current-or-future is the same
+            # dead/stale-station signal as a well-formed empty list — a
+            # half-dead station must not stick forever either.
+            return none_shape, True
 
         candidates.sort(key=lambda x: (x[0], x[1]))
         best = candidates[0][2]
@@ -145,9 +175,9 @@ class ECAQHICoordinator(OnDemandCoordinator):
             "aqhi": aqhi,
             "risk_level": risk_level,
             "forecast_datetime": best.get("forecast_datetime"),
-        }
+        }, False
 
-    async def _maybe_rediscover_station(self) -> None:
+    async def _maybe_rediscover_station(self) -> bool:
         """Re-run station discovery when the configured station returns nothing.
 
         Rate-limited to one attempt per ``REDISCOVERY_INTERVAL`` (tracked in
@@ -156,41 +186,61 @@ class ECAQHICoordinator(OnDemandCoordinator):
         place — the integration registers no update listener, so it does not
         reload and the next poll must use the new station directly. Discovery
         returning nothing or the same id is a silent no-op.
+
+        Returns True when a different station id was actually adopted, so
+        the caller can decide whether to retry the fetch within this same
+        update cycle.
+
+        A discovery request that FAILS (AqhiDiscoveryError — network error,
+        timeout, or bad JSON) never ANSWERED, so it must NOT burn the 24h
+        window: a boot-time network transient would otherwise strand a
+        healthy station without self-heal until the next restart, since
+        minimal polling mode never fetches AQHI again on its own. Only a
+        discovery that actually answers — a replacement, the same id, or
+        nothing found — counts as the attempt.
         """
         if self._entry is None:
-            return
+            return False
 
         now = dt_util.utcnow()
         if (
             self._last_rediscovery_attempt is not None
             and now - self._last_rediscovery_attempt < REDISCOVERY_INTERVAL
         ):
-            return
-        # Count the attempt even if it fails, so a permanently dead station
-        # costs at most one extra EC query per window.
-        self._last_rediscovery_attempt = now
+            return False
 
         lat = self._entry.data.get(CONF_LAT)
         lon = self._entry.data.get(CONF_LON)
         if lat is None or lon is None:
             _LOGGER.debug("EC AQHI: cannot re-discover station — entry has no lat/lon")
-            return
+            self._last_rediscovery_attempt = now
+            return False
 
         session = async_get_clientsession(self.hass)
-        new_location_id = await discover_aqhi_station(
-            session,
-            lat=lat,
-            lon=lon,
-            api_base=EC_API_BASE,
-            timeout=REQUEST_TIMEOUT,
-        )
+        try:
+            new_location_id = await discover_aqhi_station(
+                session,
+                lat=lat,
+                lon=lon,
+                api_base=EC_API_BASE,
+                timeout=REQUEST_TIMEOUT,
+            )
+        except AqhiDiscoveryError as err:
+            _LOGGER.debug("EC AQHI: re-discovery request failed: %s", err)
+            return False
+
+        # Discovery ANSWERED (found a replacement, the same id, or nothing) —
+        # count the attempt even on a "nothing found" answer, so a
+        # permanently dead station costs at most one extra EC query per
+        # window.
+        self._last_rediscovery_attempt = now
 
         if not new_location_id or new_location_id == self.aqhi_location_id:
             _LOGGER.debug(
                 "EC AQHI: re-discovery found no replacement for station %s",
                 self.aqhi_location_id,
             )
-            return
+            return False
 
         old_location_id = self.aqhi_location_id
         _LOGGER.info(
@@ -204,3 +254,4 @@ class ECAQHICoordinator(OnDemandCoordinator):
             self._entry,
             data={**self._entry.data, CONF_AQHI_LOCATION_ID: new_location_id},
         )
+        return True

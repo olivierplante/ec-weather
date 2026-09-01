@@ -16,6 +16,7 @@ import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
 
+from ec_weather.api_client import AqhiDiscoveryError
 from ec_weather.config_flow import (
     ECWeatherConfigFlow,
     ECWeatherOptionsFlow,
@@ -320,6 +321,42 @@ class TestAsyncStepUser:
         mock_search.assert_called_once_with("Ottawa", "fr")
         assert flow._selected_city["language"] == "fr"
 
+    async def test_selecting_complete_city_shows_no_station_choice_form(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """A fully-reporting single match goes straight to confirm, no extra step."""
+        flow = _make_flow(hass)
+        city = {**OTTAWA_CITY.copy(), "missing": []}
+        with patch.object(
+            flow, "_search_cities", return_value=[city]
+        ), patch.object(flow, "_run_discovery") as mock_discovery:
+            mock_discovery.return_value = {"type": "form", "step_id": "confirm"}
+            result = await flow.async_step_user(
+                user_input={"city_query": "Ottawa", CONF_LANGUAGE: "en"}
+            )
+
+        assert result["step_id"] == "confirm"
+        mock_discovery.assert_called_once()
+
+    @patch("ec_weather.config_flow.find_nearest_complete_city")
+    async def test_selecting_incomplete_city_shows_station_choice_form(
+        self, mock_find, hass: HomeAssistant,
+    ) -> None:
+        """A single match missing data points shows the station_choice step."""
+        mock_find.return_value = None
+        flow = _make_flow(hass)
+        city = {
+            "id": "bc-66", "name": "TestCity", "province": "BC",
+            "lat": 48.4283, "lon": -123.3696, "missing": ["sky_condition"],
+        }
+        with patch.object(flow, "_search_cities", return_value=[city]):
+            result = await flow.async_step_user(
+                user_input={"city_query": "TestCity", CONF_LANGUAGE: "en"}
+            )
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "station_choice"
+
 
 # ---------------------------------------------------------------------------
 # Config flow: async_step_select_city
@@ -373,6 +410,146 @@ class TestAsyncStepSelectCity:
             )
 
         assert flow._selected_city["language"] == "fr"
+
+
+# ---------------------------------------------------------------------------
+# Config flow: async_step_station_choice
+# ---------------------------------------------------------------------------
+
+INCOMPLETE_CITY = {
+    "id": "bc-66",
+    "name": "TestCity",
+    "province": "BC",
+    "lat": 48.4283,
+    "lon": -123.3696,
+    "language": "en",
+    "missing": ["sky_condition"],
+}
+
+ALTERNATIVE_CITY = {
+    "id": "bc-70",
+    "name": {"en": "TestVille", "fr": "TestVille-FR"},
+    "lat": 48.5,
+    "lon": -123.4,
+    "distance_km": 12,
+}
+
+
+class TestAsyncStepStationChoice:
+    """Tests for ECWeatherConfigFlow.async_step_station_choice."""
+
+    async def test_complete_city_skips_form(self, hass: HomeAssistant) -> None:
+        """A city with an empty 'missing' list passes straight to discovery."""
+        flow = _make_flow(hass)
+        flow._selected_city = {**OTTAWA_CITY, "language": "en", "missing": []}
+
+        with patch.object(flow, "_run_discovery") as mock_discovery:
+            mock_discovery.return_value = {"type": "form", "step_id": "confirm"}
+            result = await flow.async_step_station_choice()
+
+        assert result["step_id"] == "confirm"
+        mock_discovery.assert_called_once()
+
+    async def test_missing_key_absent_treated_as_complete(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """A selected city dict with no 'missing' key at all skips the form too."""
+        flow = _make_flow(hass)
+        flow._selected_city = {**OTTAWA_CITY, "language": "en"}
+
+        with patch.object(flow, "_run_discovery") as mock_discovery:
+            mock_discovery.return_value = {"type": "form", "step_id": "confirm"}
+            result = await flow.async_step_station_choice()
+
+        assert result["step_id"] == "confirm"
+
+    @patch("ec_weather.config_flow.find_nearest_complete_city")
+    async def test_incomplete_city_shows_form_with_alternative(
+        self, mock_find, hass: HomeAssistant,
+    ) -> None:
+        """Incomplete citypage with an alternative shows both options."""
+        mock_find.return_value = dict(ALTERNATIVE_CITY)
+        flow = _make_flow(hass)
+        flow._selected_city = dict(INCOMPLETE_CITY)
+
+        result = await flow.async_step_station_choice()
+
+        assert result["type"] == "form"
+        assert result["step_id"] == "station_choice"
+        placeholders = result["description_placeholders"]
+        assert placeholders["city_name"] == "TestCity"
+        assert "TestVille" in placeholders["alternative_name"]
+        assert "12" in placeholders["alternative_distance"]
+
+        options = _choice_field_options(result["data_schema"])
+        values = {opt["value"] for opt in options}
+        assert values == {"keep", "switch"}
+
+    @patch("ec_weather.config_flow.find_nearest_complete_city")
+    async def test_incomplete_city_no_alternative_keep_only(
+        self, mock_find, hass: HomeAssistant,
+    ) -> None:
+        """No alternative found within range -> only the keep option is shown."""
+        mock_find.return_value = None
+        flow = _make_flow(hass)
+        flow._selected_city = dict(INCOMPLETE_CITY)
+
+        result = await flow.async_step_station_choice()
+
+        assert result["type"] == "form"
+        options = _choice_field_options(result["data_schema"])
+        values = {opt["value"] for opt in options}
+        assert values == {"keep"}
+
+    @patch("ec_weather.config_flow.find_nearest_complete_city")
+    async def test_keep_path_proceeds_with_original_city(
+        self, mock_find, hass: HomeAssistant,
+    ) -> None:
+        """Choosing 'keep' continues to discovery with the original selection."""
+        mock_find.return_value = dict(ALTERNATIVE_CITY)
+        flow = _make_flow(hass)
+        flow._selected_city = dict(INCOMPLETE_CITY)
+        await flow.async_step_station_choice()  # populate the cached alternative
+
+        with patch.object(flow, "_run_discovery") as mock_discovery:
+            mock_discovery.return_value = {"type": "form", "step_id": "confirm"}
+            result = await flow.async_step_station_choice(
+                user_input={"choice": "keep"}
+            )
+
+        assert flow._selected_city["id"] == "bc-66"
+        assert result["step_id"] == "confirm"
+        mock_discovery.assert_called_once()
+
+    @patch("ec_weather.config_flow.find_nearest_complete_city")
+    async def test_switch_path_replaces_selected_city(
+        self, mock_find, hass: HomeAssistant,
+    ) -> None:
+        """Choosing 'switch' replaces the selection with the alternative."""
+        mock_find.return_value = dict(ALTERNATIVE_CITY)
+        flow = _make_flow(hass)
+        flow._selected_city = dict(INCOMPLETE_CITY)
+        await flow.async_step_station_choice()  # populate the cached alternative
+
+        with patch.object(flow, "_run_discovery") as mock_discovery:
+            mock_discovery.return_value = {"type": "form", "step_id": "confirm"}
+            result = await flow.async_step_station_choice(
+                user_input={"choice": "switch"}
+            )
+
+        assert flow._selected_city["id"] == "bc-70"
+        assert flow._selected_city["lat"] == 48.5
+        assert flow._selected_city["lon"] == -123.4
+        assert flow._selected_city["language"] == "en"
+        assert result["step_id"] == "confirm"
+
+
+def _choice_field_options(schema) -> list:
+    """Pull the SelectSelector option dicts for the 'choice' field of a schema."""
+    for key, validator in schema.schema.items():
+        if getattr(key, "schema", None) == "choice":
+            return validator.config["options"]
+    raise AssertionError("choice field not found in schema")
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +735,22 @@ class TestRunDiscovery:
 
         mock_aqhi.assert_not_called()
         assert flow._discovered_aqhi is None
+
+    async def test_discover_aqhi_station_network_error_behaves_as_not_found(
+        self, hass: HomeAssistant,
+    ) -> None:
+        """FIX 1 call site: a network error from discover_aqhi_station (now
+        signaled via AqhiDiscoveryError) must behave exactly like a "no
+        station found" answer here — no station, no crash."""
+        flow = _make_flow(hass)
+
+        with patch(
+            "ec_weather.config_flow.discover_aqhi_station",
+            AsyncMock(side_effect=AqhiDiscoveryError("boom")),
+        ):
+            result = await flow._discover_aqhi_station(45.42, -75.70)
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

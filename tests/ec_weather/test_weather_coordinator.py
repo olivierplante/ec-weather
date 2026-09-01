@@ -1,5 +1,7 @@
 """Tests for ECWeatherCoordinator — EC API data parsing and retry logic."""
 
+import time
+
 import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
@@ -72,7 +74,12 @@ class TestCurrentConditions:
         assert ":" in result["sunset"]
 
     async def test_missing_condition_handled(self, hass: HomeAssistant, aioclient_mock):
-        """Given null condition from API → handled gracefully."""
+        """Given null condition from API → falls back to the first hourly entry.
+
+        The fixture's currentConditions has no "condition" key and an iconCode
+        with no "value" (this is the auto-station shape) while hourly is
+        populated, so the fallback in _do_update fills both fields.
+        """
         data = load_fixture("citypage_weather.json")
         # Remove condition from currentConditions (simulates current hour)
         props = data.get("properties", {})
@@ -88,8 +95,9 @@ class TestCurrentConditions:
         coord = _make_coordinator(hass)
         result = await coord._async_update_data()
 
-        # Should not crash — condition can be None
-        assert result["current"]["condition"] is None
+        # Should not crash — and the fallback fills condition from hourly[0]
+        assert result["current"]["condition"] == result["hourly"][0]["condition"]
+        assert result["current"]["condition_source"] == "forecast"
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +183,111 @@ class TestCurrentHumidexFallback:
         result = await coord._async_update_data()
 
         assert result["current"]["feels_like"] == 40.0
+
+
+# ---------------------------------------------------------------------------
+# Current-conditions fallback to hourly forecast (auto stations with a null
+# condition/iconCode — e.g. "Victoria (University of)")
+# ---------------------------------------------------------------------------
+
+class TestConditionIconFallback:
+    async def test_auto_station_falls_back_to_hourly(self, hass: HomeAssistant, aioclient_mock):
+        """Given condition null and iconCode with no value → current takes
+        both fields from hourly[0], and condition_source is 'forecast'."""
+        data = _build_ec_response(
+            condition=None,
+            iconCode={"format": "gif"},
+        )
+        aioclient_mock.get(
+            "https://api.weather.gc.ca/collections/citypageweather-realtime"
+            "/items/on-118?f=json&lang=en&skipGeometry=true",
+            json=data,
+        )
+
+        coord = _make_coordinator(hass)
+        result = await coord._async_update_data()
+
+        first_hour = result["hourly"][0]
+        assert first_hour["condition"] is not None
+        assert first_hour["icon_code"] is not None
+        assert result["current"]["condition"] == first_hour["condition"]
+        assert result["current"]["icon_code"] == first_hour["icon_code"]
+        assert result["current"]["condition_source"] == "forecast"
+
+    async def test_reporting_station_keeps_observed_condition(self, hass: HomeAssistant, aioclient_mock):
+        """Given the station reports condition + iconCode → observation is kept
+        verbatim (not overwritten by hourly[0]), and condition_source is 'observed'."""
+        data = _build_ec_response(
+            condition={"en": "Sunny", "fr": "Ensoleillé"},
+            iconCode={"format": "png", "value": 0, "url": "https://weather.gc.ca/weathericons/00.gif"},
+        )
+        aioclient_mock.get(
+            "https://api.weather.gc.ca/collections/citypageweather-realtime"
+            "/items/on-118?f=json&lang=en&skipGeometry=true",
+            json=data,
+        )
+
+        coord = _make_coordinator(hass)
+        result = await coord._async_update_data()
+
+        first_hour = result["hourly"][0]
+        assert first_hour["condition"] != "Sunny"  # fixture's hourly[0] differs from the observation
+        assert result["current"]["condition"] == "Sunny"
+        assert result["current"]["icon_code"] == 0
+        assert result["current"]["condition_source"] == "observed"
+
+    async def test_no_observation_and_no_hourly_leaves_condition_source_none(
+        self, hass: HomeAssistant, aioclient_mock
+    ):
+        """Given null observation AND an empty hourly list → condition/icon
+        stay None and condition_source is None."""
+        data = load_fixture("citypage_weather.json")
+        props = data["properties"]
+        props["currentConditions"]["condition"] = None
+        props["currentConditions"]["iconCode"] = {"format": "gif"}
+        props["hourlyForecastGroup"]["hourlyForecasts"] = []
+
+        aioclient_mock.get(
+            "https://api.weather.gc.ca/collections/citypageweather-realtime"
+            "/items/on-118?f=json&lang=en&skipGeometry=true",
+            json=data,
+        )
+
+        coord = _make_coordinator(hass)
+        result = await coord._async_update_data()
+
+        assert result["hourly"] == []
+        assert result["current"]["condition"] is None
+        assert result["current"]["icon_code"] is None
+        assert result["current"]["condition_source"] is None
+
+    async def test_forecast_unchanged_path_still_applies_fallback(self, hass: HomeAssistant, aioclient_mock):
+        """Given forecast_unchanged (same lastUpdated, hourly reused from
+        self.data) → the fallback still fills current from the reused hourly[0]."""
+        data = _build_ec_response(
+            condition=None,
+            iconCode={"format": "gif"},
+        )
+        aioclient_mock.get(
+            "https://api.weather.gc.ca/collections/citypageweather-realtime"
+            "/items/on-118?f=json&lang=en&skipGeometry=true",
+            json=data,
+        )
+
+        coord = ECWeatherCoordinator(hass, "on-118", language="en", interval_minutes=30)
+
+        result1 = await coord._async_update_data()
+        assert result1["current"]["condition_source"] == "forecast"
+
+        # Bypass the on-demand freshness gate without changing the EC
+        # response, so the second call hits the forecast_unchanged branch
+        # (same lastUpdated → hourly reused from self.data).
+        coord._last_refresh_ts = time.monotonic() - 1900
+
+        result2 = await coord._async_update_data()
+        assert result2["current"]["condition_source"] == "forecast"
+        assert result2["current"]["condition"] == result1["current"]["condition"]
+        assert result2["current"]["icon_code"] == result1["current"]["icon_code"]
 
 
 # ---------------------------------------------------------------------------

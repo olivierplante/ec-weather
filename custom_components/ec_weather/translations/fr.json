@@ -96,6 +96,13 @@
           "city_id": "Ville"
         }
       },
+      "station_choice": {
+        "title": "Données manquantes à la station",
+        "description": "{city_name} est desservie par une station qui ne rapporte jamais : {missing_points}. Il s'agit d'une limite structurelle de cette station, pas d'une panne temporaire. {alternative_sentence}",
+        "data": {
+          "choice": "Choix"
+        }
+      },
       "confirm": {
         "title": "Confirmer les paramètres",
         "description": "Confirmez les paramètres pour {city_name} ({province}) — code ville : {city_code}. Les valeurs découvertes sont pré-remplies — modifiez si nécessaire.",
@@ -181,6 +188,20 @@
             "description": "Environnement Canada peut indiquer la quantité de pluie ou de neige tombée hier à la station la plus proche. Les stations séparées rapportent la pluie et la neige distinctement; les stations combinées rapportent un seul total (la neige selon son équivalent en eau fondue en mm). La station la plus proche peut être assez éloignée — choisissez-en une pour activer la fonction, ou désactivez-la.",
             "data": {
               "precip_station_id": "Station de précipitations"
+            }
+          }
+        }
+      }
+    },
+    "station_data_gap": {
+      "title": "Votre station ne rapporte pas certaines conditions actuelles",
+      "fix_flow": {
+        "step": {
+          "choose": {
+            "title": "Données manquantes à la station",
+            "description": "{city_name} est desservie par une station qui ne rapporte jamais : {missing_points}. Il s'agit d'une limite structurelle de cette station, pas d'une panne temporaire. {alternative_sentence}",
+            "data": {
+              "choice": "Choix"
             }
           }
         }
