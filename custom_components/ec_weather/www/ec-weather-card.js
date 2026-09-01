@@ -2635,21 +2635,21 @@ export class ECWeatherCard extends HTMLElement {
           border: 1px solid var(--ecw-ppbd); border-radius: 13px;
           padding: 13px 15px; display: flex; flex-direction: column; gap: 10px;
         }
-        .phead { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .phead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; row-gap: 4px; }
         .ptitle {
           display: flex; align-items: center; gap: 7px;
           font-size: 11.5px; font-weight: 600; letter-spacing: 0.08em;
           color: var(--ecw-pphead); text-transform: uppercase;
         }
         .ptitle ha-icon { --mdc-icon-size: 17px; color: var(--ecw-pptitle); }
-        .phead-chance { font-size: 13px; white-space: nowrap; color: var(--ecw-text2); }
-        .phead-none { font-size: 13px; white-space: nowrap; color: var(--ecw-muted); }
+        .phead-chance { font-size: 13px; color: var(--ecw-text2); }
+        .phead-none { font-size: 13px; color: var(--ecw-muted); }
         .prow { display: flex; flex-direction: column; }
         .prowhead {
           display: flex; align-items: baseline; justify-content: space-between;
-          gap: 12px; margin-bottom: 5px;
+          flex-wrap: wrap; gap: 12px; row-gap: 4px; margin-bottom: 5px;
         }
-        .plabel { font-size: 13px; color: var(--ecw-text2); white-space: nowrap; }
+        .plabel { font-size: 13px; color: var(--ecw-text2); }
         .pstatus { font-size: 13px; color: var(--ecw-muted); }
         .pchips { display: flex; gap: 10px; }
         .pv {
@@ -2680,9 +2680,11 @@ export class ECWeatherCard extends HTMLElement {
         .suntimes ha-icon { --mdc-icon-size: 16px; color: var(--ecw-muted); }
         .suncap { font-size: 10.5px; color: var(--ecw-muted); text-align: center; }
         .suncap-title { font-size: 12px; color: var(--ecw-text2); }
-        @container (max-width: 430px) {
+        @container (max-width: 520px) {
           .herorow { flex-direction: column; align-items: stretch; gap: 18px; }
           .ppanel { min-width: 0; width: 100%; box-sizing: border-box; }
+        }
+        @container (max-width: 430px) {
           .mbar { flex-wrap: wrap; }
           .mcell.sun { flex: 1 1 100%; border-left: 0; border-top: 1px solid var(--ecw-hair); }
           .temp { font-size: 70px; }
