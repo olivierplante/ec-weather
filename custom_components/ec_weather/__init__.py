@@ -249,6 +249,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             station_type=entry.data.get(CONF_PRECIP_STATION_TYPE, "combined"),
             station_name=entry.data.get(CONF_PRECIP_STATION_NAME),
             distance_km=entry.data.get(CONF_PRECIP_STATION_DISTANCE_KM),
+            entry=entry,
         )
 
     # Fetch all three coordinators in parallel (~2s instead of ~6s sequential)
@@ -288,8 +289,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     # Offer the yesterday-precipitation feature to users who haven't set it up.
-    from .repairs import async_manage_precip_issue
+    from .repairs import async_manage_precip_issue, async_manage_station_gap_issue
     async_manage_precip_issue(hass, entry)
+
+    # Warn existing installs (pre-dating the onboarding station_choice step)
+    # whose citypage structurally omits some current-conditions data.
+    async_manage_station_gap_issue(
+        hass, entry, (weather_coordinator.data or {}).get("station_missing") or []
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

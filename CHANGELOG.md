@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.6.0
+
+Stations are not all equal; the integration now works around their gaps and heals itself.
+
+### What's new
+
+- **Missing station data is now a visible choice.** Some Environment Canada locations are served by automatic stations that never report certain readings, such as the current sky condition. Setup now flags what the chosen station is missing and offers the nearest fully-reporting alternative, and existing installs on such a station get a repair suggestion in Settings with the same choice
+- **The current condition falls back to the forecast.** On stations without a sky-condition observation, the current icon and text now come from the current hour's forecast instead of showing nothing, matching Home Assistant's built-in Environment Canada integration
+- **Quiet stations heal themselves.** The air quality and yesterday-precipitation stations are re-discovered automatically when the configured one stops publishing or falls days behind, and discovery now prefers stations that publish promptly. A network hiccup during recovery no longer blocks the next attempt for a day
+
+### Fixed
+
+- **Air quality works again.** Environment Canada changed their air quality API at the end of August, which left the air quality sensor unknown on every install regardless of the configured station. The integration now queries the changed API correctly
+- The precipitation panel no longer clips its text at dashboard column widths between roughly 430 and 520 pixels; the layout stacks earlier and the panel rows wrap instead. Thanks to @Melinysh for the report and the fix
+
+
 ## 2.5.1
 
 ### Fixed

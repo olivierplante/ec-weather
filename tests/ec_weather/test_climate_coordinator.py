@@ -15,11 +15,20 @@ The parser turns this into a uniform shape the sensors/card consume.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
 
+from ec_weather.const import (
+    CONF_LAT,
+    CONF_LON,
+    CONF_PRECIP_STATION_DISTANCE_KM,
+    CONF_PRECIP_STATION_ID,
+    CONF_PRECIP_STATION_NAME,
+    CONF_PRECIP_STATION_TYPE,
+)
 from ec_weather.coordinator.climate import (
     ECClimateCoordinator,
     parse_climate_response,
@@ -142,7 +151,16 @@ class TestCoordinator:
 
         async def fake_fetch(session, url, **kwargs):
             calls["n"] += 1
-            return _resp({"TOTAL_PRECIPITATION": 3.2, "TOTAL_RAIN": 3.2, "TOTAL_SNOW": 0})
+            # The coordinator now queries a lookback window (not just
+            # yesterday) and selects the row by LOCAL_DATE == yesterday, so
+            # the fixture must carry it — a real EC response always does
+            # since the coordinator's URL requests the LOCAL_DATE property.
+            return _resp({
+                "LOCAL_DATE": yesterday,
+                "TOTAL_PRECIPITATION": 3.2,
+                "TOTAL_RAIN": 3.2,
+                "TOTAL_SNOW": 0,
+            })
 
         monkeypatch.setattr(
             "ec_weather.coordinator.climate.fetch_json_with_retry", fake_fetch
@@ -176,3 +194,267 @@ class TestCoordinator:
         result = await coord._do_update()
         assert result["published"] is False
         assert coord._published_date is None
+
+
+class TestSelfHeal:
+    """Self-heal a lagging precip station (issue #9 continuation, mirrors
+    ECAQHICoordinator._maybe_rediscover_station): at most one rediscovery
+    attempt per 24h, adopt only a STRICTLY fresher candidate, persist to the
+    config entry in place (no reload wired for this integration)."""
+
+    STATION_ID = "1234567"
+    LAT, LON = 45.5017, -73.5673
+
+    def _make_entry(
+        self, station_type="combined", station_name="TestStation", distance_km=24.6
+    ) -> MagicMock:
+        entry = MagicMock()
+        entry.entry_id = "test_entry"
+        entry.data = {
+            CONF_LAT: self.LAT,
+            CONF_LON: self.LON,
+            CONF_PRECIP_STATION_ID: self.STATION_ID,
+            CONF_PRECIP_STATION_TYPE: station_type,
+            CONF_PRECIP_STATION_NAME: station_name,
+            CONF_PRECIP_STATION_DISTANCE_KM: distance_km,
+        }
+        entry.options = {}
+        return entry
+
+    def _window_resp(self, rows: list[tuple[str, float | None]]) -> dict:
+        """rows: list of (LOCAL_DATE iso string, TOTAL_PRECIPITATION or None)."""
+        return {
+            "features": [
+                {
+                    "properties": {
+                        "LOCAL_DATE": local_date,
+                        "TOTAL_PRECIPITATION": total,
+                        "TOTAL_RAIN": None,
+                        "TOTAL_SNOW": None,
+                    }
+                }
+                for local_date, total in rows
+            ]
+        }
+
+    def _candidate(
+        self, station_id, station_type, name, distance_km, latest_precip_date
+    ) -> dict:
+        return {
+            "station_id": station_id,
+            "name": name,
+            "type": station_type,
+            "distance_km": distance_km,
+            "lat": self.LAT,
+            "lon": self.LON,
+            "latest_precip_date": latest_precip_date,
+        }
+
+    @pytest.fixture(autouse=True)
+    def _patch_session(self):
+        """Prevent any real client-session lookup during these unit tests."""
+        with patch(
+            "ec_weather.coordinator.climate.async_get_clientsession",
+            return_value=MagicMock(),
+        ):
+            yield
+
+    async def test_stale_for_4_days_triggers_discovery_and_adopts_fresher_candidate(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A station whose most recently published value is 4 days old
+        triggers exactly one discovery call and adopts+persists a candidate
+        whose latest_precip_date is strictly newer."""
+        entry = self._make_entry()
+        coord = ECClimateCoordinator(
+            hass,
+            station_id=self.STATION_ID,
+            station_type="combined",
+            station_name="TestStation",
+            distance_km=24.6,
+            entry=entry,
+        )
+        hass.config_entries.async_update_entry = MagicMock()
+
+        stale_date = (date.today() - timedelta(days=4)).isoformat()
+        fresh_date = (date.today() - timedelta(days=1)).isoformat()
+        candidate = self._candidate(
+            "7654321", "combined", "TestReplacement", 12.0, fresh_date
+        )
+
+        with patch(
+            "ec_weather.coordinator.climate.fetch_json_with_retry",
+            AsyncMock(return_value=self._window_resp([(stale_date, 2.0)])),
+        ), patch(
+            "ec_weather.coordinator.climate.discover_precip_stations",
+            AsyncMock(return_value={"nearest": candidate, "nearest_split": None}),
+        ) as mock_discover:
+            await coord._do_update()
+
+        mock_discover.assert_awaited_once()
+        assert coord.station_id == "7654321"
+        assert coord.station_name == "TestReplacement"
+        assert coord.distance_km == 12.0
+        hass.config_entries.async_update_entry.assert_called_once()
+        call = hass.config_entries.async_update_entry.call_args
+        assert call.args[0] is entry
+        assert call.kwargs["data"][CONF_PRECIP_STATION_ID] == "7654321"
+        assert call.kwargs["data"][CONF_PRECIP_STATION_NAME] == "TestReplacement"
+        assert call.kwargs["data"][CONF_PRECIP_STATION_DISTANCE_KM] == 12.0
+
+    async def test_equal_or_older_candidate_does_not_adopt(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A candidate whose latest_precip_date is equal to (or older than)
+        the current station's is not an improvement — must not be adopted."""
+        entry = self._make_entry()
+        coord = ECClimateCoordinator(
+            hass,
+            station_id=self.STATION_ID,
+            station_type="combined",
+            station_name="TestStation",
+            distance_km=24.6,
+            entry=entry,
+        )
+        hass.config_entries.async_update_entry = MagicMock()
+
+        stale_date = (date.today() - timedelta(days=4)).isoformat()
+        candidate = self._candidate(
+            "7654321", "combined", "TestReplacement", 12.0, stale_date
+        )
+
+        with patch(
+            "ec_weather.coordinator.climate.fetch_json_with_retry",
+            AsyncMock(return_value=self._window_resp([(stale_date, 2.0)])),
+        ), patch(
+            "ec_weather.coordinator.climate.discover_precip_stations",
+            AsyncMock(return_value={"nearest": candidate, "nearest_split": None}),
+        ):
+            await coord._do_update()
+
+        assert coord.station_id == self.STATION_ID
+        hass.config_entries.async_update_entry.assert_not_called()
+
+    async def test_rate_limit_blocks_second_attempt_within_24h(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Two stale polls inside the 24h window yield only one discovery
+        query — same rate limit as ECAQHICoordinator."""
+        entry = self._make_entry()
+        coord = ECClimateCoordinator(
+            hass,
+            station_id=self.STATION_ID,
+            station_type="combined",
+            station_name="TestStation",
+            distance_km=24.6,
+            entry=entry,
+        )
+        hass.config_entries.async_update_entry = MagicMock()
+
+        stale_date = (date.today() - timedelta(days=5)).isoformat()
+        base = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+        with patch(
+            "ec_weather.coordinator.climate.fetch_json_with_retry",
+            AsyncMock(return_value=self._window_resp([(stale_date, 2.0)])),
+        ), patch(
+            "ec_weather.coordinator.climate.discover_precip_stations",
+            AsyncMock(return_value={"nearest": None, "nearest_split": None}),
+        ) as mock_discover, patch(
+            "ec_weather.coordinator.climate.dt_util.utcnow"
+        ) as mock_now:
+            mock_now.return_value = base
+            await coord._do_update()
+            mock_now.return_value = base + timedelta(hours=6)
+            await coord._do_update()
+
+        assert mock_discover.await_count == 1
+
+    async def test_healthy_station_never_calls_discovery(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A station whose latest published value is well within the
+        freshness threshold never triggers a discovery call."""
+        entry = self._make_entry()
+        coord = ECClimateCoordinator(
+            hass,
+            station_id=self.STATION_ID,
+            station_type="combined",
+            station_name="TestStation",
+            distance_km=24.6,
+            entry=entry,
+        )
+        hass.config_entries.async_update_entry = MagicMock()
+
+        fresh_date = (date.today() - timedelta(days=2)).isoformat()
+
+        with patch(
+            "ec_weather.coordinator.climate.fetch_json_with_retry",
+            AsyncMock(return_value=self._window_resp([(fresh_date, 2.0)])),
+        ), patch(
+            "ec_weather.coordinator.climate.discover_precip_stations",
+        ) as mock_discover:
+            await coord._do_update()
+
+        mock_discover.assert_not_called()
+
+    async def test_split_station_type_requests_nearest_split_candidate(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A split-capable install must be replaced by the nearest FRESH
+        split-capable candidate (nearest_split), not the plain 'nearest'
+        pick, and adopts the candidate's own station_type."""
+        entry = self._make_entry(station_type="split")
+        coord = ECClimateCoordinator(
+            hass,
+            station_id=self.STATION_ID,
+            station_type="split",
+            station_name="TestStation",
+            distance_km=24.6,
+            entry=entry,
+        )
+        hass.config_entries.async_update_entry = MagicMock()
+
+        stale_date = (date.today() - timedelta(days=4)).isoformat()
+        fresh_date = (date.today() - timedelta(days=1)).isoformat()
+        split_candidate = self._candidate(
+            "SPLIT99", "split", "TestSplitReplacement", 30.0, fresh_date
+        )
+
+        with patch(
+            "ec_weather.coordinator.climate.fetch_json_with_retry",
+            AsyncMock(return_value=self._window_resp([(stale_date, 2.0)])),
+        ), patch(
+            "ec_weather.coordinator.climate.discover_precip_stations",
+            AsyncMock(
+                return_value={"nearest": None, "nearest_split": split_candidate}
+            ),
+        ):
+            await coord._do_update()
+
+        assert coord.station_id == "SPLIT99"
+        assert coord.station_type == "split"
+
+    async def test_no_entry_never_calls_discovery(self, hass: HomeAssistant) -> None:
+        """Without a config entry (unit-constructed coordinator), a stale
+        station never attempts rediscovery — there is nowhere to persist a
+        replacement and no lat/lon to search around."""
+        coord = ECClimateCoordinator(
+            hass,
+            station_id=self.STATION_ID,
+            station_type="combined",
+            station_name="TestStation",
+            distance_km=24.6,
+        )
+
+        stale_date = (date.today() - timedelta(days=5)).isoformat()
+
+        with patch(
+            "ec_weather.coordinator.climate.fetch_json_with_retry",
+            AsyncMock(return_value=self._window_resp([(stale_date, 2.0)])),
+        ), patch(
+            "ec_weather.coordinator.climate.discover_precip_stations",
+        ) as mock_discover:
+            await coord._do_update()
+
+        mock_discover.assert_not_called()

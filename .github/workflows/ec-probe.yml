@@ -4,6 +4,20 @@ name: EC contract probe
 # integration depends on, so a retired station / removed model layer (the
 # GDPS-WEonG and AQHI-15026 incidents) surfaces as a filed issue instead of
 # silent dead queries in production. Probe city: Ottawa (on-118), public coords.
+#
+# Every probe query below MUST mirror the exact URL shape the integration
+# sends (same params, same order) and MUST be kept in lockstep with
+# coordinator/api_client URLs when those change — a probe that queries a
+# simpler shape than production can stay green while production breaks. This
+# is not hypothetical: on Aug 31 2026 EC changed aqhi-forecasts-realtime so
+# the datetime= filter stopped matching rows for healthy stations and the
+# location_latitude/longitude properties were removed (400 if requested).
+# AQHI broke for every install, but the probe queried a simpler bbox+limit
+# shape with no datetime and no properties, so it stayed green through the
+# same Monday run. Where a failure mode is semantic (200 OK with empty/stale
+# rows for a healthy target, not just a shape/status change), the jq filter
+# below asserts semantics, not just shape.
+#
 # On any failure: open (or comment on) an `ec-api` issue. Never blocks.
 # See specs/ec_weather/test-strategy.md.
 
@@ -30,6 +44,15 @@ jobs:
           # WMS 1.3.0 CRS EPSG:4326 axis order is lat,lon; OGC features bbox is lon,lat.
           GEO_BBOX="44.42,-76.70,46.42,-74.70"
           FEAT_BBOX="-76.70,44.42,-74.70,46.42"
+          # FEVNT = Ottawa, a stable metropolitan AQHI station inside the probe
+          # bbox (confirmed live: EGLTT/Gatineau, FCCOT/Cornwall, FEVNT/Ottawa
+          # all qualify; Ottawa proper is the least likely of the three to be
+          # retired or renumbered).
+          AQHI_STATION="FEVNT"
+          # 6106001 = OTTAWA INTL A (Macdonald-Cartier International Airport),
+          # a long-running major-airport climate station inside the probe
+          # bbox that reports TOTAL_PRECIPITATION daily (confirmed live).
+          CLIMATE_STATION="6106001"
           FAILS=()        # reached EC, but the contract is wrong -> file an issue
           UNREACHABLE=()  # could not reach EC (timeout/5xx) -> transient, never file
 
@@ -73,15 +96,48 @@ jobs:
           geomet_layer_ok "RDPS-WEonG Precip-Prob"  "RDPS-WEonG_10km_Precip-Prob"
           geomet_layer_ok "GEPS PRMM POP"           "GEPS.DIAG.12_PRMM.ERGE1"
 
-          # 3. AQHI forecasts near the probe city return at least one feature.
-          json_ok "aqhi-forecasts bbox" \
-            "$EC/collections/aqhi-forecasts-realtime/items?f=json&bbox=$FEAT_BBOX&limit=10" \
-            '.features | length >= 1'
+          # 3a. Lockstep with coordinator/aqhi.py ECAQHICoordinator._fetch_and_parse.
+          #     Semantic check: catches a healthy station returning zero/stale rows,
+          #     the exact Aug 31 2026 datetime-axis break a shape-only check missed.
+          url="$EC/collections/aqhi-forecasts-realtime/items?location_id=$AQHI_STATION"
+          url="$url&f=json&limit=48&sortby=-forecast_datetime&skipGeometry=true"
+          url="$url&properties=aqhi,forecast_datetime,publication_datetime"
+          json_ok "aqhi coordinator shape" "$url" \
+            '(.features | length >= 1) and
+             ([.features[].properties.forecast_datetime] | max >=
+              (now | strftime("%Y-%m-%dT%H:%M:%SZ")))'
 
-          # 4. Climate-daily archive responds with a feature collection.
-          json_ok "climate-daily" \
-            "$EC/collections/climate-daily/items?f=json&limit=1" \
-            '.features'
+          # 3b. Lockstep with api_client.py discover_aqhi_station. No skipGeometry:
+          #     geometry is load-bearing (station coords come only from it since EC
+          #     dropped location_latitude/longitude, Sept 2026 — that removal now
+          #     surfaces as HTTP 400, which json_ok already treats as FAIL).
+          url="$EC/collections/aqhi-forecasts-realtime/items?f=json&bbox=$FEAT_BBOX"
+          url="$url&limit=200&sortby=-forecast_datetime"
+          url="$url&properties=location_id,location_name_en,forecast_datetime"
+          json_ok "aqhi discovery shape" "$url" \
+            '(.features | length >= 1) and
+             (.features[0].geometry.coordinates | length == 2) and
+             ([.features[].properties.forecast_datetime] | max >=
+              (now | strftime("%Y-%m-%dT%H:%M:%SZ")))'
+
+          # Shared lookback window for both climate-daily checks below: last 8
+          # days ending yesterday, mirroring ECClimateCoordinator's default window.
+          CLIMATE_START=$(date -u -d '8 days ago' +%F)
+          CLIMATE_END=$(date -u -d 'yesterday' +%F)
+
+          # 4a. Lockstep with coordinator/climate.py ECClimateCoordinator._build_url.
+          url="$EC/collections/climate-daily/items?CLIMATE_IDENTIFIER=$CLIMATE_STATION"
+          url="$url&datetime=$CLIMATE_START/$CLIMATE_END&f=json"
+          url="$url&properties=LOCAL_DATE,TOTAL_PRECIPITATION,TOTAL_RAIN,TOTAL_SNOW"
+          json_ok "climate coordinator shape" "$url" \
+            '(.features | length >= 1) and (.features[0].properties | has("LOCAL_DATE"))'
+
+          # 4b. Lockstep with api_client.py discover_precip_stations.
+          url="$EC/collections/climate-daily/items?f=json&bbox=$FEAT_BBOX"
+          url="$url&datetime=$CLIMATE_START/$CLIMATE_END&limit=1000"
+          url="$url&properties=CLIMATE_IDENTIFIER,STATION_NAME,LOCAL_DATE,TOTAL_PRECIPITATION,TOTAL_RAIN,TOTAL_SNOW"
+          json_ok "climate discovery shape" "$url" \
+            '.features | type == "array" and length >= 1'
 
           if [ ${#UNREACHABLE[@]} -gt 0 ]; then
             echo "EC unreachable (transient, not filing): ${UNREACHABLE[*]}"

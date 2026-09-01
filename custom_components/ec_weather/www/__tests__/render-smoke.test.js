@@ -1123,9 +1123,10 @@ describe("extended forecast — GEPS far-day (4-6) popup timeline", () => {
 });
 
 describe("popup timeline day/night bands (halves mode)", () => {
-  // Every non-empty day-label in a strip, in order.
+  // Every day-label in a strip, in order — read out of the sticky
+  // .ecs-dayname span (the .ecs-daylbl cell now only carries segment width).
   const bandLabels = (html) =>
-    [...html.matchAll(/<div class="ecs-daylbl"[^>]*>([^<]*)<\/div>/g)]
+    [...html.matchAll(/<span class="ecs-dayname">([^<]*)<\/span>/g)]
       .map((m) => m[1])
       .filter(Boolean);
 
@@ -1140,13 +1141,18 @@ describe("popup timeline day/night bands (halves mode)", () => {
     expect(popup.content).toContain("ecs-labels");
     // Popup 5's timesteps are both daytime hours → a single DAY segment.
     expect(bandLabels(popup.content)).toEqual(["DAY"]);
-    // No calendar date label (e.g. "THU 9") leaks into the strip.
+    // No calendar date label (e.g. "THU 9") leaks into the strip. Guard the
+    // list is non-empty first — a broken extractor regex returns [] and
+    // `.some(...)` on an empty array is `false` too, which would make this a
+    // vacuous pass instead of a real negative control.
+    expect(bandLabels(popup.content).length).toBeGreaterThan(0);
     expect(bandLabels(popup.content).some((label) => /\d/.test(label))).toBe(false);
   });
 
   it("main hourly section still carries its calendar (weekday + date) labels", () => {
     const root = renderSection("hourly");
     // The card's rolling-days strip keeps the calendar labels unchanged.
+    expect(bandLabels(root.innerHTML).length).toBeGreaterThan(0);
     expect(bandLabels(root.innerHTML)).toContain("SAT 4");
   });
 });

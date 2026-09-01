@@ -19,7 +19,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   render-smoke:
@@ -75,6 +76,10 @@ jobs:
     runs-on: "ubuntu-latest"
     env:
       EC_WEATHER_REPO: "${{ github.repository }}"
+      # Authenticates S5's release-metadata lookup so it draws from the token's
+      # own rate-limit bucket instead of the runner's shared anonymous quota,
+      # which other tenants on the same egress IP can exhaust (403s).
+      GITHUB_TOKEN: "${{ github.token }}"
     steps:
       - uses: "actions/checkout@v6"
       - uses: "actions/setup-node@v4"

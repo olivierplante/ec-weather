@@ -96,6 +96,13 @@
           "city_id": "City"
         }
       },
+      "station_choice": {
+        "title": "Station Data Gap",
+        "description": "{city_name} is served by a station that never reports: {missing_points}. This is a structural limit of that station, not a temporary outage. {alternative_sentence}",
+        "data": {
+          "choice": "Choice"
+        }
+      },
       "confirm": {
         "title": "Confirm Settings",
         "description": "Confirm the settings for {city_name} ({province}) — city code: {city_code}. Auto-discovered values are pre-filled — edit if needed.",
@@ -181,6 +188,20 @@
             "description": "Environment Canada can report how much rain or snow fell yesterday at the nearest reporting station. Split stations report rain and snow separately; combined stations report a single total (snow as its melted water equivalent in mm). The nearest station may be some distance away — pick one to enable the feature, or opt out.",
             "data": {
               "precip_station_id": "Precipitation station"
+            }
+          }
+        }
+      }
+    },
+    "station_data_gap": {
+      "title": "Your station never reports some current conditions",
+      "fix_flow": {
+        "step": {
+          "choose": {
+            "title": "Station Data Gap",
+            "description": "{city_name} is served by a station that never reports: {missing_points}. This is a structural limit of that station, not a temporary outage. {alternative_sentence}",
+            "data": {
+              "choice": "Choice"
             }
           }
         }

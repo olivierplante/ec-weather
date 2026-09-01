@@ -536,6 +536,13 @@ const STRIP_CSS = `
     font-weight: 600; letter-spacing: 0.07em; color: var(--ecw-muted);
     padding-left: 2px;
   }
+  /* One cell per segment (not per column) so the label has a whole run of
+     columns to hold onto. The text lives in this inline-block span, pinned to
+     the scroll port's left edge for as long as any of the segment's columns
+     are visible, then pushed out by the next segment's label. The sticky
+     inset matches the cell's own padding-left so the stuck position looks
+     identical to the unstuck one. */
+  .ecs-dayname { position: sticky; left: 2px; display: inline-block; }
   /* The chart band pads 14px top+bottom so the temp curve breathes; the tint
      belt covers the whole band (chart + cluster + fill), not the day-label row
      that sits above it. */
@@ -604,6 +611,7 @@ const STRIP_CSS = `
      of a neighbouring title on a short segment). */
   .ecs-strip-compact .ecs-labels { height: 16px; margin-bottom: 6px; }
   .ecs-strip-compact .ecs-daylbl { padding-left: 7px; padding-top: 1px; }
+  .ecs-strip-compact .ecs-dayname { left: 7px; }
 `;
 
 // Card-strip defaults for buildHourlyStripHtml. The popup overrides each key.
@@ -637,15 +645,17 @@ export function fmtHourLabel(date, use24) {
  * the EC day/night boundaries (day = local hour in [6,18), night = out) rather
  * than at calendar midnight — mirroring the popup's Day/Night boxes one-to-one.
  * Returns, per column: a `tints` flag (segments alternate untinted/tinted,
- * starting untinted) and a sparse `labels` array carrying a title only at each
- * segment's first column (blank elsewhere). Day segments use the DAY i18n key;
- * night segments use NIGHT, and when a night run crosses into a new calendar
- * date the label carries that date's short weekday ("NIGHT · THU") — the night
- * stays one continuous band across midnight.
+ * starting untinted), a `starts` flag marking the boolean boundary a segment
+ * begins on (the explicit predicate the label-cell run-length is keyed off —
+ * NOT label-text truthiness), and a sparse `labels` array carrying a title
+ * only at each segment's first column (blank elsewhere). Day segments use the
+ * DAY i18n key; night segments use NIGHT, and the night stays one continuous
+ * band across midnight.
  */
 function computeHalvesBands(timesteps, dayText, nightText) {
   const count = timesteps.length;
   const tints = new Array(count).fill(false);
+  const starts = new Array(count).fill(false);
   const labels = new Array(count).fill('');
   const dates = timesteps.map((ts) => new Date(ts.time));
   const isDay = dates.map((d) => { const hour = d.getHours(); return hour >= 6 && hour < 18; });
@@ -654,13 +664,14 @@ function computeHalvesBands(timesteps, dayText, nightText) {
     const startsSegment = i === 0 || isDay[i] !== isDay[i - 1];
     if (startsSegment) {
       segmentIndex++;
+      starts[i] = true;
       // Plain DAY/NIGHT only: the label sits at the segment START, so naming
       // the night for the date it ends on read backwards (user feedback).
       labels[i] = isDay[i] ? dayText : nightText;
     }
     tints[i] = (segmentIndex % 2) === 1;
   }
-  return { tints, labels };
+  return { tints, starts, labels };
 }
 
 /**
@@ -672,17 +683,23 @@ function computeHalvesBands(timesteps, dayText, nightText) {
  * interpolation). Options (defaults = the card):
  *   colWidth       per-column px (inlined onto every column cell)
  *   curveGeometry  {chartHeight, plotTop, plotHeight} for buildHourlyCurve + SVG
- *   showDayBands   alternating day tints + a weekday+date label at each midnight
+ *   showDayBands   alternating day tints + a sticky weekday+date label per segment
  *   vesselWidth    water-fill vessel width px
  *   vesselHeight   fixed water-fill vessel height px (fill scales against it)
  *   compact        emit the .ecs-strip-compact modifier (popup size deltas)
  *
- * Column order (top→bottom): day label (bands only) → time + condition icon
+ * Row order (top→bottom): day-label row (bands only) → time + condition icon
  * (header) → temp curve → temp + feels-like + POP% cluster → accumulation
- * water-fill zone. Invariants: feels-like and POP each ALWAYS reserve a line
- * (constant cluster height); the fill zone is omitted for the whole window when
- * NO hour has a real amount (POP alone lives in the cluster, never the fill); a
- * missing temp is a blank cell + a curve gap (isolated points become dots).
+ * water-fill zone. The day-label row is one cell per SEGMENT (a run of columns
+ * sharing a day, or a day/night half), not one cell per column — a one-column
+ * cell has nothing for `position: sticky` to hold onto past its own width, so
+ * the cell spans its whole segment and the sticky `.ecs-dayname` span inside it
+ * pins to the scroll port's left edge for as long as any of that segment's
+ * columns are on screen, then is pushed out by the next segment's cell.
+ * Invariants: feels-like and POP each ALWAYS reserve a line (constant cluster
+ * height); the fill zone is omitted for the whole window when NO hour has a
+ * real amount (POP alone lives in the cluster, never the fill); a missing
+ * temp is a blank cell + a curve gap (isolated points become dots).
  */
 export function buildHourlyStripHtml(timesteps, hass, options = {}) {
   const opts = { ...STRIP_DEFAULTS, ...options };
@@ -698,6 +715,25 @@ export function buildHourlyStripHtml(timesteps, hass, options = {}) {
   const totalWidth = timesteps.length * colWidth;
   const colStyle = 'style="width:' + colWidth + 'px"';
 
+  // Segment boundaries the day-label row is built from: an explicit boolean
+  // predicate per column, NOT "the label text is non-empty" — keying
+  // segmentation off a truthy string means a label that ever goes blank at a
+  // real boundary would silently merge two segments into one wider cell with
+  // no test failing. Calendar mode starts at index 0 and each local midnight;
+  // halves mode reuses computeHalvesBands' own day/night boundary flags. This
+  // is the ONE definition of the calendar-day boundary — the tint counter
+  // below calls it directly instead of re-stating the expression, so the tint
+  // stripes and label cells can't drift apart.
+  const isCalendarDayStart = (ts, i) => i === 0 || new Date(ts.time).getHours() === 0;
+  const segmentStarts = showDayBands
+    ? (halves ? halves.starts : timesteps.map(isCalendarDayStart))
+    : null;
+  const segmentLabelAt = showDayBands
+    ? (halves
+      ? (i) => halves.labels[i]
+      : (i) => { const d = new Date(timesteps[i].time); return dayNames[d.getDay()] + ' ' + d.getDate(); })
+    : null;
+
   // Curve geometry (gaps, isolated points, area-fill rule) — see buildHourlyCurve.
   const curve = buildHourlyCurve(
     timesteps.map((ts) => (ts.temp != null ? ts.temp : null)), colWidth, curveGeometry);
@@ -711,32 +747,47 @@ export function buildHourlyStripHtml(timesteps, hass, options = {}) {
   const fillPx = (v) => v > 0
     ? Math.min(vesselHeight, Math.max(3, Math.round(vesselHeight * v / windowMaxQty))) : 0;
 
+  // Day-label row: run-length encode segmentStarts into one cell per segment,
+  // each spanning that segment's full column count — the sum of these widths
+  // always equals totalWidth, keeping the label row column-aligned with the
+  // tint belt, header and cluster rows below it.
+  let labelsHtml = '';
+  if (showDayBands) {
+    let segStart = 0;
+    while (segStart < timesteps.length) {
+      let segEnd = segStart + 1;
+      while (segEnd < timesteps.length && !segmentStarts[segEnd]) segEnd++;
+      const segWidth = (segEnd - segStart) * colWidth;
+      labelsHtml += '<div class="ecs-daylbl" style="width:' + segWidth + 'px">'
+        + '<span class="ecs-dayname">' + segmentLabelAt(segStart) + '</span></div>';
+      segStart = segEnd;
+    }
+  }
+
   let dayCount = 0;
   let tintsHtml = '';
-  let labelsHtml = '';
   let headerHtml = '';
   let clusterHtml = '';
   let fillHtml = '';
 
   timesteps.forEach((ts, i) => {
     const date = new Date(ts.time);
-    const isMidnight = date.getHours() === 0;
-    if (i > 0 && isMidnight) dayCount++;
+    // Runs even when showDayBands is false (segmentStarts is null then) —
+    // call the shared predicate directly rather than reach into segmentStarts.
+    if (isCalendarDayStart(ts, i) && i > 0) dayCount++;
     const hasTemp = ts.temp != null;
 
     if (showDayBands && halves) {
-      // Halves: alternating tint per day/night segment, DAY/NIGHT title at each
-      // segment start (night carries the crossed-into date; see computeHalvesBands).
+      // Halves: alternating tint per day/night segment (the DAY/NIGHT title
+      // itself is built as a separate segment-spanning pass below, so
+      // position: sticky has a whole run of columns to hold onto).
       tintsHtml += '<div style="width:' + colWidth + 'px;flex:none;height:100%;background:'
         + (halves.tints[i] ? 'var(--ecw-tint)' : 'transparent') + '"></div>';
-      labelsHtml += '<div class="ecs-daylbl" ' + colStyle + '>' + halves.labels[i] + '</div>';
     } else if (showDayBands) {
-      // Alternating faint tint per calendar day, label at index 0 and each midnight.
+      // Alternating faint tint per calendar day (the weekday+date title is
+      // built as a separate segment-spanning pass below).
       tintsHtml += '<div style="width:' + colWidth + 'px;flex:none;height:100%;background:'
         + ((dayCount % 2) ? 'var(--ecw-tint)' : 'transparent') + '"></div>';
-      const dayLabel = (i === 0 || isMidnight)
-        ? dayNames[date.getDay()] + ' ' + date.getDate() : '';
-      labelsHtml += '<div class="ecs-daylbl" ' + colStyle + '>' + dayLabel + '</div>';
     }
 
     // Header: time label over the condition icon.
@@ -1836,6 +1887,7 @@ export class ECWeatherCard extends HTMLElement {
               this.entityIdFor('temperature'),
               this.entityIdFor('hourly_forecast'),
               this.entityIdFor('daily_forecast'),
+              this.entityIdFor('air_quality'),
             ].filter(Boolean),
           });
         }

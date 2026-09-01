@@ -16,7 +16,7 @@ from ..const import (
     DOMAIN,
     EC_API_BASE,
 )
-from ..api_client import fetch_json_with_retry
+from ..api_client import fetch_json_with_retry, missing_data_points
 from ..parsing import (
     compute_humidex,
     feels_like,
@@ -95,6 +95,13 @@ class ECWeatherCoordinator(OnDemandCoordinator):
         if forecast_unchanged:
             _LOGGER.debug("EC weather: forecast unchanged (lastUpdated=%s), updating current only", ec_last_updated)
 
+        # Completeness probe over the RAW props — this is the correct place
+        # for it: the raw shape is what missing_data_points understands (e.g.
+        # wind speed "calm" counts as present here, while the parsed current
+        # dict below would turn it into None and misflag a calm day as a
+        # station gap). No extra API call — props is already fetched.
+        station_missing = missing_data_points(props)
+
         current_raw = props.get("currentConditions") or {}
         rise_set = props.get("riseSet") or {}
         # Actual array keys are "hourlyForecasts" and "forecasts"
@@ -145,6 +152,29 @@ class ECWeatherCoordinator(OnDemandCoordinator):
 
             self._last_forecast_datetime = ec_last_updated
 
+        # Some auto stations (e.g. "Victoria (University of)") report
+        # currentConditions with condition null and iconCode carrying no
+        # value. Fall back to the first hourly forecast entry, matching HA
+        # core's env_canada integration.
+        had_observed_condition = current["condition"] is not None
+        had_observed_icon_code = current["icon_code"] is not None
+        used_forecast_fallback = False
+        if hourly:
+            first_hour = hourly[0]
+            if current["condition"] is None and first_hour.get("condition") is not None:
+                current["condition"] = first_hour["condition"]
+                used_forecast_fallback = True
+            if current["icon_code"] is None and first_hour.get("icon_code") is not None:
+                current["icon_code"] = first_hour["icon_code"]
+                used_forecast_fallback = True
+
+        if used_forecast_fallback:
+            current["condition_source"] = "forecast"
+        elif had_observed_condition or had_observed_icon_code:
+            current["condition_source"] = "observed"
+        else:
+            current["condition_source"] = None
+
         _LOGGER.debug(
             "EC weather updated: temp=%s°C feels_like=%s°C hourly=%d daily=%d%s",
             current["temp"],
@@ -168,4 +198,5 @@ class ECWeatherCoordinator(OnDemandCoordinator):
             "sunset": utc_to_local_hhmm(self.hass, loc(rise_set.get("sunset"), lang)),
             "updated": fetched_at,
             "fetched_at": fetched_at,
+            "station_missing": station_missing,
         }

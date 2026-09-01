@@ -298,6 +298,61 @@ describe("availability gating on resolved ids", () => {
   });
 });
 
+// ── On-demand refresh includes air_quality (AQHI minimal-mode self-heal) ─────
+//
+// The card's staleness-triggered update_entity call (keyed off temperature
+// age) only refetched temperature/hourly_forecast/daily_forecast, so a
+// minimal-mode install's dead AQHI station never got a view-triggered
+// recovery path like the other sensors. air_quality is watched-but-optional
+// (SECTION_WATCH_ROLES), so its absence must never leave an undefined/null
+// entry in the entity_id list — the existing .filter(Boolean) call covers
+// that, proven here rather than assumed.
+
+describe("on-demand refresh — air_quality entity_id inclusion", () => {
+  // buildStates() carries no stale marker; construct a temperature state old
+  // enough (> 30 minutes) to cross the card's own staleness threshold.
+  const staleTempState = () => ({
+    state: "25.8",
+    attributes: { fetched_at: new Date(Date.now() - 40 * 60000).toISOString() },
+    last_updated: new Date(Date.now() - 40 * 60000).toISOString(),
+  });
+
+  it("includes air_quality in the update_entity call when the role resolves", async () => {
+    const connection = makeConnection([buildEntry()]);
+    const states = buildStates();
+    states["sensor.ec_temperature"] = staleTempState();
+    const hass = makeHass(states, connection);
+    const card = mountCard("current", hass);
+    await settle();
+
+    expect(hass.callService).toHaveBeenCalledWith(
+      "homeassistant",
+      "update_entity",
+      { entity_id: expect.arrayContaining(["sensor.ec_air_quality"]) },
+    );
+    document.body.removeChild(card);
+  });
+
+  it("omits air_quality cleanly (no undefined/null entry) when the role does not resolve", async () => {
+    const rolesWithoutAirQuality = { ...buildRoles() };
+    delete rolesWithoutAirQuality.air_quality;
+    const connection = makeConnection([buildEntry({ roles: rolesWithoutAirQuality })]);
+    const states = buildStates();
+    states["sensor.ec_temperature"] = staleTempState();
+    const hass = makeHass(states, connection);
+    const card = mountCard("current", hass);
+    await settle();
+
+    const updateEntityCall = hass.callService.mock.calls.find(
+      ([domain, service]) => domain === "homeassistant" && service === "update_entity",
+    );
+    expect(updateEntityCall).toBeDefined();
+    expect(updateEntityCall[2].entity_id).not.toContain(undefined);
+    expect(updateEntityCall[2].entity_id).not.toContain(null);
+    document.body.removeChild(card);
+  });
+});
+
 // ── Issue #12: a registry rename keeps the card working ──────────────────────
 
 describe("registry rename scenario (issue #12)", () => {
