@@ -168,6 +168,18 @@ GAUGE_SENSOR_DESCRIPTIONS: tuple[ECGaugeSensorDescription, ...] = (
 )
 
 
+# The gauge sensors' unique_id keys ("ec_temp_gauge", "ec_feels_gauge") are
+# abbreviated and immutable (changing them would orphan existing entities),
+# but pre-July-2026 installs already carry the long-form entity_ids below
+# from before the translated-names change. Pinning the long form here (rather
+# than the f"sensor.{key}" pattern every other sensor class uses) makes one
+# documented id correct for both a fresh install and an old one.
+GAUGE_SENSOR_ENTITY_IDS: dict[str, str] = {
+    "ec_temp_gauge": "sensor.ec_temperature_gauge",
+    "ec_feels_gauge": "sensor.ec_feels_like_gauge",
+}
+
+
 def _resolve_today_range(
     daily: list[dict], key_high: str, key_low: str
 ) -> tuple[float | None, float | None]:
@@ -220,6 +232,7 @@ class ECGaugeSensor(CoordinatorEntity[ECWeatherCoordinator], SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{description.key}_{city_code}"
+        self.entity_id = GAUGE_SENSOR_ENTITY_IDS[description.key]
         self._attr_device_info = build_device_info(city_code, city_name)
 
     @property

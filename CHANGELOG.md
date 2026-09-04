@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.1
+
+### Fixed
+
+- The two entities behind the iOS lock screen gauge widget now get predictable ids on a fresh install, `sensor.ec_temperature_gauge` and `sensor.ec_feels_like_gauge`, rather than longer ids built from the location name. The entity reference documented ids that existed on no install at all, so a widget set up by following the documentation pointed at nothing and the companion app drew an empty placeholder gauge. Installs already running keep the ids they have; the reference now says how to look yours up
+
+
 ## 2.6.0
 
 Stations are not all equal; the integration now works around their gaps and heals itself.

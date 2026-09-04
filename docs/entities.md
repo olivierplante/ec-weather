@@ -68,8 +68,10 @@ Pre-computed for the HA Companion App's iOS lock screen gauge widget. State maps
 
 | Entity | State | Attributes |
 |---|---|---|
-| `sensor.ec_temp_gauge` | 0.0 to 1.0 | `value`, `low`, `high` |
-| `sensor.ec_feels_gauge` | 0.0 to 1.0 | `value`, `low`, `high` |
+| `sensor.ec_temperature_gauge` | 0.0 to 1.0 | `value`, `low`, `high` |
+| `sensor.ec_feels_like_gauge` | 0.0 to 1.0 | `value`, `low`, `high` |
+
+Installs created between the July 2026 naming change and this release may instead carry device-prefixed ids such as `sensor.ec_weather_<city>_temperature_gauge`. Check Settings > Devices & Services > Entities for the actual id on your install.
 
 ## Weather entity
 
