@@ -18,12 +18,16 @@ import pytest
 from ec_weather.binary_sensor import ECAlertActiveSensor
 from ec_weather.sensor import (
     CURRENT_SENSOR_DESCRIPTIONS,
+    GAUGE_SENSOR_DESCRIPTIONS,
     ECAlertsSensor,
     ECAQHISensor,
     ECCurrentSensor,
     ECDailyForecastSensor,
+    ECGaugeSensor,
     ECHourlyForecastSensor,
 )
+
+from .conftest import ENTITIES_DOCS_PATH
 
 CITY_CODE = "on-118"
 CITY_NAME = "Ottawa"
@@ -70,3 +74,35 @@ class TestPinnedEntityIds:
     def test_alert_active_pins_short_id(self):
         sensor = ECAlertActiveSensor(_coord(), CITY_CODE, CITY_NAME)
         assert sensor.entity_id == "binary_sensor.ec_alert_active"
+
+    @pytest.mark.parametrize(
+        ("key", "expected_entity_id"),
+        [
+            ("ec_temp_gauge", "sensor.ec_temperature_gauge"),
+            ("ec_feels_gauge", "sensor.ec_feels_like_gauge"),
+        ],
+    )
+    def test_gauge_sensor_pins_long_form_id(self, key, expected_entity_id):
+        description = next(d for d in GAUGE_SENSOR_DESCRIPTIONS if d.key == key)
+        sensor = ECGaugeSensor(_coord(), description, CITY_CODE, CITY_NAME)
+        assert sensor.entity_id == expected_entity_id
+
+
+# ---------------------------------------------------------------------------
+# (b) Gauge docs match the pinned entity_ids (guards doc drift on issue #12)
+# ---------------------------------------------------------------------------
+
+class TestGaugeDocsMatchPins:
+    def _docs_text(self) -> str:
+        return ENTITIES_DOCS_PATH.read_text()
+
+    @pytest.mark.parametrize("description", GAUGE_SENSOR_DESCRIPTIONS, ids=lambda d: d.key)
+    def test_pinned_gauge_id_is_documented(self, description):
+        sensor = ECGaugeSensor(_coord(), description, CITY_CODE, CITY_NAME)
+        assert sensor.entity_id in self._docs_text()
+
+    @pytest.mark.parametrize(
+        "stale_entity_id", ["sensor.ec_temp_gauge", "sensor.ec_feels_gauge"]
+    )
+    def test_stale_gauge_id_is_not_documented(self, stale_entity_id):
+        assert stale_entity_id not in self._docs_text()
