@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.2
+
+### Fixed
+
+- The daily forecast popup no longer opens underneath the status bar on iPhones. Tapping a day put its title behind the clock and the close button behind the battery icon; the popup now keeps clear of the status bar, the home indicator, and the notch in landscape
+
+
 ## 2.6.1
 
 ### Fixed
