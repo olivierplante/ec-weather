@@ -1668,7 +1668,23 @@ class ECOverlay {
           .ec-overlay-content {
             max-width: 100%; width: 100%; max-height: 100%; height: 100%;
             border-radius: 0; box-sizing: border-box;
+            /* HA renders with viewport-fit=cover, so full screen here sits
+               under the iOS status bar and home indicator unless it insets
+               itself — confirmed on-device as the title under the clock and
+               the close button under the battery icon. Added on top of the
+               base 24px above, not replacing it, since box-sizing: border-box
+               keeps the total padding inside the 100% height. left/right are
+               0 in portrait and only matter in landscape on a notched device. */
+            padding-top: calc(24px + env(safe-area-inset-top, 0px));
+            padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+            padding-left: calc(24px + env(safe-area-inset-left, 0px));
+            padding-right: calc(24px + env(safe-area-inset-right, 0px));
           }
+          /* Same reasoning as above: the close button is absolutely positioned
+             against this content element's padding box, which in full screen
+             starts at the physical top of the screen. After the base rule
+             above (source order breaks the tie at equal specificity). */
+          .ec-overlay-close { top: calc(12px + env(safe-area-inset-top, 0px)); }
         }
       </style>
       <div class="ec-overlay">
